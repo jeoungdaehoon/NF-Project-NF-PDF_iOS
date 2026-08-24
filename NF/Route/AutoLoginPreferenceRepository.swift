@@ -408,6 +408,7 @@ final class PortalPDFLocalStorageRepository {
         if fileManager.fileExists(atPath: metadataURL.path) {
             try fileManager.removeItem(at: metadataURL)
         }
+        try? PortalPDFPageEditRepository().remove(identifier: documentID)
         notifyChange()
     }
 
@@ -416,6 +417,7 @@ final class PortalPDFLocalStorageRepository {
         if fileManager.fileExists(atPath: cacheDirectoryURL.path) {
             try fileManager.removeItem(at: cacheDirectoryURL)
         }
+        try? PortalPDFPageEditRepository().removeAll()
         notifyChange()
     }
 

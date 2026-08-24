@@ -149,7 +149,11 @@ final class PortalPDFICloudRepository {
         guard let directoryURL = await documentsDirectoryURL() else {
             throw PortalPDFCloudError.iCloudContainerUnavailable
         }
-        let localURL = document.localFileURL
+        let localData = try Data(contentsOf: document.localFileURL, options: [.mappedIfSafe])
+        let exportData = PortalPDFPageEditRepository().flattenedPDFData(
+            basePDFData: localData,
+            identifier: document.id
+        ) ?? localData
         let destinationURL = directoryURL.appendingPathComponent(
             Self.cloudFileName(localDocumentID: document.id, fileName: document.fileName)
         )
@@ -157,8 +161,7 @@ final class PortalPDFICloudRepository {
         try await Task.detached(priority: .userInitiated) {
             let manager = FileManager.default
             try manager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            let data = try Data(contentsOf: localURL, options: [.mappedIfSafe])
-            try data.write(to: destinationURL, options: [.atomic])
+            try exportData.write(to: destinationURL, options: [.atomic])
         }.value
 
         guard let uploaded = try await documents().first(where: { $0.fileURL == destinationURL }) else {
@@ -339,7 +342,11 @@ final class PortalPDFGoogleDriveService {
         let endpoint = URL(string: "\(PortalConfig.portalOrigin)/api/artifacts/upload")!
         let cookieHeader = try await requiredCookieHeader(for: endpoint)
         let boundary = "nf-ios-\(UUID().uuidString)"
-        let pdfData = try Data(contentsOf: document.localFileURL, options: [.mappedIfSafe])
+        let localData = try Data(contentsOf: document.localFileURL, options: [.mappedIfSafe])
+        let pdfData = PortalPDFPageEditRepository().flattenedPDFData(
+            basePDFData: localData,
+            identifier: document.id
+        ) ?? localData
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
@@ -379,7 +386,11 @@ final class PortalPDFGoogleDriveService {
     ) async throws -> PortalPDFGoogleDriveLink {
         let endpoint = URL(string: "\(PortalConfig.portalOrigin)/api/artifacts/files/\(link.portalFileID)")!
         let cookieHeader = try await requiredCookieHeader(for: endpoint)
-        let pdfData = try Data(contentsOf: document.localFileURL, options: [.mappedIfSafe])
+        let localData = try Data(contentsOf: document.localFileURL, options: [.mappedIfSafe])
+        let pdfData = PortalPDFPageEditRepository().flattenedPDFData(
+            basePDFData: localData,
+            identifier: document.id
+        ) ?? localData
         var request = URLRequest(url: endpoint)
         request.httpMethod = "PATCH"
         request.setValue("application/pdf", forHTTPHeaderField: "Content-Type")

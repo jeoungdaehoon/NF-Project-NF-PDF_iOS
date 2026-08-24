@@ -274,8 +274,14 @@ struct PortalPDFKitView: UIViewRepresentable {
         let hasStoredViewport = PortalPDFViewportStore.load(
             for: viewportPersistenceIdentifier
         ) != nil
+        // 페이지 편집 데이터는 PDF 본문과 분리된 .nfedit 파일에서 먼저 복원합니다.
+        // 기존 Annotation은 선택·이동 제스처 호환용 숨은 프록시로만 유지합니다.
+        context.coordinator.configurePageEditPersistence(
+            identifier: viewportPersistenceIdentifier,
+            document: document
+        )
         // PDFKit은 고배율에서 Ink bounds 전체를 래스터화하므로 문서 연결 전에 숨기고,
-        // 페이지 오버레이의 Core Animation 경로가 같은 선을 벡터로 그리게 합니다.
+        // 페이지 오버레이의 Core Animation 경로가 별도 편집 모델을 직접 그리게 합니다.
         context.coordinator.activatePersistentInkOverlay(for: document, in: pdfView)
         if pdfView.document !== document {
             pdfView.autoScales = !hasStoredViewport
@@ -991,9 +997,12 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     private weak var page: PDFPage?
     private weak var pdfView: PDFView?
+    /// PDF Annotation 대신 화면에 직접 그릴 페이지별 편집 데이터입니다.
+    private var pageEditData: PortalPDFPageEditDocument.Page?
     private var strokes: [Stroke] = []
     private var inkLayers: [CAShapeLayer] = []
     private var imageLayers: [CALayer] = []
+    private var objectLayers: [CALayer] = []
     private var imagePixelSizes: [CGSize] = []
     private var imageSelectionLayers: [CAShapeLayer] = []
     private var configuredBoundsSize = CGSize.zero
@@ -1018,9 +1027,23 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         imageSelectionLayers.count
     }
 
-    func configure(page: PDFPage, pdfView: PDFView) {
+    var renderedPageEditObjectLayerCount: Int {
+        objectLayers.count
+    }
+
+    func configure(
+        page: PDFPage,
+        pdfView: PDFView,
+        pageEditData: PortalPDFPageEditDocument.Page? = nil
+    ) {
         self.page = page
         self.pdfView = pdfView
+        self.pageEditData = pageEditData
+        reloadInkPaths()
+    }
+
+    func updatePageEditData(_ pageEditData: PortalPDFPageEditDocument.Page?) {
+        self.pageEditData = pageEditData
         reloadInkPaths()
     }
 
@@ -1042,9 +1065,45 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
         imageLayers.forEach { $0.removeFromSuperlayer() }
         imageSelectionLayers.forEach { $0.removeFromSuperlayer() }
+        objectLayers.forEach { $0.removeFromSuperlayer() }
         imageLayers = []
         imagePixelSizes = []
         imageSelectionLayers = []
+        objectLayers = []
+
+        if let pageEditData {
+            renderPageEditObjects(
+                pageEditData.objects.sorted(by: { $0.displayIndex < $1.displayIndex }),
+                pageToOverlay: pageToOverlay,
+                pageUnitScale: pageUnitScale,
+                updatedStrokes: &updatedStrokes
+            )
+            renderInteractionSelection(
+                from: page,
+                pageToOverlay: pageToOverlay,
+                pageUnitScale: pageUnitScale
+            )
+        } else {
+            renderLegacyAnnotationObjects(
+                on: page,
+                pageToOverlay: pageToOverlay,
+                pageUnitScale: pageUnitScale,
+                updatedStrokes: &updatedStrokes
+            )
+        }
+
+        strokes = updatedStrokes
+        inkLayers.forEach { $0.removeFromSuperlayer() }
+        inkLayers = updatedStrokes.map { makeStrokeLayer($0) }
+    }
+
+    /// 이전 PDF 내부 Annotation은 최초 마이그레이션 시에만 오버레이 데이터 원본으로 사용합니다.
+    private func renderLegacyAnnotationObjects(
+        on page: PDFPage,
+        pageToOverlay: CGAffineTransform,
+        pageUnitScale: CGFloat,
+        updatedStrokes: inout [Stroke]
+    ) {
 
         for annotation in page.annotations {
             guard PortalPDFInkDisplaySuppression.isSuppressed(annotation),
@@ -1123,9 +1182,9 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             }
         }
 
-        strokes = updatedStrokes
-        inkLayers.forEach { $0.removeFromSuperlayer() }
-        inkLayers = updatedStrokes.map { stroke in
+    }
+
+    private func makeStrokeLayer(_ stroke: Stroke) -> CAShapeLayer {
             let shapeLayer = CAShapeLayer()
             shapeLayer.frame = bounds
             shapeLayer.path = stroke.path
@@ -1155,7 +1214,252 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             }
             layer.addSublayer(shapeLayer)
             return shapeLayer
+    }
+
+    /// 숨은 Annotation 프록시 중 현재 선택된 객체의 조절 UI만 별도 벡터 레이어로 표시합니다.
+    private func renderInteractionSelection(
+        from page: PDFPage,
+        pageToOverlay: CGAffineTransform,
+        pageUnitScale: CGFloat
+    ) {
+        for annotation in page.annotations {
+            if let image = annotation as? PortalPDFImageAnnotation, image.isPortalSelected {
+                let layers = makeImageSelectionLayers(
+                    annotation: image,
+                    pageToOverlay: pageToOverlay
+                )
+                layers.forEach { layer.addSublayer($0) }
+                imageSelectionLayers.append(contentsOf: layers)
+                continue
+            }
+
+            let selectionBounds: CGRect?
+            let rotationAngle: CGFloat
+            if let shape = annotation as? PortalPDFShapeAnnotation, shape.isPortalSelected {
+                selectionBounds = shape.shapeBounds
+                rotationAngle = shape.rotationAngle
+            } else if let text = annotation as? PortalPDFTextAnnotation, text.isPortalTextSelected {
+                selectionBounds = text.textBounds
+                rotationAngle = 0
+            } else {
+                continue
+            }
+            guard let selectionBounds else { continue }
+            let outline = UIBezierPath(rect: selectionBounds.insetBy(dx: -8, dy: -8))
+            if rotationAngle != 0 {
+                outline.apply(
+                    CGAffineTransform(translationX: selectionBounds.midX, y: selectionBounds.midY)
+                        .rotated(by: rotationAngle)
+                        .translatedBy(x: -selectionBounds.midX, y: -selectionBounds.midY)
+                )
+            }
+            outline.apply(pageToOverlay)
+            let outlineLayer = shapeLayer(path: outline.cgPath)
+            outlineLayer.fillColor = UIColor.clear.cgColor
+            outlineLayer.strokeColor = UIColor.systemBlue.cgColor
+            outlineLayer.lineWidth = max(0.75, pageUnitScale)
+            outlineLayer.lineDashPattern = [4, 3]
+            layer.addSublayer(outlineLayer)
+            imageSelectionLayers.append(outlineLayer)
         }
+    }
+
+    /// `.nfedit` 편집 모델을 PDF 페이지 Annotation으로 변환하지 않고 Core Animation Layer로 직접 표시합니다.
+    private func renderPageEditObjects(
+        _ objects: [PortalPDFPageEditDocument.Object],
+        pageToOverlay: CGAffineTransform,
+        pageUnitScale: CGFloat,
+        updatedStrokes: inout [Stroke]
+    ) {
+        for object in objects {
+            switch object.kind {
+            case .ink:
+                guard let ink = object.ink,
+                      let color = UIColor.portalColor(rgba: ink.colorRGBA) else { continue }
+                let lineWidth = max(0.3, ink.lineWidth) * pageUnitScale
+                for savedPath in ink.paths {
+                    var transform = pageToOverlay
+                    guard let overlayPath = savedPath.uiBezierPath.cgPath.copy(using: &transform) else { continue }
+                    updatedStrokes.append(Stroke(
+                        path: overlayPath,
+                        color: color.cgColor,
+                        rendering: .stroke(
+                            lineWidth: lineWidth,
+                            lineCap: CGLineCap(rawValue: ink.lineCapRawValue) ?? .round,
+                            lineJoin: CGLineJoin(rawValue: ink.lineJoinRawValue) ?? .round
+                        ),
+                        drawingBounds: overlayPath.boundingBoxOfPath.insetBy(
+                            dx: -lineWidth,
+                            dy: -lineWidth
+                        )
+                    ))
+                }
+            case .pressureInk:
+                guard let ink = object.ink,
+                      let color = UIColor.portalColor(rgba: ink.colorRGBA) else { continue }
+                for fragment in ink.pressureFragments {
+                    let points = fragment.points.map(\.cgPoint)
+                    let pressures = fragment.pressures.map { CGFloat($0) }
+                    guard let pagePath = PortalPDFPressureInkAnnotation.makeStrokePath(
+                        points: points,
+                        pressures: pressures,
+                        baseLineWidth: CGFloat(ink.lineWidth)
+                    ) else { continue }
+                    var transform = pageToOverlay
+                    guard let overlayPath = pagePath.cgPath.copy(using: &transform) else { continue }
+                    updatedStrokes.append(Stroke(
+                        path: overlayPath,
+                        color: color.cgColor,
+                        rendering: .fill,
+                        drawingBounds: overlayPath.boundingBoxOfPath
+                    ))
+                }
+            case .image:
+                guard let metadata = object.image,
+                      let image = UIImage(data: metadata.imageData),
+                      let cgImage = image.cgImage else { continue }
+                let imageLayer = makeImageLayer(
+                    metadata: metadata,
+                    cgImage: cgImage,
+                    pageToOverlay: pageToOverlay
+                )
+                layer.addSublayer(imageLayer)
+                imageLayers.append(imageLayer)
+                imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
+            case .shape:
+                guard let metadata = object.shape,
+                      let shapeType = PortalPDFShapeType(rawValue: metadata.shapeType),
+                      let lineColor = UIColor.portalColor(rgba: metadata.lineColorRGBA),
+                      let fillColor = UIColor.portalColor(rgba: metadata.fillColorRGBA) else { continue }
+                let inset = CGFloat(metadata.lineWidth) / 2 + 1
+                let shapePath = PortalPDFShapePath.make(
+                    shapeType,
+                    in: metadata.bounds.insetBy(dx: inset, dy: inset),
+                    yAxisPointsDown: false
+                )
+                let rotation = CGAffineTransform(translationX: metadata.bounds.midX, y: metadata.bounds.midY)
+                    .rotated(by: CGFloat(metadata.rotationAngle))
+                    .translatedBy(x: -metadata.bounds.midX, y: -metadata.bounds.midY)
+                shapePath.apply(rotation)
+                var transform = pageToOverlay
+                guard let overlayPath = shapePath.cgPath.copy(using: &transform) else { continue }
+                let shapeLayer = CAShapeLayer()
+                shapeLayer.frame = bounds
+                shapeLayer.path = overlayPath
+                shapeLayer.fillColor = fillColor.cgColor
+                shapeLayer.strokeColor = lineColor.cgColor
+                shapeLayer.lineWidth = CGFloat(metadata.lineWidth) * pageUnitScale
+                shapeLayer.lineCap = .round
+                shapeLayer.lineJoin = .round
+                shapeLayer.contentsScale = traitCollection.displayScale
+                layer.addSublayer(shapeLayer)
+                objectLayers.append(shapeLayer)
+            case .text:
+                guard let metadata = object.text else { continue }
+                let textLayer = makeTextLayer(metadata: metadata, pageToOverlay: pageToOverlay)
+                layer.addSublayer(textLayer)
+                objectLayers.append(textLayer)
+            }
+        }
+    }
+
+    private func makeImageLayer(
+        metadata: PortalPDFImageAnnotation.Metadata,
+        cgImage: CGImage,
+        pageToOverlay: CGAffineTransform
+    ) -> CALayer {
+        let imageBounds = metadata.bounds
+        let center = CGPoint(x: imageBounds.midX, y: imageBounds.midY).applying(pageToOverlay)
+        let cosine = cos(CGFloat(metadata.rotationAngle))
+        let sine = sin(CGFloat(metadata.rotationAngle))
+        let horizontalDirection: CGFloat = metadata.isHorizontallyFlipped ? -1 : 1
+        let pageXAxis = CGPoint(x: horizontalDirection * cosine, y: horizontalDirection * sine)
+        let pageYAxis = CGPoint(x: sine, y: -cosine)
+        let overlayXAxis = pageXAxis.applyingLinearPart(of: pageToOverlay)
+        let overlayYAxis = pageYAxis.applyingLinearPart(of: pageToOverlay)
+
+        let imageLayer = CALayer()
+        imageLayer.bounds = CGRect(origin: .zero, size: imageBounds.size)
+        imageLayer.position = center
+        imageLayer.contents = cgImage
+        imageLayer.contentsGravity = .resize
+        imageLayer.minificationFilter = .trilinear
+        imageLayer.magnificationFilter = .linear
+        imageLayer.allowsEdgeAntialiasing = true
+        imageLayer.setAffineTransform(CGAffineTransform(
+            a: overlayXAxis.x,
+            b: overlayXAxis.y,
+            c: overlayYAxis.x,
+            d: overlayYAxis.y,
+            tx: 0,
+            ty: 0
+        ))
+        return imageLayer
+    }
+
+    private func makeTextLayer(
+        metadata: PortalPDFTextAnnotation.Metadata,
+        pageToOverlay: CGAffineTransform
+    ) -> CALayer {
+        let container = CALayer()
+        container.bounds = CGRect(origin: .zero, size: metadata.bounds.size)
+        container.position = CGPoint(x: metadata.bounds.midX, y: metadata.bounds.midY).applying(pageToOverlay)
+        container.backgroundColor = UIColor.portalColor(rgba: metadata.fillColorRGBA)?.cgColor
+        container.borderColor = UIColor.portalColor(rgba: metadata.borderColorRGBA)?.cgColor
+        container.borderWidth = 1
+
+        let xAxis = CGPoint(x: 1, y: 0).applyingLinearPart(of: pageToOverlay)
+        let yAxis = CGPoint(x: 0, y: -1).applyingLinearPart(of: pageToOverlay)
+        container.setAffineTransform(CGAffineTransform(
+            a: xAxis.x,
+            b: xAxis.y,
+            c: yAxis.x,
+            d: yAxis.y,
+            tx: 0,
+            ty: 0
+        ))
+
+        let textLayer = CATextLayer()
+        textLayer.frame = container.bounds.insetBy(dx: 5, dy: 4)
+        textLayer.contentsScale = traitCollection.displayScale
+        textLayer.isWrapped = true
+        textLayer.truncationMode = .end
+        textLayer.alignmentMode = switch metadata.alignmentRawValue {
+        case NSTextAlignment.center.rawValue: .center
+        case NSTextAlignment.right.rawValue: .right
+        default: .left
+        }
+        let fontSize = CGFloat(metadata.fontSize)
+        let baseFont = UIFont(name: metadata.fontName, size: fontSize)
+            ?? .systemFont(ofSize: fontSize)
+        var symbolicTraits = baseFont.fontDescriptor.symbolicTraits
+        if metadata.isBold { symbolicTraits.insert(.traitBold) }
+        if metadata.isItalic { symbolicTraits.insert(.traitItalic) }
+        let fontDescriptor = baseFont.fontDescriptor.withSymbolicTraits(symbolicTraits)
+            ?? baseFont.fontDescriptor
+        let font = UIFont(descriptor: fontDescriptor, size: fontSize)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = NSTextAlignment(rawValue: metadata.alignmentRawValue) ?? .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor.portalColor(rgba: metadata.textColorRGBA) ?? .black,
+            .paragraphStyle: paragraphStyle,
+            .underlineStyle: metadata.isUnderlined ? NSUnderlineStyle.single.rawValue : 0,
+            .strikethroughStyle: metadata.isStruckThrough ? NSUnderlineStyle.single.rawValue : 0,
+        ]
+        if let rtf = metadata.attributedTextRTF,
+           let attributedText = try? NSAttributedString(
+               data: rtf,
+               options: [.documentType: NSAttributedString.DocumentType.rtf],
+               documentAttributes: nil
+           ),
+           attributedText.string == metadata.text {
+            textLayer.string = attributedText
+        } else {
+            textLayer.string = NSAttributedString(string: metadata.text, attributes: attributes)
+        }
+        container.addSublayer(textLayer)
+        return container
     }
 
     /// 이미지 픽셀을 확대 배율 크기의 새 비트맵으로 만들지 않고 원본 CGImage 하나를 재사용합니다.
@@ -1583,6 +1887,13 @@ extension PortalPDFKitView {
         var pageOverlayViews: [ObjectIdentifier: UIView] = [:]
         /// 저장용 Ink를 현재 PDFKit 문서에서 한 번만 숨기기 위한 문서 식별자입니다.
         var persistentInkOverlayDocumentID: ObjectIdentifier?
+        /// PDF 본문과 분리해 저장하고 화면 오버레이가 직접 사용하는 페이지 편집 문서입니다.
+        var pageEditDocument = PortalPDFPageEditDocument()
+        /// 현재 편집 문서를 저장할 안정적인 문서 식별자입니다.
+        var pageEditPersistenceIdentifier: String?
+        /// 동일 PDFDocument에 편집 데이터를 중복 복원하지 않기 위한 식별자입니다.
+        var pageEditPersistenceDocumentID: ObjectIdentifier?
+        let pageEditRepository = PortalPDFPageEditRepository()
         /// PDFKit 페이지 렌더 계층과 분리된 실제 UITextView 터치 전용 호스트입니다.
         weak var textEditingHostView: PortalPDFTextOverlayView?
         /// 선택 텍스트 박스 위의 말풍선 작업 메뉴를 올리는 최상위 터치 호스트입니다.
@@ -1834,7 +2145,14 @@ extension PortalPDFKitView {
             pageOverlayViews[pageID] = overlay
             DispatchQueue.main.async { [weak self, weak overlay, weak view, weak page] in
                 guard let self, let overlay, let view, let page else { return }
-                overlay.configure(page: page, pdfView: view)
+                let pageIndex = view.document?.index(for: page) ?? NSNotFound
+                overlay.configure(
+                    page: page,
+                    pdfView: view,
+                    pageEditData: pageIndex == NSNotFound
+                        ? nil
+                        : self.pageEditDocument.page(at: pageIndex)
+                )
                 self.renderTransientNeonStrokes(on: page, in: overlay, pdfView: view)
             }
             return overlay
@@ -1874,19 +2192,65 @@ extension PortalPDFKitView {
             pdfRenderingMemoryBaseline = PortalPDFProcessMemory.residentBytes()
         }
 
+        /// 기존 PDF Annotation을 한 번만 페이지 편집 파일로 마이그레이션하고,
+        /// 이후에는 `.nfedit` 문서를 정본으로 사용해 숨은 상호작용 프록시를 구성합니다.
+        func configurePageEditPersistence(identifier: String, document: PDFDocument) {
+            let documentID = ObjectIdentifier(document)
+            guard pageEditPersistenceIdentifier != identifier
+                    || pageEditPersistenceDocumentID != documentID else { return }
+
+            pageEditPersistenceIdentifier = identifier
+            pageEditPersistenceDocumentID = documentID
+            if let savedDocument = pageEditRepository.load(identifier: identifier),
+               savedDocument.formatVersion == PortalPDFPageEditDocument.currentFormatVersion {
+                pageEditDocument = savedDocument
+                savedDocument.installInteractionProxies(in: document)
+            } else {
+                pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
+                if pageEditDocument.hasEditableObjects {
+                    try? pageEditRepository.save(pageEditDocument, identifier: identifier)
+                }
+            }
+            PortalPDFPageEditDocument.suppressManagedAnnotations(in: document)
+        }
+
+        /// 제스처 호환 프록시의 현재 상태를 페이지 편집 정본에 반영하고 원자적으로 저장합니다.
+        func persistPageEditDocument() {
+            guard let document = pdfView?.document,
+                  let identifier = pageEditPersistenceIdentifier else { return }
+            pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
+            PortalPDFPageEditDocument.suppressManagedAnnotations(in: document)
+            do {
+                try pageEditRepository.save(pageEditDocument, identifier: identifier)
+            } catch {
+                NSLog("PortalPDF page edit save error: %@", error.localizedDescription)
+            }
+        }
+
         /// 필기 추가·지우기·Undo 뒤 새 Annotation을 숨기고 표시 중인 페이지 타일만 갱신합니다.
         func refreshPersistentInkOverlays() {
             guard let pdfView, let document = pdfView.document else { return }
+            pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
             PortalPDFInkDisplaySuppression.suppress(in: document)
-            pageOverlayViews.values
-                .compactMap { $0 as? PortalPDFInkOverlayView }
-                .forEach { $0.reloadInkPaths() }
+            for pageIndex in 0..<document.pageCount {
+                guard let page = document.page(at: pageIndex),
+                      let overlay = pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView else {
+                    continue
+                }
+                overlay.updatePageEditData(pageEditDocument.page(at: pageIndex))
+            }
         }
 
         /// 이동·회전·크기 변경 중인 한 페이지의 이미지 오버레이만 즉시 갱신합니다.
         func refreshPersistentAnnotationOverlay(on page: PDFPage) {
+            if let document = pdfView?.document {
+                pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
+            }
             PortalPDFInkDisplaySuppression.suppress(on: page)
-            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.reloadInkPaths()
+            let pageIndex = pdfView?.document?.index(for: page) ?? NSNotFound
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.updatePageEditData(
+                pageIndex == NSNotFound ? nil : pageEditDocument.page(at: pageIndex)
+            )
         }
 
         /// PDFView 최상단에 UITextView 터치 전용 호스트를 생성합니다.
@@ -3075,6 +3439,7 @@ extension PortalPDFKitView {
 
         /// 기존 변경 호출부를 유지하면서 자동 저장과 편집 히스토리를 함께 확정합니다.
         func onDocumentChanged() {
+            persistPageEditDocument()
             refreshPersistentInkOverlays()
             guard !isApplyingHistory else {
                 documentChangedHandler()

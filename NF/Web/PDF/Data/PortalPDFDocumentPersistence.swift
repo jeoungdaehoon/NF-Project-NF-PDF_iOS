@@ -265,7 +265,23 @@ extension PDFDocument {
     func portalFlattenedDataRepresentation() -> Data? {
         guard pageCount > 0 else { return nil }
         PortalPDFInkDisplaySuppression.restore(in: self)
-        defer { PortalPDFInkDisplaySuppression.suppress(in: self) }
+        // `.nfedit` 호환 프록시는 화면 중복 렌더링을 막기 위해 항상 숨겨져 있습니다.
+        // 외부 공유본을 합성하는 이 구간에서만 전부 표시하고 완료 즉시 다시 숨깁니다.
+        for pageIndex in 0..<pageCount {
+            page(at: pageIndex)?.annotations
+                .filter(PortalPDFPageEditDocument.isManagedAnnotation)
+                .forEach { annotation in
+                    if let image = annotation as? PortalPDFImageAnnotation {
+                        image.updatePresentationBounds()
+                    }
+                    annotation.shouldDisplay = true
+                    annotation.shouldPrint = true
+                }
+        }
+        defer {
+            PortalPDFInkDisplaySuppression.suppress(in: self)
+            PortalPDFPageEditDocument.suppressManagedAnnotations(in: self)
+        }
         let outputData = NSMutableData()
         UIGraphicsBeginPDFContextToData(outputData, .zero, nil)
         for pageIndex in 0..<pageCount {

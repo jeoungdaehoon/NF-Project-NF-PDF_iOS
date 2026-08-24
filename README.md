@@ -10,7 +10,7 @@ NF iOS 포털과 기존 FileManager/PDF 기능을 하나의 SwiftUI 앱으로 �
   - 폴더, 검색, 즐겨찾기, 이름 변경, 이동, 7일 휴지통
 - PDFKit 기반 보기 및 편집
   - 펜·형광펜·지우개, 도형, 텍스트, 이미지, 페이지 관리
-  - 편집 기록, 자동 저장, 공유, 최대 1000% 확대
+  - 페이지 편집 데이터 분리 저장, 편집 기록, 자동 저장, 공유, 최대 1000% 확대
 - iCloud Drive
   - `iCloud.co.kr.NF`의 `NF PDF` Documents 폴더
   - 업로드, 갱신, 내려받기, 삭제, 다른 기기 문서 가져오기
@@ -34,6 +34,17 @@ NF iOS 포털과 기존 FileManager/PDF 기능을 하나의 SwiftUI 앱으로 �
 
 PDFKit, PencilKit, PhotosUI처럼 시스템 UIKit 컨트롤이 필요한 부분만 `UIViewRepresentable` 경계에 유지하고 앱 화면과 상태 흐름은 SwiftUI로 구성합니다.
 
+## PDF 페이지 편집 저장 방식
+
+- 원본 PDF는 페이지 배경과 일반 PDF 데이터만 보관합니다.
+- 펜·압력 필기·이미지·도형·텍스트는 문서 ID별 버전형 `Codable` JSON 파일인 `.nfedit`에 페이지 좌표와 객체 순서 그대로 원자 저장합니다.
+- `PortalPDFInkOverlayView`는 `.nfedit` 모델을 `CAShapeLayer`, `CALayer`, `CATextLayer`로 직접 그리며, 화면 표시를 위해 PDF Annotation으로 변환하지 않습니다.
+- 기존 선택·이동·크기 조절 제스처가 사용하는 Annotation은 표시·인쇄가 꺼진 임시 상호작용 프록시이며 저장 정본이 아닙니다.
+- 공유, 서버 저장, iCloud Drive 및 Google Drive 동기화 시에는 원본 PDF와 `.nfedit`를 합성한 일반 PDF를 만들어 다른 PDF 뷰어에서도 동일하게 보이게 합니다.
+- 문서 복제 시 `.nfedit`도 새 문서 ID로 복제하고, 영구 삭제·계정 데이터 삭제 시 함께 제거합니다.
+
+Core Data는 검색·관계형 메타데이터에는 적합하지만 페이지별 벡터 경로와 이미지 바이너리를 문서 단위로 이동·복제·버전 관리하는 이번 저장 구조에는 이점이 작습니다. 따라서 FileManager 원본의 문서 단위 파일 모델을 유지하면서 Swift의 `Codable`과 원자 쓰기를 사용하는 방식을 선택했습니다.
+
 ## 서명 설정
 
 1. Xcode에서 `NF.xcodeproj`를 엽니다.
@@ -52,3 +63,4 @@ xcodebuild -project NF.xcodeproj -scheme NF \
 ```
 
 클라우드 서비스 테스트는 `NFTests/PortalPDFCloudServicesTests.swift`에 있습니다.
+페이지 편집 데이터 분리·복원 테스트는 `NFTests/PortalPDFPageEditPersistenceTests.swift`에 있으며 실제 iPad에서도 실행할 수 있습니다.
