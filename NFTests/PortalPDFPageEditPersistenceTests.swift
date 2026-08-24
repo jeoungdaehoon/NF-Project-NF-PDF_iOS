@@ -154,6 +154,7 @@ struct PortalPDFPageEditPersistenceTests {
         let sourceURL = repository.fileURL(for: "source-document")
         #expect(sourceURL.pathExtension == "nfedit")
         #expect(fileManager.fileExists(atPath: sourceURL.path))
+        #expect(try Data(contentsOf: sourceURL).starts(with: Data("bplist00".utf8)))
         #expect(repository.load(identifier: "source-document")?.formatVersion == 1)
 
         try repository.copy(from: "source-document", to: "copied-document")
@@ -165,6 +166,91 @@ struct PortalPDFPageEditPersistenceTests {
 
         try repository.removeAll()
         #expect(!fileManager.fileExists(atPath: directory.path))
+    }
+
+    @Test func overlayAppendsOneInkWithoutRebuildingExistingImagesAndStrokes() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        for index in 0..<180 {
+            addInk(to: page, index: index)
+        }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
+            UIColor.systemIndigo.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
+        }
+        for index in 0..<12 {
+            page.addAnnotation(PortalPDFImageAnnotation(
+                image: image,
+                bounds: CGRect(x: CGFloat(30 + index * 12), y: 360, width: 54, height: 54)
+            ))
+        }
+
+        var edits = PortalPDFPageEditDocument.capture(from: pdfDocument)
+        let initialPage = try #require(edits.page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: initialPage)
+        let initialGeneration = overlay.pageEditRenderGeneration
+
+        let appendedInk = addInk(to: page, index: 181)
+        let didAppend = edits.append(
+            annotation: appendedInk,
+            at: page.annotations.count - 1,
+            to: 0
+        )
+        #expect(didAppend)
+        let updatedPage = try #require(edits.page(at: 0))
+        overlay.updatePageEditData(updatedPage)
+
+        #expect(overlay.pageEditRenderGeneration == initialGeneration)
+        #expect(overlay.renderedInkStrokeCount == 181)
+        #expect(overlay.renderedImageCount == 12)
+        #expect(overlay.completedStrokeLayersUseBoundedRasterCache)
+    }
+
+    @Test func overlayBoundsChangesTransformContainersWithoutRebuildingObjects() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        for index in 0..<120 {
+            addInk(to: page, index: index)
+        }
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+        let initialGeneration = overlay.pageEditRenderGeneration
+
+        for scale in [1.1, 1.4, 0.9, 1.8, 1.0] {
+            overlay.frame.size = CGSize(width: 612 * scale, height: 792 * scale)
+            overlay.setNeedsLayout()
+            overlay.layoutIfNeeded()
+        }
+
+        #expect(overlay.pageEditRenderGeneration == initialGeneration)
+        #expect(overlay.renderedInkStrokeCount == 120)
+    }
+
+    @discardableResult
+    private func addInk(to page: PDFPage, index: Int) -> PDFAnnotation {
+        let y = CGFloat(30 + (index % 300))
+        let annotation = PDFAnnotation(
+            bounds: CGRect(x: 20, y: y, width: 180, height: 16),
+            forType: .ink,
+            withProperties: nil
+        )
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: 2, y: 3))
+        path.addLine(to: CGPoint(x: 176, y: 12))
+        annotation.add(path)
+        let border = PDFBorder()
+        border.lineWidth = 2
+        annotation.border = border
+        page.addAnnotation(annotation)
+        return annotation
     }
 
     private func makeOnePagePDFData() -> Data {

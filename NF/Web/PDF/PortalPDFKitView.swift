@@ -1006,6 +1006,29 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     private var imagePixelSizes: [CGSize] = []
     private var imageSelectionLayers: [CAShapeLayer] = []
     private var configuredBoundsSize = CGSize.zero
+    private var basePageToOverlayTransform: CGAffineTransform?
+    private var renderGeneration = 0
+    private struct CachedImage {
+        let data: Data
+        let cgImage: CGImage
+    }
+    private var decodedImages: [UUID: CachedImage] = [:]
+    /// FileManager의 DrawingView처럼 확대 중에는 이 컨테이너 하나만 transform 합니다.
+    private lazy var pageContentLayer: CALayer = {
+        let contentLayer = CALayer()
+        contentLayer.anchorPoint = .zero
+        contentLayer.position = .zero
+        layer.addSublayer(contentLayer)
+        return contentLayer
+    }()
+    /// 선택 UI는 본문과 분리해 객체 변경 없이 독립적으로 갱신합니다.
+    private lazy var interactionLayer: CALayer = {
+        let interactionLayer = CALayer()
+        interactionLayer.anchorPoint = .zero
+        interactionLayer.position = .zero
+        layer.addSublayer(interactionLayer)
+        return interactionLayer
+    }()
 
     var renderedInkStrokeCount: Int {
         strokes.count
@@ -1031,6 +1054,18 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         objectLayers.count
     }
 
+    var pageEditRenderGeneration: Int {
+        renderGeneration
+    }
+
+    var completedStrokeLayersUseBoundedRasterCache: Bool {
+        !inkLayers.isEmpty && inkLayers.allSatisfy {
+            $0.shouldRasterize
+                && $0.frame.width < bounds.width
+                && $0.frame.height < bounds.height
+        }
+    }
+
     func configure(
         page: PDFPage,
         pdfView: PDFView,
@@ -1043,6 +1078,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     }
 
     func updatePageEditData(_ pageEditData: PortalPDFPageEditDocument.Page?) {
+        if let previousPage = self.pageEditData,
+           let pageEditData,
+           canAppendOnly(previousPage: previousPage, updatedPage: pageEditData) {
+            self.pageEditData = pageEditData
+            appendLastPageEditObject(from: pageEditData)
+            return
+        }
         self.pageEditData = pageEditData
         reloadInkPaths()
     }
@@ -1050,7 +1092,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.size != configuredBoundsSize else { return }
-        reloadInkPaths()
+        configuredBoundsSize = bounds.size
+        updateViewportTransform()
     }
 
     func reloadInkPaths() {
@@ -1060,12 +1103,18 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
               let pdfView else { return }
         configuredBoundsSize = bounds.size
         let pageToOverlay = pageToOverlayTransform(page: page, pdfView: pdfView)
+        basePageToOverlayTransform = pageToOverlay
         let pageUnitScale = max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b))
         var updatedStrokes: [Stroke] = []
 
-        imageLayers.forEach { $0.removeFromSuperlayer() }
-        imageSelectionLayers.forEach { $0.removeFromSuperlayer() }
-        objectLayers.forEach { $0.removeFromSuperlayer() }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        configureRenderContainer(pageContentLayer)
+        configureRenderContainer(interactionLayer)
+        pageContentLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        interactionLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        CATransaction.commit()
+
         imageLayers = []
         imagePixelSizes = []
         imageSelectionLayers = []
@@ -1093,8 +1142,93 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         }
 
         strokes = updatedStrokes
-        inkLayers.forEach { $0.removeFromSuperlayer() }
         inkLayers = updatedStrokes.map { makeStrokeLayer($0) }
+        let validImageIDs = Set(pageEditData?.objects.compactMap { $0.kind == .image ? $0.id : nil } ?? [])
+        decodedImages = decodedImages.filter { validImageIDs.contains($0.key) }
+        renderGeneration += 1
+    }
+
+    private func configureRenderContainer(_ container: CALayer) {
+        container.anchorPoint = .zero
+        container.position = .zero
+        container.bounds = CGRect(origin: .zero, size: bounds.size)
+        container.setAffineTransform(.identity)
+    }
+
+    /// Pinch 중에는 기존 필기·이미지 레이어를 다시 만들지 않고 FileManager처럼 행렬만 바꿉니다.
+    private func updateViewportTransform() {
+        guard let page,
+              let pdfView,
+              let baseTransform = basePageToOverlayTransform,
+              abs(baseTransform.a * baseTransform.d - baseTransform.b * baseTransform.c) > 0.000_001 else {
+            return
+        }
+        let currentTransform = pageToOverlayTransform(page: page, pdfView: pdfView)
+        let delta = baseTransform.inverted().concatenating(currentTransform)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pageContentLayer.setAffineTransform(delta)
+        interactionLayer.setAffineTransform(delta)
+        CATransaction.commit()
+    }
+
+    private func canAppendOnly(
+        previousPage: PortalPDFPageEditDocument.Page,
+        updatedPage: PortalPDFPageEditDocument.Page
+    ) -> Bool {
+        let previousObjects = previousPage.objects.sorted { $0.displayIndex < $1.displayIndex }
+        let updatedObjects = updatedPage.objects.sorted { $0.displayIndex < $1.displayIndex }
+        guard updatedObjects.count == previousObjects.count + 1,
+              updatedObjects.last?.kind == .ink || updatedObjects.last?.kind == .pressureInk else {
+            return false
+        }
+        return zip(previousObjects, updatedObjects).allSatisfy { $0.id == $1.id }
+    }
+
+    private func appendLastPageEditObject(from page: PortalPDFPageEditDocument.Page) {
+        guard let object = page.objects.max(by: { $0.displayIndex < $1.displayIndex }),
+              let pageToOverlay = basePageToOverlayTransform else {
+            reloadInkPaths()
+            return
+        }
+        let pageUnitScale = max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b))
+        var appendedStrokes: [Stroke] = []
+        renderPageEditObjects(
+            [object],
+            pageToOverlay: pageToOverlay,
+            pageUnitScale: pageUnitScale,
+            updatedStrokes: &appendedStrokes
+        )
+        strokes.append(contentsOf: appendedStrokes)
+        inkLayers.append(contentsOf: appendedStrokes.map(makeStrokeLayer))
+        refreshInteractionSelection()
+    }
+
+    func refreshInteractionSelection() {
+        guard let page,
+              let pageToOverlay = basePageToOverlayTransform else { return }
+        interactionLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
+        imageSelectionLayers = []
+        renderInteractionSelection(
+            from: page,
+            pageToOverlay: pageToOverlay,
+            pageUnitScale: max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b))
+        )
+    }
+
+    /// FileManager의 `setLineLayersUpdateScale`처럼 확대가 끝난 뒤에만 완료 획 캐시 해상도를 갱신합니다.
+    func refreshCompletedStrokeRasterizationScale() {
+        guard let page,
+              let pdfView,
+              let baseTransform = basePageToOverlayTransform else { return }
+        let currentTransform = pageToOverlayTransform(page: page, pdfView: pdfView)
+        let baseScale = max(0.0001, hypot(baseTransform.a, baseTransform.b))
+        let currentScale = max(0.0001, hypot(currentTransform.a, currentTransform.b))
+        let rasterizationScale = min(12, traitCollection.displayScale * currentScale / baseScale)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        inkLayers.forEach { $0.rasterizationScale = rasterizationScale }
+        CATransaction.commit()
     }
 
     /// 이전 PDF 내부 Annotation은 최초 마이그레이션 시에만 오버레이 데이터 원본으로 사용합니다.
@@ -1117,7 +1251,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 cgImage: cgImage,
                 pageToOverlay: pageToOverlay
             )
-            layer.addSublayer(imageLayer)
+            pageContentLayer.addSublayer(imageLayer)
             imageLayers.append(imageLayer)
             imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
 
@@ -1126,7 +1260,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     annotation: imageAnnotation,
                     pageToOverlay: pageToOverlay
                 )
-                selectionLayers.forEach { layer.addSublayer($0) }
+                selectionLayers.forEach { interactionLayer.addSublayer($0) }
                 imageSelectionLayers.append(contentsOf: selectionLayers)
             }
         }
@@ -1186,10 +1320,19 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     private func makeStrokeLayer(_ stroke: Stroke) -> CAShapeLayer {
             let shapeLayer = CAShapeLayer()
-            shapeLayer.frame = bounds
-            shapeLayer.path = stroke.path
+            let drawingBounds = stroke.drawingBounds.standardized.integral
+            shapeLayer.frame = drawingBounds
+            var localTransform = CGAffineTransform(
+                translationX: -drawingBounds.minX,
+                y: -drawingBounds.minY
+            )
+            shapeLayer.path = stroke.path.copy(using: &localTransform)
             shapeLayer.contentsScale = traitCollection.displayScale
             shapeLayer.allowsEdgeAntialiasing = true
+            // 완료 획은 작은 획 영역 단위로 비트맵 캐시되어 이후 확대·펜 입력에서
+            // 기존 벡터 경로를 반복 합성하지 않습니다.
+            shapeLayer.shouldRasterize = true
+            shapeLayer.rasterizationScale = traitCollection.displayScale
             switch stroke.rendering {
             case .stroke(let lineWidth, let lineCap, let lineJoin):
                 shapeLayer.fillColor = UIColor.clear.cgColor
@@ -1212,7 +1355,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 shapeLayer.fillRule = .nonZero
                 shapeLayer.strokeColor = UIColor.clear.cgColor
             }
-            layer.addSublayer(shapeLayer)
+            pageContentLayer.addSublayer(shapeLayer)
             return shapeLayer
     }
 
@@ -1228,7 +1371,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     annotation: image,
                     pageToOverlay: pageToOverlay
                 )
-                layers.forEach { layer.addSublayer($0) }
+                layers.forEach { interactionLayer.addSublayer($0) }
                 imageSelectionLayers.append(contentsOf: layers)
                 continue
             }
@@ -1259,7 +1402,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             outlineLayer.strokeColor = UIColor.systemBlue.cgColor
             outlineLayer.lineWidth = max(0.75, pageUnitScale)
             outlineLayer.lineDashPattern = [4, 3]
-            layer.addSublayer(outlineLayer)
+            interactionLayer.addSublayer(outlineLayer)
             imageSelectionLayers.append(outlineLayer)
         }
     }
@@ -1316,14 +1459,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 }
             case .image:
                 guard let metadata = object.image,
-                      let image = UIImage(data: metadata.imageData),
-                      let cgImage = image.cgImage else { continue }
+                      let cgImage = decodedImage(for: object.id, metadata: metadata) else { continue }
                 let imageLayer = makeImageLayer(
                     metadata: metadata,
                     cgImage: cgImage,
                     pageToOverlay: pageToOverlay
                 )
-                layer.addSublayer(imageLayer)
+                pageContentLayer.addSublayer(imageLayer)
                 imageLayers.append(imageLayer)
                 imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
             case .shape:
@@ -1344,7 +1486,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 var transform = pageToOverlay
                 guard let overlayPath = shapePath.cgPath.copy(using: &transform) else { continue }
                 let shapeLayer = CAShapeLayer()
-                shapeLayer.frame = bounds
+                shapeLayer.frame = pageContentLayer.bounds
                 shapeLayer.path = overlayPath
                 shapeLayer.fillColor = fillColor.cgColor
                 shapeLayer.strokeColor = lineColor.cgColor
@@ -1352,15 +1494,28 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 shapeLayer.lineCap = .round
                 shapeLayer.lineJoin = .round
                 shapeLayer.contentsScale = traitCollection.displayScale
-                layer.addSublayer(shapeLayer)
+                pageContentLayer.addSublayer(shapeLayer)
                 objectLayers.append(shapeLayer)
             case .text:
                 guard let metadata = object.text else { continue }
                 let textLayer = makeTextLayer(metadata: metadata, pageToOverlay: pageToOverlay)
-                layer.addSublayer(textLayer)
+                pageContentLayer.addSublayer(textLayer)
                 objectLayers.append(textLayer)
             }
         }
+    }
+
+    /// 같은 이미지 객체는 최초 한 번만 디코딩하고 확대·필기 갱신에서는 CGImage를 재사용합니다.
+    private func decodedImage(
+        for objectID: UUID,
+        metadata: PortalPDFImageAnnotation.Metadata
+    ) -> CGImage? {
+        if let cached = decodedImages[objectID], cached.data == metadata.imageData {
+            return cached.cgImage
+        }
+        guard let image = UIImage(data: metadata.imageData), let cgImage = image.cgImage else { return nil }
+        decodedImages[objectID] = CachedImage(data: metadata.imageData, cgImage: cgImage)
+        return cgImage
     }
 
     private func makeImageLayer(
@@ -1647,7 +1802,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     private func shapeLayer(path: CGPath) -> CAShapeLayer {
         let shapeLayer = CAShapeLayer()
-        shapeLayer.frame = bounds
+        shapeLayer.frame = interactionLayer.bounds
         shapeLayer.path = path
         shapeLayer.contentsScale = traitCollection.displayScale
         shapeLayer.allowsEdgeAntialiasing = true
@@ -1891,6 +2046,8 @@ extension PortalPDFKitView {
         var pageEditDocument = PortalPDFPageEditDocument()
         /// 현재 편집 문서를 저장할 안정적인 문서 식별자입니다.
         var pageEditPersistenceIdentifier: String?
+        /// 연속 필기 중 매 획마다 이미지 데이터까지 직렬화하지 않도록 마지막 변경 뒤 저장을 합칩니다.
+        var pageEditSaveWorkItem: DispatchWorkItem?
         /// 동일 PDFDocument에 편집 데이터를 중복 복원하지 않기 위한 식별자입니다.
         var pageEditPersistenceDocumentID: ObjectIdentifier?
         let pageEditRepository = PortalPDFPageEditRepository()
@@ -2124,6 +2281,7 @@ extension PortalPDFKitView {
             eraserProcessingWorkItem?.cancel()
             neonClearWorkItem?.cancel()
             activePenOverlayDisplayLink?.invalidate()
+            pageEditSaveWorkItem?.cancel()
             if let viewportLifecycleObserver {
                 NotificationCenter.default.removeObserver(viewportLifecycleObserver)
             }
@@ -2214,17 +2372,54 @@ extension PortalPDFKitView {
             PortalPDFPageEditDocument.suppressManagedAnnotations(in: document)
         }
 
-        /// 제스처 호환 프록시의 현재 상태를 페이지 편집 정본에 반영하고 원자적으로 저장합니다.
+        /// 메모리의 편집 정본을 원자적으로 저장합니다. 연속 입력은 마지막 변경 한 번으로 합칩니다.
         func persistPageEditDocument() {
-            guard let document = pdfView?.document,
-                  let identifier = pageEditPersistenceIdentifier else { return }
-            pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
-            PortalPDFPageEditDocument.suppressManagedAnnotations(in: document)
+            pageEditSaveWorkItem?.cancel()
+            pageEditSaveWorkItem = nil
+            guard let identifier = pageEditPersistenceIdentifier else { return }
             do {
                 try pageEditRepository.save(pageEditDocument, identifier: identifier)
             } catch {
                 NSLog("PortalPDF page edit save error: %@", error.localizedDescription)
             }
+        }
+
+        func schedulePageEditPersistence() {
+            pageEditSaveWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.persistPageEditDocument()
+            }
+            pageEditSaveWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
+        }
+
+        /// 변경된 페이지의 호환 프록시만 정본에 반영해 다른 페이지와 이미지 데이터 순회를 피합니다.
+        func updatePageEditDocument(on page: PDFPage) -> PortalPDFPageEditDocument.Page? {
+            guard let document = pdfView?.document else { return nil }
+            let pageIndex = document.index(for: page)
+            guard pageIndex != NSNotFound else { return nil }
+            pageEditDocument.updatePage(at: pageIndex, from: document)
+            PortalPDFPageEditDocument.suppressManagedAnnotations(on: page)
+            return pageEditDocument.page(at: pageIndex)
+        }
+
+        /// 새 펜 획 하나는 페이지 전체 재캡처 없이 정본과 화면 레이어 끝에 바로 추가합니다.
+        func appendPageEditAnnotation(_ annotation: PDFAnnotation, on page: PDFPage) -> Bool {
+            guard let document = pdfView?.document,
+                  annotation.page === page else { return false }
+            let pageIndex = document.index(for: page)
+            guard pageIndex != NSNotFound,
+                  let displayIndex = page.annotations.firstIndex(where: { $0 === annotation }),
+                  pageEditDocument.append(
+                      annotation: annotation,
+                      at: displayIndex,
+                      to: pageIndex
+                  ) else { return false }
+            PortalPDFPageEditDocument.suppressManagedAnnotations(on: page)
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.updatePageEditData(
+                pageEditDocument.page(at: pageIndex)
+            )
+            return true
         }
 
         /// 필기 추가·지우기·Undo 뒤 새 Annotation을 숨기고 표시 중인 페이지 타일만 갱신합니다.
@@ -2243,13 +2438,8 @@ extension PortalPDFKitView {
 
         /// 이동·회전·크기 변경 중인 한 페이지의 이미지 오버레이만 즉시 갱신합니다.
         func refreshPersistentAnnotationOverlay(on page: PDFPage) {
-            if let document = pdfView?.document {
-                pageEditDocument = PortalPDFPageEditDocument.capture(from: document)
-            }
-            PortalPDFInkDisplaySuppression.suppress(on: page)
-            let pageIndex = pdfView?.document?.index(for: page) ?? NSNotFound
             (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.updatePageEditData(
-                pageIndex == NSNotFound ? nil : pageEditDocument.page(at: pageIndex)
+                updatePageEditDocument(on: page)
             )
         }
 
@@ -2530,6 +2720,7 @@ extension PortalPDFKitView {
                     self?.persistViewportImmediately()
                     self?.didPersistViewportForBackgroundTransition = true
                     self?.finishTextEditing()
+                    self?.persistPageEditDocument()
                     // 복귀 시 동일 문서라는 이유로 복원을 건너뛰지 않도록 복원 캐시를 비웁니다.
                     self?.restoredViewportDocumentID = nil
                     self?.restoredViewportIdentifier = nil
@@ -2574,6 +2765,15 @@ extension PortalPDFKitView {
                 // 올가미는 PDF Page 좌표를 화면 좌표로 직접 변환해 그리므로 확대 중 매 프레임
                 // 경로와 조작점 위치를 다시 계산해야 선택 영역과 함께 정확히 확대·축소됩니다.
                 refreshLassoEditingScaleIfNeeded()
+                if recognizer.state == .ended
+                    || recognizer.state == .cancelled
+                    || recognizer.state == .failed {
+                    // 확대 프레임에서는 레이어 계층만 변환하고, FileManager처럼 손을 뗀 뒤에만
+                    // 완료 획의 비트맵 캐시 해상도를 현재 배율에 맞춥니다.
+                    pageOverlayViews.values
+                        .compactMap { $0 as? PortalPDFInkOverlayView }
+                        .forEach { $0.refreshCompletedStrokeRasterizationScale() }
+                }
             }
             guard !isRestoringViewport,
                   recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed else {
@@ -3437,10 +3637,32 @@ extension PortalPDFKitView {
             }
         }
 
-        /// 기존 변경 호출부를 유지하면서 자동 저장과 편집 히스토리를 함께 확정합니다.
-        func onDocumentChanged() {
-            persistPageEditDocument()
-            refreshPersistentInkOverlays()
+        /// 변경 페이지가 주어지면 해당 페이지만 캡처·렌더하고 자동 저장과 히스토리를 확정합니다.
+        func onDocumentChanged(
+            changedPages: [PDFPage] = [],
+            appendedAnnotation: PDFAnnotation? = nil
+        ) {
+            let usedAppendFastPath: Bool
+            if let appendedAnnotation,
+               changedPages.count == 1,
+               let page = changedPages.first {
+                usedAppendFastPath = appendPageEditAnnotation(appendedAnnotation, on: page)
+            } else {
+                usedAppendFastPath = false
+            }
+            if usedAppendFastPath {
+                // 정본과 해당 페이지 Overlay가 이미 증분 갱신됐습니다.
+            } else if changedPages.isEmpty {
+                refreshPersistentInkOverlays()
+            } else {
+                var visited: Set<ObjectIdentifier> = []
+                changedPages.forEach { page in
+                    let identifier = ObjectIdentifier(page)
+                    guard visited.insert(identifier).inserted else { return }
+                    refreshPersistentAnnotationOverlay(on: page)
+                }
+            }
+            schedulePageEditPersistence()
             guard !isApplyingHistory else {
                 documentChangedHandler()
                 return
@@ -3452,7 +3674,12 @@ extension PortalPDFKitView {
                 if undoHistorySnapshots.count > historyLimit {
                     undoHistorySnapshots.removeFirst(undoHistorySnapshots.count - historyLimit)
                 }
-                currentHistorySnapshot = makeHistorySnapshot(for: document)
+                currentHistorySnapshot = makeHistorySnapshot(
+                    for: document,
+                    updating: changedPages,
+                    basedOn: previousSnapshot,
+                    appendedAnnotation: usedAppendFastPath ? appendedAnnotation : nil
+                )
                 redoHistorySnapshots.removeAll(keepingCapacity: true)
                 reportHistoryAvailability()
             }
@@ -3647,6 +3874,40 @@ extension PortalPDFKitView {
             return AnnotationHistorySnapshot(
                 documentID: ObjectIdentifier(document),
                 pageAnnotations: pages
+            )
+        }
+
+        /// 페이지 구조가 그대로인 일반 편집은 변경된 페이지의 히스토리만 교체합니다.
+        /// 이미지가 많은 다른 페이지까지 매 획마다 복제하지 않아 펜 종료 지연을 줄입니다.
+        func makeHistorySnapshot(
+            for document: PDFDocument,
+            updating changedPages: [PDFPage],
+            basedOn previousSnapshot: AnnotationHistorySnapshot,
+            appendedAnnotation: PDFAnnotation? = nil
+        ) -> AnnotationHistorySnapshot {
+            guard !changedPages.isEmpty,
+                  previousSnapshot.documentID == ObjectIdentifier(document),
+                  previousSnapshot.pageAnnotations.count == document.pageCount else {
+                return makeHistorySnapshot(for: document)
+            }
+            var pageAnnotations = previousSnapshot.pageAnnotations
+            var visited: Set<Int> = []
+            for page in changedPages {
+                let pageIndex = document.index(for: page)
+                guard pageIndex != NSNotFound,
+                      pageAnnotations.indices.contains(pageIndex),
+                      visited.insert(pageIndex).inserted else { continue }
+                if let appendedAnnotation,
+                   appendedAnnotation.page === page,
+                   page.annotations.last === appendedAnnotation {
+                    pageAnnotations[pageIndex].append(historyRecord(for: appendedAnnotation))
+                } else {
+                    pageAnnotations[pageIndex] = page.annotations.map(historyRecord(for:))
+                }
+            }
+            return AnnotationHistorySnapshot(
+                documentID: ObjectIdentifier(document),
+                pageAnnotations: pageAnnotations
             )
         }
 
@@ -6085,6 +6346,7 @@ extension PortalPDFKitView {
                 appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
                 let pointCountBeforeDot = activePenPagePoints.count
                 ensureVisibleDotIfNeeded(pagePath: pagePath)
+                var completedAnnotation: PDFAnnotation?
                 if selectedTool == .neon {
                     flushActivePenOverlayRefresh()
                     addTransientNeonStroke(to: page)
@@ -6095,16 +6357,22 @@ extension PortalPDFKitView {
                         activePenPressures.append(activePenPressures.last ?? 0.5)
                     }
                     flushActivePenOverlayRefresh()
-                    addPressureInkAnnotations(to: page)
+                    completedAnnotation = addPressureInkAnnotations(to: page)
                 } else {
                     flushActivePenOverlayRefresh()
-                    addInkAnnotation(path: pagePath, to: page)
+                    completedAnnotation = addInkAnnotation(path: pagePath, to: page)
                 }
-                resetActiveDrawing()
                 if selectedTool == .neon {
+                    resetActiveDrawing()
                     scheduleTransientNeonClear()
                 } else {
-                    onDocumentChanged()
+                    // 완료 획을 ID 기반 영구 레이어로 먼저 추가한 뒤 실시간 레이어를 제거해
+                    // 이미지와 기존 필기 수에 관계없이 화면 전환이 끊기지 않게 합니다.
+                    onDocumentChanged(
+                        changedPages: [page],
+                        appendedAnnotation: completedAnnotation
+                    )
+                    resetActiveDrawing()
                 }
                 performPendingPencilDoubleTapIfNeeded()
             case .cancelled, .failed:
@@ -7030,8 +7298,7 @@ extension PortalPDFKitView {
             guard didMutate else { return }
             activeEraserDidMutate = true
             pageOrder.compactMap { pages[$0] }.forEach { page in
-                PortalPDFInkDisplaySuppression.suppress(on: page)
-                (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.reloadInkPaths()
+                refreshPersistentAnnotationOverlay(on: page)
             }
             refreshPDFViewDuringEraser(in: pdfView, dirtyViewRects: dirtyViewRects)
         }
@@ -7641,11 +7908,9 @@ extension PortalPDFKitView {
                 overlayLayer.shadowOpacity = 0
                 overlayLayer.shadowRadius = 0
             }
-            // 최종 저장과 같은 보정 경로를 실시간으로 표시하되 계산은 DisplayLink에서
-            // 화면 프레임당 한 번으로 제한해 높은 완화 강도에서도 입력 큐가 쌓이지 않게 합니다.
-            overlayLayer.path = activePenOverlayPath.smoothedForPDFInk(
-                strokeSmoothingStrength: selectedTool == .pen ? penStrokeSmoothingStrength : 0
-            ).cgPath
+            // FileManager처럼 입력 중에는 누적 경로를 그대로 표시합니다. 전체 경로 스무딩은
+            // 획 종료 시 한 번만 수행해 긴 획에서 프레임마다 O(n) 재계산하지 않습니다.
+            overlayLayer.path = activePenOverlayPath.cgPath
             CATransaction.commit()
         }
 
@@ -7656,13 +7921,26 @@ extension PortalPDFKitView {
                   activePenViewPoints.count == activePenPressures.count else { return }
 
             let overlayLayer = activePressureOverlayLayer ?? makePressurePenOverlayLayer()
-            // 압력선도 저장과 같은 좌표 보정을 사용해 펜을 놓는 순간 끝부분이 사라지지 않게 합니다.
-            let stabilizedViewPoints = activePenViewPoints.terminalFlickStabilized(
+            // 긴 압력선도 화면 표시 샘플 수를 제한해 프레임 계산량을 일정하게 유지합니다.
+            // 원본 전 좌표는 그대로 보관하며 획 종료 시 한 번만 전체 정밀 경로로 저장합니다.
+            let displaySampleLimit = 240
+            let sampleIndices: [Int]
+            if activePenViewPoints.count <= displaySampleLimit {
+                sampleIndices = Array(activePenViewPoints.indices)
+            } else {
+                let step = Double(activePenViewPoints.count - 1) / Double(displaySampleLimit - 1)
+                sampleIndices = (0..<displaySampleLimit).map { index in
+                    min(activePenViewPoints.count - 1, Int((Double(index) * step).rounded()))
+                }
+            }
+            let displayPoints = sampleIndices.map { activePenViewPoints[$0] }
+            let displayPressures = sampleIndices.map { activePenPressures[$0] }
+            let stabilizedViewPoints = displayPoints.terminalFlickStabilized(
                 strength: penStrokeSmoothingStrength
             )
             let path = PortalPDFPressureInkAnnotation.makeStrokePath(
                 points: stabilizedViewPoints,
-                pressures: activePenPressures,
+                pressures: displayPressures,
                 baseLineWidth: penLineWidth * currentPDFScaleFactor
             )
 
@@ -7884,7 +8162,7 @@ extension PortalPDFKitView {
         }
 
         /// 압력값 변화가 반영된 자유선을 하나의 연속 Annotation으로 저장합니다.
-        func addPressureInkAnnotations(to page: PDFPage) {
+        func addPressureInkAnnotations(to page: PDFPage) -> PDFAnnotation? {
             let stabilizedViewPoints = activePenViewPoints.terminalFlickStabilized(
                 strength: penStrokeSmoothingStrength
             )
@@ -7899,7 +8177,7 @@ extension PortalPDFKitView {
                     points: stabilizedViewPoints,
                     pressures: activePenPressures,
                     baseLineWidth: penLineWidth * currentPDFScaleFactor
-                  ) else { return }
+                  ) else { return nil }
             // 실시간 Overlay에 표시한 최종 외곽선을 그대로 Page 좌표로 옮겨 저장합니다.
             // 종료 시 좌표를 단순화해 다시 그리지 않으므로 Pencil을 떼는 순간 획이 튀거나
             // 작은 곡선이 각진 선으로 바뀌지 않습니다.
@@ -7914,7 +8192,7 @@ extension PortalPDFKitView {
             )
             page.addAnnotation(annotation)
             PortalPDFInkDisplaySuppression.suppress(on: page)
-            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.reloadInkPaths()
+            return annotation
         }
 
         /// PDFView 좌표를 현재 Page 좌표로 변환하는 Affine Transform을 계산합니다.
@@ -7945,7 +8223,7 @@ extension PortalPDFKitView {
             to page: PDFPage,
             lineWidth: CGFloat? = nil,
             isPathSmoothed: Bool = false
-        ) {
+        ) -> PDFAnnotation? {
             let smoothedPath = isPathSmoothed
                 ? path
                 : path.smoothedForPDFInk(
@@ -7955,7 +8233,7 @@ extension PortalPDFKitView {
             smoothedPath.lineCapStyle = lineCapStyle
             smoothedPath.lineJoinStyle = .round
             let annotationBounds = smoothedPath.bounds.insetBy(dx: -10, dy: -10)
-            guard annotationBounds.width > 1 || annotationBounds.height > 1 else { return }
+            guard annotationBounds.width > 1 || annotationBounds.height > 1 else { return nil }
             let localPath = smoothedPath.translatedBy(dx: -annotationBounds.minX, dy: -annotationBounds.minY)
             localPath.lineCapStyle = lineCapStyle
             localPath.lineJoinStyle = .round
@@ -7971,7 +8249,7 @@ extension PortalPDFKitView {
             // 화면에서는 PDFKit Annotation 레이어를 만들지 않고 현재 페이지 타일만 갱신합니다.
             // 저장 시 최대 128개 경로 단위로 합치므로 긴 필기 세션의 파일 객체 수도 제한됩니다.
             PortalPDFInkDisplaySuppression.suppress(on: page)
-            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.reloadInkPaths()
+            return annotation
         }
 
         /**

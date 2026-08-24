@@ -37,8 +37,10 @@ PDFKit, PencilKit, PhotosUI처럼 시스템 UIKit 컨트롤이 필요한 부분�
 ## PDF 페이지 편집 저장 방식
 
 - 원본 PDF는 페이지 배경과 일반 PDF 데이터만 보관합니다.
-- 펜·압력 필기·이미지·도형·텍스트는 문서 ID별 버전형 `Codable` JSON 파일인 `.nfedit`에 페이지 좌표와 객체 순서 그대로 원자 저장합니다.
+- 펜·압력 필기·이미지·도형·텍스트는 문서 ID별 버전형 `Codable` binary property list인 `.nfedit`에 페이지 좌표와 객체 순서 그대로 원자 저장합니다. 기존 JSON `.nfedit`도 읽은 뒤 다음 저장에서 자동 전환합니다.
 - `PortalPDFInkOverlayView`는 `.nfedit` 모델을 `CAShapeLayer`, `CALayer`, `CATextLayer`로 직접 그리며, 화면 표시를 위해 PDF Annotation으로 변환하지 않습니다.
+- PDF 페이지와 편집 레이어는 FileManager의 `DocumentView`/`DrawingView`처럼 같은 확대 계층에서 함께 변환됩니다. 확대 중 객체 레이어를 재생성하지 않으며, 완료된 펜 획은 작은 획 영역별 비트맵 캐시 레이어 하나만 안정 ID로 증분 추가하고 이미지는 디코딩 결과를 재사용합니다. 확대가 끝난 뒤에만 획 캐시 해상도를 갱신합니다.
+- 실시간 일반 펜은 누적 경로를 바로 표시하고 종료 시 한 번만 스무딩합니다. 압력 펜의 화면 표시 계산량은 최대 240개 샘플로 제한하되 저장 데이터는 전체 입력 좌표를 유지합니다.
 - 기존 선택·이동·크기 조절 제스처가 사용하는 Annotation은 표시·인쇄가 꺼진 임시 상호작용 프록시이며 저장 정본이 아닙니다.
 - 공유, 서버 저장, iCloud Drive 및 Google Drive 동기화 시에는 원본 PDF와 `.nfedit`를 합성한 일반 PDF를 만들어 다른 PDF 뷰어에서도 동일하게 보이게 합니다.
 - 문서 복제 시 `.nfedit`도 새 문서 ID로 복제하고, 영구 삭제·계정 데이터 삭제 시 함께 제거합니다.

@@ -158,6 +158,38 @@ struct PortalPDFPageEditDocument: Codable {
         pages.first { $0.pageIndex == index }
     }
 
+    /// 변경된 한 페이지만 다시 캡처해 문서 전체 Annotation 순회를 피합니다.
+    mutating func updatePage(at pageIndex: Int, from document: PDFDocument) {
+        guard let page = document.page(at: pageIndex) else { return }
+        let objects = page.annotations.enumerated().compactMap { displayIndex, annotation in
+            Self.object(from: annotation, displayIndex: displayIndex)
+        }
+        pages.removeAll { $0.pageIndex == pageIndex }
+        if !objects.isEmpty {
+            pages.append(Page(pageIndex: pageIndex, objects: objects))
+            pages.sort { $0.pageIndex < $1.pageIndex }
+        }
+        updatedAt = Date()
+    }
+
+    /// 새 펜 획처럼 페이지 끝에 추가되는 객체는 기존 페이지 객체를 다시 변환하지 않고 붙입니다.
+    @discardableResult
+    mutating func append(
+        annotation: PDFAnnotation,
+        at displayIndex: Int,
+        to pageIndex: Int
+    ) -> Bool {
+        guard let object = Self.object(from: annotation, displayIndex: displayIndex) else { return false }
+        if let index = pages.firstIndex(where: { $0.pageIndex == pageIndex }) {
+            pages[index].objects.append(object)
+        } else {
+            pages.append(Page(pageIndex: pageIndex, objects: [object]))
+            pages.sort { $0.pageIndex < $1.pageIndex }
+        }
+        updatedAt = Date()
+        return true
+    }
+
     /// 현재 메모리의 호환 Annotation 프록시를 페이지별 편집 모델로 캡처합니다.
     static func capture(from document: PDFDocument) -> PortalPDFPageEditDocument {
         var capturedPages: [Page] = []
@@ -193,10 +225,15 @@ struct PortalPDFPageEditDocument: Codable {
 
     static func suppressManagedAnnotations(in document: PDFDocument) {
         for pageIndex in 0..<document.pageCount {
-            document.page(at: pageIndex)?.annotations
-                .filter(isManagedAnnotation)
-                .forEach(suppressDisplay)
+            guard let page = document.page(at: pageIndex) else { continue }
+            suppressManagedAnnotations(on: page)
         }
+    }
+
+    static func suppressManagedAnnotations(on page: PDFPage) {
+        page.annotations
+            .filter(isManagedAnnotation)
+            .forEach(suppressDisplay)
     }
 
     static func isManagedAnnotation(_ annotation: PDFAnnotation) -> Bool {
@@ -411,8 +448,8 @@ private extension PDFAnnotation {
 final class PortalPDFPageEditRepository {
     private let fileManager: FileManager
     private let directoryURL: URL
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    private let encoder: PropertyListEncoder
+    private let decoder: PropertyListDecoder
 
     init(fileManager: FileManager = .default, directoryURL: URL? = nil) {
         self.fileManager = fileManager
@@ -422,13 +459,18 @@ final class PortalPDFPageEditRepository {
         ).first ?? fileManager.temporaryDirectory
         self.directoryURL = directoryURL
             ?? applicationSupportURL.appendingPathComponent("NF/PDFEdits", isDirectory: true)
-        encoder = JSONEncoder()
-        decoder = JSONDecoder()
+        encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        decoder = PropertyListDecoder()
     }
 
     func load(identifier: String) -> PortalPDFPageEditDocument? {
         guard let data = try? Data(contentsOf: fileURL(for: identifier)) else { return nil }
-        return try? decoder.decode(PortalPDFPageEditDocument.self, from: data)
+        if let document = try? decoder.decode(PortalPDFPageEditDocument.self, from: data) {
+            return document
+        }
+        // 초기 JSON `.nfedit` 파일은 한 번 읽어 다음 저장부터 binary plist로 전환합니다.
+        return try? JSONDecoder().decode(PortalPDFPageEditDocument.self, from: data)
     }
 
     func save(_ document: PortalPDFPageEditDocument, identifier: String) throws {
