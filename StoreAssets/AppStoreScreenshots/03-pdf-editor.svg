@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1290" height="2796" viewBox="0 0 1290 2796">
+  <defs><linearGradient id="bg3" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#171717"/><stop offset="1" stop-color="#10201f"/></linearGradient></defs>
+  <rect width="1290" height="2796" fill="url(#bg3)"/>
+  <text x="100" y="170" fill="#3BF6B8" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="700" letter-spacing="6">PDF WORKSPACE</text>
+  <text x="100" y="350" fill="#F0F0F0" font-size="84" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">문서를 열고, 표시하고,</text>
+  <text x="100" y="448" fill="#F0F0F0" font-size="84" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">바로 공유하세요</text>
+  <text x="100" y="540" fill="#A6A6A6" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif">PDF 보기와 펜·도형·이미지 편집을</text>
+  <text x="100" y="592" fill="#A6A6A6" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif">모바일에서도 하나의 흐름으로 제공합니다.</text>
+  <rect x="72" y="760" width="1146" height="1490" rx="34" fill="#090909" stroke="#3A3A3A" stroke-width="3"/>
+  <rect x="72" y="760" width="1146" height="108" rx="34" fill="#1E1E1E"/>
+  <text x="126" y="830" fill="#F0F0F0" font-size="31" font-family="Arial,Apple SD Gothic Neo,sans-serif">보고서_2026_01.pdf</text>
+  <text x="1082" y="830" fill="#3BF6B8" font-size="34" font-family="Arial,sans-serif">저장</text>
+  <rect x="172" y="930" width="946" height="1050" fill="#FAFAFA"/>
+  <rect x="230" y="1005" width="830" height="90" fill="#D7D7D7"/>
+  <text x="270" y="1065" fill="#555" font-size="28" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="700">NF 프로젝트 점검 보고서</text>
+  <line x1="240" y1="1160" x2="1050" y2="1160" stroke="#999" stroke-width="3"/>
+  <line x1="240" y1="1210" x2="1010" y2="1210" stroke="#CCC" stroke-width="3"/>
+  <line x1="240" y1="1260" x2="950" y2="1260" stroke="#CCC" stroke-width="3"/>
+  <rect x="260" y="1340" width="350" height="250" fill="#F0F0F0" stroke="#AAA" stroke-width="3"/>
+  <path d="M300 1510 C370 1380 470 1440 560 1385" fill="none" stroke="#3B82F6" stroke-width="8"/>
+  <circle cx="560" cy="1385" r="12" fill="#3B82F6"/>
+  <rect x="650" y="1340" width="350" height="250" fill="#F0F0F0" stroke="#AAA" stroke-width="3"/>
+  <path d="M685 1510 C740 1430 840 1460 950 1380" fill="none" stroke="#3BF6B8" stroke-width="8"/>
+  <rect x="320" y="1680" width="630" height="34" rx="17" fill="#F5C542" fill-opacity=".7" transform="rotate(-4 320 1680)"/>
+  <rect x="72" y="2100" width="1146" height="150" fill="#171717"/>
+  <circle cx="180" cy="2175" r="38" fill="#3BF6B8"/><text x="180" y="2188" text-anchor="middle" fill="#0F1717" font-size="42" font-family="Arial,sans-serif">✎</text>
+  <circle cx="340" cy="2175" r="38" fill="#292929"/><text x="340" y="2188" text-anchor="middle" fill="#FFF" font-size="42" font-family="Arial,sans-serif">□</text>
+  <circle cx="500" cy="2175" r="38" fill="#292929"/><text x="500" y="2188" text-anchor="middle" fill="#FFF" font-size="42" font-family="Arial,sans-serif">○</text>
+  <circle cx="660" cy="2175" r="38" fill="#292929"/><text x="660" y="2188" text-anchor="middle" fill="#FFF" font-size="42" font-family="Arial,sans-serif">↗</text>
+  <circle cx="820" cy="2175" r="38" fill="#292929"/><text x="820" y="2188" text-anchor="middle" fill="#FFF" font-size="42" font-family="Arial,sans-serif">▧</text>
+  <text x="645" y="2470" text-anchor="middle" fill="#F0F0F0" font-size="46" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">현장에서 바로 완성하는 문서</text>
+  <text x="645" y="2540" text-anchor="middle" fill="#3BF6B8" font-size="30" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="700">NF PDF WORKSPACE</text>
+</svg>

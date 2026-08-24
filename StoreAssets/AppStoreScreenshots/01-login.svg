@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1290" height="2796" viewBox="0 0 1290 2796">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#101b1d"/><stop offset="1" stop-color="#191919"/></linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#3BF6B8" stop-opacity=".25"/><stop offset="1" stop-color="#3B82F6" stop-opacity="0"/></linearGradient>
+  </defs>
+  <rect width="1290" height="2796" fill="url(#bg)"/>
+  <circle cx="1110" cy="240" r="420" fill="url(#glow)"/>
+  <text x="100" y="180" fill="#3BF6B8" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="700" letter-spacing="7">NF PROJECT OPERATIONS</text>
+  <text x="100" y="360" fill="#F0F0F0" font-size="84" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">프로젝트 운영을</text>
+  <text x="100" y="458" fill="#F0F0F0" font-size="84" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">한 곳에서 시작하세요</text>
+  <text x="100" y="550" fill="#A6A6A6" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif">Google 계정으로 안전하게 연결하고</text>
+  <text x="100" y="602" fill="#A6A6A6" font-size="34" font-family="Arial,Apple SD Gothic Neo,sans-serif">팀의 프로젝트와 산출물을 관리합니다.</text>
+  <rect x="74" y="790" width="1142" height="1370" rx="42" fill="#202020" stroke="#3B3B3B" stroke-width="3"/>
+  <rect x="115" y="832" width="1060" height="1286" rx="28" fill="#191919"/>
+  <circle cx="1085" cy="908" r="38" fill="#3BF6B8"/>
+  <path d="M1065 908h40M1085 888v40" stroke="#0D1717" stroke-width="8" stroke-linecap="round"/>
+  <text x="180" y="1030" fill="#999" font-size="24" font-family="Arial,sans-serif" font-weight="700" letter-spacing="5">NF PROJECT OPERATIONS</text>
+  <text x="180" y="1150" fill="#F0F0F0" font-size="66" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="800">NF Project Portal</text>
+  <text x="180" y="1260" fill="#A6A6A6" font-size="31" font-family="Arial,Apple SD Gothic Neo,sans-serif">Gmail 또는 Google Workspace 계정으로</text>
+  <text x="180" y="1312" fill="#A6A6A6" font-size="31" font-family="Arial,Apple SD Gothic Neo,sans-serif">안전하게 가입할 수 있습니다.</text>
+  <rect x="180" y="1465" width="930" height="116" rx="18" fill="#3B82F6"/>
+  <text x="645" y="1540" text-anchor="middle" fill="#FFF" font-size="35" font-family="Arial,Apple SD Gothic Neo,sans-serif" font-weight="700">Google 계정으로 로그인</text>
+  <line x1="180" y1="1745" x2="1110" y2="1745" stroke="#333" stroke-width="2"/>
+  <text x="180" y="1830" fill="#777" font-size="27" font-family="Arial,Apple SD Gothic Neo,sans-serif">계정별 데이터 분리 · 동의 기반 공유</text>
+  <text x="645" y="2450" text-anchor="middle" fill="#3BF6B8" font-size="30" font-family="Arial,sans-serif" font-weight="700" letter-spacing="4">NOTE·FREE</text>
+  <text x="645" y="2520" text-anchor="middle" fill="#777" font-size="28" font-family="Arial,Apple SD Gothic Neo,sans-serif">NF와 함께 더 선명한 운영을 시작하세요.</text>
+</svg>
