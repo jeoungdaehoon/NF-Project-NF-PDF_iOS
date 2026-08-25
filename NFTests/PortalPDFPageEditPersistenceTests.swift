@@ -59,6 +59,33 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(page.annotations.isEmpty)
     }
 
+    @Test func overlayPreservesInsertionOrderAcrossInkAndImageLayers() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        addInk(to: page, index: 0)
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { context in
+            UIColor.systemYellow.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
+        }
+        page.addAnnotation(PortalPDFImageAnnotation(
+            image: image,
+            bounds: CGRect(x: 24, y: 24, width: 120, height: 120)
+        ))
+        addInk(to: page, index: 1)
+
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        #expect(editPage.objects.map(\.kind) == [.ink, .image, .ink])
+
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+        overlay.layoutIfNeeded()
+
+        #expect(overlay.renderedContentLayerKindsInBackToFrontOrder == ["ink", "image", "ink"])
+    }
+
     @Test func pageEditsRoundTripOutsideThePDFAndRestoreInteractionProxies() throws {
         let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
         let page = try #require(pdfDocument.page(at: 0))

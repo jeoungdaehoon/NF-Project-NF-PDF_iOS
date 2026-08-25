@@ -1059,6 +1059,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let color: CGColor
         let rendering: Rendering
         let drawingBounds: CGRect
+        /// 펜·이미지·도형·텍스트가 함께 공유하는 입력 순서입니다.
+        let displayIndex: Int
     }
 
     /// FileManager의 LineLayer처럼 완료 획 벡터와 준비된 비트맵을 함께 보관합니다.
@@ -1161,6 +1163,26 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     var renderedPageEditObjectLayerCount: Int {
         objectLayers.count
+    }
+
+    /// 테스트에서 실제 Core Animation 스택이 편집 객체 입력 순서를 따르는지 확인합니다.
+    var renderedContentLayerKindsInBackToFrontOrder: [String] {
+        (pageContentLayer.sublayers ?? [])
+            .enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.zPosition == rhs.element.zPosition {
+                    return lhs.offset < rhs.offset
+                }
+                return lhs.element.zPosition < rhs.element.zPosition
+            }
+            .compactMap { _, layer in
+                if layer is RasterStrokeLayer { return "ink" }
+                guard let name = layer.name else { return nil }
+                if name.hasPrefix("nf.image.") { return "image" }
+                if name.hasPrefix("nf.shape.") { return "shape" }
+                if name.hasPrefix("nf.text.") { return "text" }
+                return nil
+            }
     }
 
     var pageEditRenderGeneration: Int {
@@ -1418,7 +1440,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         updatedStrokes: inout [Stroke]
     ) {
 
-        for annotation in page.annotations {
+        for (displayIndex, annotation) in page.annotations.enumerated() {
             guard PortalPDFInkDisplaySuppression.isSuppressed(annotation),
                   let imageAnnotation = annotation as? PortalPDFImageAnnotation,
                   let cgImage = imageAnnotation.image.cgImage,
@@ -1440,6 +1462,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     )
                 }
             }
+            imageLayer.zPosition = CGFloat(displayIndex)
             pageContentLayer.addSublayer(imageLayer)
             imageLayers.append(imageLayer)
             imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
@@ -1454,7 +1477,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             }
         }
 
-        for annotation in page.annotations where PortalPDFInkDisplaySuppression.isSuppressed(annotation) {
+        for (displayIndex, annotation) in page.annotations.enumerated()
+        where PortalPDFInkDisplaySuppression.isSuppressed(annotation) {
             if annotation.isPortalInkAnnotation {
                 let lineWidth = max(0.3, annotation.border?.lineWidth ?? 1) * pageUnitScale
                 for path in annotation.paths ?? [] {
@@ -1477,7 +1501,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                             lineCap: path.lineCapStyle,
                             lineJoin: path.lineJoinStyle
                         ),
-                        drawingBounds: drawingBounds
+                        drawingBounds: drawingBounds,
+                        displayIndex: displayIndex
                     ))
                 }
                 continue
@@ -1500,7 +1525,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     path: overlayPath,
                     color: color,
                     rendering: .fill,
-                    drawingBounds: overlayPath.boundingBoxOfPath
+                    drawingBounds: overlayPath.boundingBoxOfPath,
+                    displayIndex: displayIndex
                 ))
             }
         }
@@ -1520,6 +1546,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             let shapeLayer = RasterStrokeLayer(stroke: stroke, localPath: localPath)
             shapeLayer.frame = drawingBounds
             shapeLayer.path = localPath
+            shapeLayer.name = "nf.ink.\(stroke.displayIndex)"
+            shapeLayer.zPosition = CGFloat(stroke.displayIndex)
             shapeLayer.contentsScale = traitCollection.displayScale
             shapeLayer.allowsEdgeAntialiasing = true
             shapeLayer.actions = [
@@ -1712,7 +1740,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                         drawingBounds: overlayPath.boundingBoxOfPath.insetBy(
                             dx: -lineWidth,
                             dy: -lineWidth
-                        )
+                        ),
+                        displayIndex: object.displayIndex
                     ))
                 }
             case .pressureInk:
@@ -1732,7 +1761,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                         path: overlayPath,
                         color: color.cgColor,
                         rendering: .fill,
-                        drawingBounds: overlayPath.boundingBoxOfPath
+                        drawingBounds: overlayPath.boundingBoxOfPath,
+                        displayIndex: object.displayIndex
                     ))
                 }
             case .image:
@@ -1745,6 +1775,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     pageToOverlay: pageToOverlay
                 )
                 imageLayer.name = imageLayerName(object.id.uuidString)
+                imageLayer.zPosition = CGFloat(object.displayIndex)
                 pageContentLayer.addSublayer(imageLayer)
                 imageLayers.append(imageLayer)
                 imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
@@ -1774,11 +1805,15 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 shapeLayer.lineCap = .round
                 shapeLayer.lineJoin = .round
                 shapeLayer.contentsScale = traitCollection.displayScale
+                shapeLayer.name = "nf.shape.\(object.id.uuidString)"
+                shapeLayer.zPosition = CGFloat(object.displayIndex)
                 pageContentLayer.addSublayer(shapeLayer)
                 objectLayers.append(shapeLayer)
             case .text:
                 guard let metadata = object.text else { continue }
                 let textLayer = makeTextLayer(metadata: metadata, pageToOverlay: pageToOverlay)
+                textLayer.name = "nf.text.\(object.id.uuidString)"
+                textLayer.zPosition = CGFloat(object.displayIndex)
                 pageContentLayer.addSublayer(textLayer)
                 objectLayers.append(textLayer)
             }
