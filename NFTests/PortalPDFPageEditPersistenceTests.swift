@@ -165,6 +165,10 @@ struct PortalPDFPageEditPersistenceTests {
         page.addAnnotation(text)
 
         let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        // 실제 앱과 동일하게 `.nfedit` 오버레이가 그리는 객체의 PDFAnnotation 프록시는
+        // 모두 숨긴 상태에서도 올가미 선택 후보에 포함되어야 합니다.
+        PortalPDFPageEditDocument.suppressManagedAnnotations(on: page)
+        #expect(page.annotations.allSatisfy { !$0.shouldDisplay })
         let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
         pdfView.document = pdfDocument
         pdfView.layoutDocumentView()

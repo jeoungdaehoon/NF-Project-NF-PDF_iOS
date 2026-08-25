@@ -6583,8 +6583,10 @@ extension PortalPDFKitView {
             selectedLassoAnnotations = page.annotations.filter { annotation in
                 let annotationBounds = lassoSelectionBounds(for: annotation)
                 guard isHistoryEditableAnnotation(annotation),
-                      annotation.shouldDisplay || PortalPDFInkDisplaySuppression.isSuppressed(annotation),
                       lassoBounds.intersects(annotationBounds) else { return false }
+                // `.nfedit`가 정본일 때 상호작용용 프록시는 중복 렌더링 방지를 위해
+                // 펜·이미지·도형·텍스트 모두 shouldDisplay=false입니다. 실제 화면 객체는
+                // 오버레이가 그리므로 프록시의 표시 플래그로 올가미 선택을 제한하면 안 됩니다.
                 // FileManager `isLassoItem`과 동일하게 사용자가 그린 올가미의 전체 bounds와
                 // 교차하는 펜·이미지·텍스트·도형을 모두 그룹에 포함합니다.
                 return true
