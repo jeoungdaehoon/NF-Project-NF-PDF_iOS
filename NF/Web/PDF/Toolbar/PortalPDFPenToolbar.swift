@@ -306,7 +306,7 @@ extension PortalPDFPreviewView {
             if selectedTool == .pen {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
-                        Text("스트로크 완화")
+                        Text("라인 보정")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 4)
@@ -327,7 +327,7 @@ extension PortalPDFPreviewView {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel(
-                    "스트로크 끝 삐침 완화 \(Int((editingPenStrokeSmoothingStrength * 100).rounded()))퍼센트"
+                    "라인 보정 \(Int((editingPenStrokeSmoothingStrength * 100).rounded()))퍼센트"
                 )
             }
 

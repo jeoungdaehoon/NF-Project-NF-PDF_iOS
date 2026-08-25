@@ -6701,6 +6701,7 @@ extension PortalPDFKitView {
                 appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
                 if penType != .pressure {
                     finishFileManagerRoundedPenPath()
+                    applyLineCorrectionToFileManagerPathsIfNeeded()
                 }
                 let pointCountBeforeDot = activePenPagePoints.count
                 ensureVisibleDotIfNeeded(pagePath: pagePath)
@@ -7577,6 +7578,77 @@ extension PortalPDFKitView {
             )
         }
 
+        /// 라인 보정이 켜진 경우에만 원본 좌표를 보정해 FileManager cubic 경로로 다시 구성합니다.
+        func applyLineCorrectionToFileManagerPathsIfNeeded() {
+            guard penStrokeSmoothingStrength > 0,
+                  let activePenPath,
+                  let activePenOverlayPath else { return }
+
+            let correctedPagePoints = activePenPagePoints.terminalFlickStabilized(
+                strength: penStrokeSmoothingStrength
+            )
+            let correctedViewPoints = activePenViewPoints.terminalFlickStabilized(
+                strength: penStrokeSmoothingStrength
+            )
+            guard let correctedPagePath = makeFileManagerRoundedPath(points: correctedPagePoints),
+                  let correctedViewPath = makeFileManagerRoundedPath(points: correctedViewPoints) else {
+                return
+            }
+
+            activePenPath.removeAllPoints()
+            activePenPath.append(correctedPagePath)
+            activePenOverlayPath.removeAllPoints()
+            activePenOverlayPath.append(correctedViewPath)
+        }
+
+        /// FileManager의 3점 cubic 연결 규칙으로 좌표 배열을 하나의 경로로 변환합니다.
+        func makeFileManagerRoundedPath(points: [CGPoint]) -> UIBezierPath? {
+            guard let firstPoint = points.first else { return nil }
+            let path = makeRoundedPath(startPoint: firstPoint)
+            guard points.count > 1 else { return path }
+
+            var curvePoints = [CGPoint](repeating: .zero, count: 4)
+            curvePoints[0] = firstPoint
+            var curveIndex = 0
+            for point in points.dropFirst() {
+                curveIndex += 1
+                curvePoints[curveIndex] = point
+                guard curveIndex == 3 else { continue }
+
+                let midpoint = CGPoint(
+                    x: (curvePoints[1].x + curvePoints[3].x) / 2,
+                    y: (curvePoints[1].y + curvePoints[3].y) / 2
+                )
+                path.move(to: curvePoints[0])
+                path.addCurve(
+                    to: midpoint,
+                    controlPoint1: curvePoints[0],
+                    controlPoint2: curvePoints[1]
+                )
+                curvePoints[0] = midpoint
+                curvePoints[1] = curvePoints[3]
+                curveIndex = 1
+            }
+
+            if curveIndex == 1 {
+                curvePoints[2] = curvePoints[1]
+                curveIndex = 2
+            }
+            if curveIndex == 2 {
+                let midpoint = CGPoint(
+                    x: (curvePoints[0].x + curvePoints[2].x) / 2,
+                    y: (curvePoints[0].y + curvePoints[2].y) / 2
+                )
+                path.move(to: curvePoints[0])
+                path.addCurve(
+                    to: curvePoints[2],
+                    controlPoint1: curvePoints[0],
+                    controlPoint2: midpoint
+                )
+            }
+            return path
+        }
+
         /// 이동이 거의 없는 짧은 한글 획도 둥근 점으로 표시되도록 최소 길이를 추가합니다.
         func ensureVisibleDotIfNeeded(pagePath: UIBezierPath) {
             guard activePenSampleCount == 1 else { return }
@@ -8393,9 +8465,9 @@ extension PortalPDFKitView {
             }
             let displayPoints = sampleIndices.map { activePenViewPoints[$0] }
             let displayPressures = sampleIndices.map { activePenPressures[$0] }
-            let stabilizedViewPoints = displayPoints.terminalFlickStabilized(
-                strength: penStrokeSmoothingStrength
-            )
+            let stabilizedViewPoints = penStrokeSmoothingStrength > 0
+                ? displayPoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
+                : displayPoints
             let path = PortalPDFPressureInkAnnotation.makeStrokePath(
                 points: stabilizedViewPoints,
                 pressures: displayPressures,
@@ -8621,12 +8693,12 @@ extension PortalPDFKitView {
 
         /// 압력값 변화가 반영된 자유선을 하나의 연속 Annotation으로 저장합니다.
         func addPressureInkAnnotations(to page: PDFPage) -> PDFAnnotation? {
-            let stabilizedViewPoints = activePenViewPoints.terminalFlickStabilized(
-                strength: penStrokeSmoothingStrength
-            )
-            let stabilizedPagePoints = activePenPagePoints.terminalFlickStabilized(
-                strength: penStrokeSmoothingStrength
-            )
+            let stabilizedViewPoints = penStrokeSmoothingStrength > 0
+                ? activePenViewPoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
+                : activePenViewPoints
+            let stabilizedPagePoints = penStrokeSmoothingStrength > 0
+                ? activePenPagePoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
+                : activePenPagePoints
             guard activePenPagePoints.count > 1,
                   activePenPagePoints.count == activePenPressures.count,
                   activePenViewPoints.count == activePenPressures.count,
