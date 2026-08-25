@@ -434,7 +434,11 @@ private extension PortalPDFPageEditDocument.Object {
     }
 }
 
-private extension PDFAnnotation {
+extension PDFAnnotation {
+    var portalPageEditObjectID: UUID {
+        (self as? PortalPDFTextAnnotation)?.textID ?? portalStableEditID
+    }
+
     var portalStableEditID: UUID {
         if let name = value(forAnnotationKey: .name) as? String,
            let id = UUID(uuidString: name) {

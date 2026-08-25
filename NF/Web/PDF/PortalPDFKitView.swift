@@ -1061,6 +1061,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let drawingBounds: CGRect
         /// 펜·이미지·도형·텍스트가 함께 공유하는 입력 순서입니다.
         let displayIndex: Int
+        /// 올가미가 같은 편집 객체의 여러 경로 레이어를 한 그룹으로 찾는 안정 식별자입니다.
+        let objectID: UUID
     }
 
     /// FileManager의 LineLayer처럼 완료 획 벡터와 준비된 비트맵을 함께 보관합니다.
@@ -1181,6 +1183,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                   attributedText.length > 0 else { return nil }
             return (attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.fontName
         }
+    }
+
+    /// 테스트에서 올가미 그룹 이동 시 실제 화면 레이어가 같은 프레임에 따라오는지 확인합니다.
+    func renderedLayerPositions(for objectID: UUID) -> [CGPoint] {
+        pageContentLayer.sublayers?
+            .filter { $0.portalPDFObjectID == objectID }
+            .map(\.position) ?? []
     }
 
     /// 테스트에서 실제 Core Animation 스택이 편집 객체 입력 순서를 따르는지 확인합니다.
@@ -1500,6 +1509,30 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         CATransaction.commit()
     }
 
+    /// FileManager의 `lassoItemView.frame` 이동처럼 선택된 모든 객체 레이어를 같은 프레임에 이동합니다.
+    /// 숨은 Annotation 저장 좌표 갱신과 별개로 실제 화면 오버레이를 즉시 움직여 손을 놓을 때까지
+    /// 이전 위치에 남아 있다가 갑자기 이동하는 현상을 방지합니다.
+    func translateLassoAnnotationPresentations(
+        _ annotations: [PDFAnnotation],
+        by pageDelta: CGPoint
+    ) {
+        guard let pageToOverlay = basePageToOverlayTransform else { return }
+        let objectIDs = Set(annotations.map(\.portalPageEditObjectID))
+        guard !objectIDs.isEmpty else { return }
+        let overlayDelta = pageDelta.applyingLinearPart(of: pageToOverlay)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pageContentLayer.sublayers?.forEach { layer in
+            guard let objectID = layer.portalPDFObjectID,
+                  objectIDs.contains(objectID) else { return }
+            layer.position = CGPoint(
+                x: layer.position.x + overlayDelta.x,
+                y: layer.position.y + overlayDelta.y
+            )
+        }
+        CATransaction.commit()
+    }
+
     /// 이전 PDF 내부 Annotation은 최초 마이그레이션 시에만 오버레이 데이터 원본으로 사용합니다.
     private func renderLegacyAnnotationObjects(
         on page: PDFPage,
@@ -1570,7 +1603,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                             lineJoin: path.lineJoinStyle
                         ),
                         drawingBounds: drawingBounds,
-                        displayIndex: displayIndex
+                        displayIndex: displayIndex,
+                        objectID: annotation.portalPageEditObjectID
                     ))
                 }
                 continue
@@ -1594,7 +1628,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                     color: color,
                     rendering: .fill,
                     drawingBounds: overlayPath.boundingBoxOfPath,
-                    displayIndex: displayIndex
+                    displayIndex: displayIndex,
+                    objectID: annotation.portalPageEditObjectID
                 ))
             }
         }
@@ -1614,7 +1649,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             let shapeLayer = RasterStrokeLayer(stroke: stroke, localPath: localPath)
             shapeLayer.frame = drawingBounds
             shapeLayer.path = localPath
-            shapeLayer.name = "nf.ink.\(stroke.displayIndex)"
+            shapeLayer.name = "nf.ink.\(stroke.objectID.uuidString)"
             shapeLayer.zPosition = CGFloat(stroke.displayIndex)
             shapeLayer.contentsScale = traitCollection.displayScale
             shapeLayer.allowsEdgeAntialiasing = true
@@ -1817,7 +1852,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                             dx: -lineWidth,
                             dy: -lineWidth
                         ),
-                        displayIndex: object.displayIndex
+                        displayIndex: object.displayIndex,
+                        objectID: object.id
                     ))
                 }
             case .pressureInk:
@@ -1838,7 +1874,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                         color: color.cgColor,
                         rendering: .fill,
                         drawingBounds: overlayPath.boundingBoxOfPath,
-                        displayIndex: object.displayIndex
+                        displayIndex: object.displayIndex,
+                        objectID: object.id
                     ))
                 }
             case .image:
@@ -2133,12 +2170,11 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         return normalized
     }
 
-    private func textContentsScale(for pageToOverlay: CGAffineTransform) -> CGFloat {
-        let xScale = hypot(pageToOverlay.a, pageToOverlay.b)
-        let yScale = hypot(pageToOverlay.c, pageToOverlay.d)
-        // 고배율에서 원래 화면 해상도의 텍스트 비트맵을 늘리지 않고 현재 표시 밀도로 다시 그립니다.
-        // 무제한 backing store는 많은 텍스트 객체에서 메모리를 급증시키므로 16x로 제한합니다.
-        return min(16, max(traitCollection.displayScale, traitCollection.displayScale * max(xScale, yScale)))
+    private func textContentsScale(for _: CGAffineTransform) -> CGFloat {
+        // FileManager `StickerItemView.updateForZoomScale()`와 동일하게 MAX_SCALE(13)에
+        // 화면 배율을 더한 고정 밀도로 텍스트와 하위 레이어를 준비합니다. 현재 PDF 변환값에
+        // 따라 낮아지는 계산이나 16x 상한을 사용하지 않아 축소·확대 어느 상태에서도 선명도를 유지합니다.
+        13 + traitCollection.displayScale
     }
 
     /// 텍스트 선택 UI는 숨은 PDFAnnotation이 아니라 실제 오버레이와 같은 좌표계에 표시합니다.
@@ -2453,6 +2489,13 @@ private extension CGPoint {
             x: transform.a * x + transform.c * y,
             y: transform.b * x + transform.d * y
         )
+    }
+}
+
+private extension CALayer {
+    var portalPDFObjectID: UUID? {
+        guard let identifier = name?.split(separator: ".").last else { return nil }
+        return UUID(uuidString: String(identifier))
     }
 }
 
@@ -6170,6 +6213,22 @@ extension PortalPDFKitView {
                 right: 8 * safeScale
             )
             editor.layer.cornerRadius = 6 * safeScale
+            applyFileManagerTextRenderingScale(to: editor)
+        }
+
+        /// FileManager처럼 UITextView와 모든 하위 UIView/CALayer에 MAX_SCALE + 화면 배율을 적용합니다.
+        func applyFileManagerTextRenderingScale(to editor: UIView) {
+            let renderScale = 13 + editor.traitCollection.displayScale
+            func update(view: UIView) {
+                view.contentScaleFactor = renderScale
+                view.subviews.forEach { update(view: $0) }
+            }
+            func update(layer: CALayer) {
+                layer.contentsScale = renderScale
+                layer.sublayers?.forEach { update(layer: $0) }
+            }
+            update(view: editor)
+            update(layer: editor.layer)
         }
 
         func presentTextFontPicker() {
@@ -6475,10 +6534,12 @@ extension PortalPDFKitView {
             case .ended:
                 if activeLassoTransformState != nil {
                     if activeLassoDidMove {
+                        refreshPersistentAnnotationOverlay(on: page)
                         onDocumentChanged()
                     }
                 } else if isMovingLassoSelection {
                     if activeLassoDidMove {
+                        refreshPersistentAnnotationOverlay(on: page)
                         onDocumentChanged()
                     }
                 } else if activeLassoPage === page {
@@ -6490,6 +6551,10 @@ extension PortalPDFKitView {
                 isMovingLassoSelection = false
                 activeLassoDidMove = false
             case .cancelled, .failed:
+                if activeLassoDidMove, activeLassoPage === page {
+                    refreshPersistentAnnotationOverlay(on: page)
+                    onDocumentChanged()
+                }
                 activeLassoMovePoint = nil
                 activeLassoTransformState = nil
                 isMovingLassoSelection = false
@@ -6520,15 +6585,9 @@ extension PortalPDFKitView {
                 guard isHistoryEditableAnnotation(annotation),
                       annotation.shouldDisplay || PortalPDFInkDisplaySuppression.isSuppressed(annotation),
                       lassoBounds.intersects(annotationBounds) else { return false }
-                let bounds = annotationBounds
-                let samples = [
-                    CGPoint(x: bounds.midX, y: bounds.midY),
-                    CGPoint(x: bounds.minX, y: bounds.minY),
-                    CGPoint(x: bounds.maxX, y: bounds.minY),
-                    CGPoint(x: bounds.minX, y: bounds.maxY),
-                    CGPoint(x: bounds.maxX, y: bounds.maxY)
-                ]
-                return samples.contains(where: path.contains)
+                // FileManager `isLassoItem`과 동일하게 사용자가 그린 올가미의 전체 bounds와
+                // 교차하는 펜·이미지·텍스트·도형을 모두 그룹에 포함합니다.
+                return true
             }
             // 선택 점선은 선택된 객체 전체의 bounds가 아니라 사용자가 실제로 감싼
             // 올가미 영역만 표시합니다. 이동·변형 시에도 이 외곽선을 함께 변환합니다.
@@ -6544,7 +6603,10 @@ extension PortalPDFKitView {
         }
 
         func lassoSelectionBounds(for annotation: PDFAnnotation) -> CGRect {
-            (annotation as? PortalPDFImageAnnotation)?.editingBounds ?? annotation.bounds
+            if let image = annotation as? PortalPDFImageAnnotation { return image.editingBounds }
+            if let shape = annotation as? PortalPDFShapeAnnotation { return shape.editingBounds }
+            if let text = annotation as? PortalPDFTextAnnotation { return text.editingBounds }
+            return annotation.bounds
         }
 
         /// 선택된 주석 전체가 페이지 밖으로 나가지 않는 범위에서 동일한 이동량을 적용합니다.
@@ -6570,10 +6632,14 @@ extension PortalPDFKitView {
                     imageAnnotation.editingBounds = imageAnnotation.editingBounds.offsetBy(dx: delta.x, dy: delta.y)
                 } else if let shapeAnnotation = annotation as? PortalPDFShapeAnnotation {
                     shapeAnnotation.editingBounds = shapeAnnotation.editingBounds.offsetBy(dx: delta.x, dy: delta.y)
+                } else if let textAnnotation = annotation as? PortalPDFTextAnnotation {
+                    textAnnotation.editingBounds = textAnnotation.editingBounds.offsetBy(dx: delta.x, dy: delta.y)
                 } else {
                     annotation.bounds = annotation.bounds.offsetBy(dx: delta.x, dy: delta.y)
                 }
             }
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                .translateLassoAnnotationPresentations(selectedLassoAnnotations, by: delta)
             selectedLassoOutlinePoints = selectedLassoOutlinePoints.map {
                 CGPoint(x: $0.x + delta.x, y: $0.y + delta.y)
             }

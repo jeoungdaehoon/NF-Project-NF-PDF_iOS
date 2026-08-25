@@ -116,6 +116,7 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(overlay.renderedTextResizeHandleCount == 8)
         #expect(overlay.renderedTextFontNames.allSatisfy { !$0.contains("TimesNewRoman") })
         let initialScale = try #require(overlay.renderedTextContentsScales.first)
+        #expect(initialScale == 13 + overlay.traitCollection.displayScale)
 
         pdfView.scaleFactor = 4
         pdfView.layoutDocumentView()
@@ -123,12 +124,96 @@ struct PortalPDFPageEditPersistenceTests {
         overlay.refreshTextRenderingScale()
 
         let zoomedScale = try #require(overlay.renderedTextContentsScales.first)
-        #expect(zoomedScale >= initialScale)
+        #expect(zoomedScale == initialScale)
 
         text.editingBounds = CGRect(x: 80, y: 160, width: 260, height: 72)
         overlay.updateTextAnnotationPresentation(text)
         #expect(overlay.renderedPageEditObjectLayerCount == 1)
         #expect(overlay.renderedTextResizeHandleCount == 8)
+    }
+
+    @Test func lassoSelectsAndMovesInkImageShapeAndTextAsOneLiveGroup() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+
+        let ink = PDFAnnotation(
+            bounds: CGRect(x: 80, y: 100, width: 70, height: 24),
+            forType: .ink,
+            withProperties: nil
+        )
+        let inkPath = UIBezierPath()
+        inkPath.move(to: CGPoint(x: 2, y: 4))
+        inkPath.addLine(to: CGPoint(x: 66, y: 20))
+        ink.add(inkPath)
+        page.addAnnotation(ink)
+
+        let image = PortalPDFImageAnnotation(
+            image: solidImage(color: .systemYellow),
+            bounds: CGRect(x: 105, y: 120, width: 48, height: 48)
+        )
+        page.addAnnotation(image)
+        let shape = PortalPDFShapeAnnotation(
+            shapeType: .rectangle,
+            bounds: CGRect(x: 155, y: 125, width: 54, height: 46),
+            lineWidth: 2
+        )
+        page.addAnnotation(shape)
+        let text = PortalPDFTextAnnotation(
+            text: "올가미 텍스트",
+            bounds: CGRect(x: 215, y: 130, width: 130, height: 48)
+        )
+        page.addAnnotation(text)
+
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+        overlay.layoutIfNeeded()
+
+        let coordinator = PortalPDFKitView.Coordinator()
+        coordinator.pdfView = pdfView
+        coordinator.pageOverlayViews[ObjectIdentifier(page)] = overlay
+        coordinator.activeLassoPage = page
+        coordinator.activeLassoPoints = [
+            CGPoint(x: 60, y: 80),
+            CGPoint(x: 370, y: 80),
+            CGPoint(x: 370, y: 210),
+            CGPoint(x: 60, y: 210),
+        ]
+        coordinator.completeLassoSelection(on: page, in: pdfView)
+
+        #expect(coordinator.selectedLassoAnnotations.count == 4)
+        #expect(coordinator.selectedLassoAnnotations.contains { $0.isPortalInkAnnotation })
+        #expect(coordinator.selectedLassoAnnotations.contains { $0 is PortalPDFImageAnnotation })
+        #expect(coordinator.selectedLassoAnnotations.contains { $0 is PortalPDFShapeAnnotation })
+        #expect(coordinator.selectedLassoAnnotations.contains { $0 is PortalPDFTextAnnotation })
+
+        let selectedIDs = coordinator.selectedLassoAnnotations.map(\.portalPageEditObjectID)
+        let positionsBefore = Dictionary(uniqueKeysWithValues: selectedIDs.map {
+            ($0, overlay.renderedLayerPositions(for: $0))
+        })
+        let originalTextBounds = text.editingBounds
+        let delta = CGPoint(x: 26, y: 18)
+        let appliedDelta = coordinator.moveLassoSelection(by: delta, on: page)
+
+        #expect(appliedDelta == delta)
+        #expect(text.editingBounds == originalTextBounds.offsetBy(dx: delta.x, dy: delta.y))
+        for objectID in selectedIDs {
+            let before = try #require(positionsBefore[objectID])
+            let after = overlay.renderedLayerPositions(for: objectID)
+            #expect(!before.isEmpty)
+            #expect(after.count == before.count)
+            #expect(zip(before, after).allSatisfy { $0.0 != $0.1 })
+        }
+
+        coordinator.refreshPersistentAnnotationOverlay(on: page)
+        coordinator.clearLassoSelection()
+        let persistedText = try #require(
+            coordinator.pageEditDocument.page(at: 0)?.objects.first(where: { $0.kind == .text })?.text
+        )
+        #expect(persistedText.bounds == text.editingBounds)
     }
 
     @Test func pageEditsRoundTripOutsideThePDFAndRestoreInteractionProxies() throws {
