@@ -231,6 +231,28 @@ struct NFTests {
         #expect(abs(medium.last?.y ?? 0) < abs(points.last?.y ?? 0))
     }
 
+    @Test func zeroLineCorrectionKeepsRawStartEndAndStraightSegments() throws {
+        let points = [
+            CGPoint(x: 3, y: 7),
+            CGPoint(x: 14, y: 8),
+            CGPoint(x: 25, y: 4),
+            CGPoint(x: 36, y: 12),
+        ]
+        let path = try #require(PortalPDFStandardLinePathBuilder.path(
+            points: points,
+            correctionStrength: 0
+        ))
+        var elementTypes: [CGPathElementType] = []
+        path.cgPath.applyWithBlock { elementPointer in
+            elementTypes.append(elementPointer.pointee.type)
+        }
+
+        #expect(path.cgPath.collectedPoints == points)
+        #expect(elementTypes == [.moveToPoint, .addLineToPoint, .addLineToPoint, .addLineToPoint])
+        #expect(path.cgPath.collectedPoints.first == points.first)
+        #expect(path.cgPath.collectedPoints.last == points.last)
+    }
+
     @Test func strokeSmoothingSoftensStraightStrokeEndpointsWithoutMovingItsCenter() {
         let points = (0..<12).map { CGPoint(x: CGFloat($0) * 8, y: 4) }
 

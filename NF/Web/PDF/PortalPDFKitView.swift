@@ -15,6 +15,72 @@ import QuickLook
 import SwiftUI
 import UIKit
 
+/// 보정 강도에 따라 원본 직선 경로 또는 FileManager 방식의 보정 곡선을 생성합니다.
+enum PortalPDFStandardLinePathBuilder {
+    static func path(points: [CGPoint], correctionStrength: CGFloat) -> UIBezierPath? {
+        guard let firstPoint = points.first else { return nil }
+        let normalizedStrength = min(2, max(0, correctionStrength))
+        let renderedPoints = normalizedStrength > 0
+            ? points.terminalFlickStabilized(strength: normalizedStrength)
+            : points
+        guard let renderedFirstPoint = renderedPoints.first else { return nil }
+
+        let path = UIBezierPath()
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.flatness = 0.6
+        path.move(to: normalizedStrength > 0 ? renderedFirstPoint : firstPoint)
+        guard renderedPoints.count > 1 else { return path }
+
+        // 0%에서는 시작·끝을 포함한 모든 입력 좌표를 이동하거나 곡선화하지 않습니다.
+        if normalizedStrength == 0 {
+            renderedPoints.dropFirst().forEach { path.addLine(to: $0) }
+            return path
+        }
+
+        var curvePoints = [CGPoint](repeating: .zero, count: 4)
+        curvePoints[0] = renderedFirstPoint
+        var curveIndex = 0
+        for point in renderedPoints.dropFirst() {
+            curveIndex += 1
+            curvePoints[curveIndex] = point
+            guard curveIndex == 3 else { continue }
+
+            let midpoint = CGPoint(
+                x: (curvePoints[1].x + curvePoints[3].x) / 2,
+                y: (curvePoints[1].y + curvePoints[3].y) / 2
+            )
+            path.move(to: curvePoints[0])
+            path.addCurve(
+                to: midpoint,
+                controlPoint1: curvePoints[0],
+                controlPoint2: curvePoints[1]
+            )
+            curvePoints[0] = midpoint
+            curvePoints[1] = curvePoints[3]
+            curveIndex = 1
+        }
+
+        if curveIndex == 1 {
+            curvePoints[2] = curvePoints[1]
+            curveIndex = 2
+        }
+        if curveIndex == 2 {
+            let midpoint = CGPoint(
+                x: (curvePoints[0].x + curvePoints[2].x) / 2,
+                y: (curvePoints[0].y + curvePoints[2].y) / 2
+            )
+            path.move(to: curvePoints[0])
+            path.addCurve(
+                to: curvePoints[2],
+                controlPoint1: curvePoints[0],
+                controlPoint2: midpoint
+            )
+        }
+        return path
+    }
+}
+
 /// 전체 경로 복사 방식의 Undo 스냅샷이 필기 수에 비례해 메모리를 과도하게 점유하지 않도록 제한합니다.
 enum PortalPDFHistoryPolicy {
     static func maximumUndoCount(maximumPageEditUnitCount: Int) -> Int {
@@ -6700,8 +6766,7 @@ extension PortalPDFKitView {
                 }
                 appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
                 if penType != .pressure {
-                    finishFileManagerRoundedPenPath()
-                    applyLineCorrectionToFileManagerPathsIfNeeded()
+                    rebuildStandardPenPathsForLineCorrection()
                 }
                 let pointCountBeforeDot = activePenPagePoints.count
                 ensureVisibleDotIfNeeded(pagePath: pagePath)
@@ -7494,6 +7559,11 @@ extension PortalPDFKitView {
                     activePenPath?.addLine(to: pagePoint)
                     activePenOverlayPath?.addLine(to: viewPoint)
                     didExtendVisiblePath = true
+                } else if penStrokeSmoothingStrength <= 0 {
+                    // 라인 보정 0%는 실시간 표시부터 원본 입력점을 직선으로 그대로 연결합니다.
+                    activePenPath?.addLine(to: pagePoint)
+                    activePenOverlayPath?.addLine(to: viewPoint)
+                    didExtendVisiblePath = true
                 } else {
                     didExtendVisiblePath = appendFileManagerRoundedPenSample(
                         pagePoint: pagePoint,
@@ -7545,53 +7615,17 @@ extension PortalPDFKitView {
             return true
         }
 
-        /// 손을 뗄 때 남은 두 좌표를 FileManager `endLineDrawing`과 같은 곡선으로 마감합니다.
-        func finishFileManagerRoundedPenPath() {
-            // UIGestureRecognizer의 ended 좌표가 마지막 moved 좌표와 같으면 중복 필터를 통과하지
-            // 않습니다. FileManager는 ended에서도 `newLineDrawing`을 한 번 호출하므로 그 동작과
-            // 같게 마지막 좌표를 복제해 짧은 획과 마지막 꼬리를 빠뜨리지 않습니다.
-            if activePenCurveIndex == 1 {
-                activePenPageCurvePoints[2] = activePenPageCurvePoints[1]
-                activePenViewCurvePoints[2] = activePenViewCurvePoints[1]
-                activePenCurveIndex = 2
-            }
-            guard activePenCurveIndex == 2 else { return }
-            let pageMidpoint = CGPoint(
-                x: (activePenPageCurvePoints[0].x + activePenPageCurvePoints[2].x) / 2,
-                y: (activePenPageCurvePoints[0].y + activePenPageCurvePoints[2].y) / 2
-            )
-            let viewMidpoint = CGPoint(
-                x: (activePenViewCurvePoints[0].x + activePenViewCurvePoints[2].x) / 2,
-                y: (activePenViewCurvePoints[0].y + activePenViewCurvePoints[2].y) / 2
-            )
-            activePenPath?.move(to: activePenPageCurvePoints[0])
-            activePenPath?.addCurve(
-                to: activePenPageCurvePoints[2],
-                controlPoint1: activePenPageCurvePoints[0],
-                controlPoint2: pageMidpoint
-            )
-            activePenOverlayPath?.move(to: activePenViewCurvePoints[0])
-            activePenOverlayPath?.addCurve(
-                to: activePenViewCurvePoints[2],
-                controlPoint1: activePenViewCurvePoints[0],
-                controlPoint2: viewMidpoint
-            )
-        }
-
-        /// 라인 보정이 켜진 경우에만 원본 좌표를 보정해 FileManager cubic 경로로 다시 구성합니다.
-        func applyLineCorrectionToFileManagerPathsIfNeeded() {
-            guard penStrokeSmoothingStrength > 0,
-                  let activePenPath,
+        /// 0%는 원본 직선, 그보다 큰 값은 보정된 FileManager cubic 경로로 최종 화면과 저장 경로를 맞춥니다.
+        func rebuildStandardPenPathsForLineCorrection() {
+            guard let activePenPath,
                   let activePenOverlayPath else { return }
-
-            let correctedPagePoints = activePenPagePoints.terminalFlickStabilized(
-                strength: penStrokeSmoothingStrength
-            )
-            let correctedViewPoints = activePenViewPoints.terminalFlickStabilized(
-                strength: penStrokeSmoothingStrength
-            )
-            guard let correctedPagePath = makeFileManagerRoundedPath(points: correctedPagePoints),
-                  let correctedViewPath = makeFileManagerRoundedPath(points: correctedViewPoints) else {
+            guard let correctedPagePath = PortalPDFStandardLinePathBuilder.path(
+                points: activePenPagePoints,
+                correctionStrength: penStrokeSmoothingStrength
+            ), let correctedViewPath = PortalPDFStandardLinePathBuilder.path(
+                points: activePenViewPoints,
+                correctionStrength: penStrokeSmoothingStrength
+            ) else {
                 return
             }
 
@@ -7599,54 +7633,6 @@ extension PortalPDFKitView {
             activePenPath.append(correctedPagePath)
             activePenOverlayPath.removeAllPoints()
             activePenOverlayPath.append(correctedViewPath)
-        }
-
-        /// FileManager의 3점 cubic 연결 규칙으로 좌표 배열을 하나의 경로로 변환합니다.
-        func makeFileManagerRoundedPath(points: [CGPoint]) -> UIBezierPath? {
-            guard let firstPoint = points.first else { return nil }
-            let path = makeRoundedPath(startPoint: firstPoint)
-            guard points.count > 1 else { return path }
-
-            var curvePoints = [CGPoint](repeating: .zero, count: 4)
-            curvePoints[0] = firstPoint
-            var curveIndex = 0
-            for point in points.dropFirst() {
-                curveIndex += 1
-                curvePoints[curveIndex] = point
-                guard curveIndex == 3 else { continue }
-
-                let midpoint = CGPoint(
-                    x: (curvePoints[1].x + curvePoints[3].x) / 2,
-                    y: (curvePoints[1].y + curvePoints[3].y) / 2
-                )
-                path.move(to: curvePoints[0])
-                path.addCurve(
-                    to: midpoint,
-                    controlPoint1: curvePoints[0],
-                    controlPoint2: curvePoints[1]
-                )
-                curvePoints[0] = midpoint
-                curvePoints[1] = curvePoints[3]
-                curveIndex = 1
-            }
-
-            if curveIndex == 1 {
-                curvePoints[2] = curvePoints[1]
-                curveIndex = 2
-            }
-            if curveIndex == 2 {
-                let midpoint = CGPoint(
-                    x: (curvePoints[0].x + curvePoints[2].x) / 2,
-                    y: (curvePoints[0].y + curvePoints[2].y) / 2
-                )
-                path.move(to: curvePoints[0])
-                path.addCurve(
-                    to: curvePoints[2],
-                    controlPoint1: curvePoints[0],
-                    controlPoint2: midpoint
-                )
-            }
-            return path
         }
 
         /// 이동이 거의 없는 짧은 한글 획도 둥근 점으로 표시되도록 최소 길이를 추가합니다.
