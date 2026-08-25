@@ -1104,6 +1104,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     private var objectLayers: [CALayer] = []
     private var imagePixelSizes: [CGSize] = []
     private var imageSelectionLayers: [CAShapeLayer] = []
+    private(set) var renderedTextResizeHandleCount = 0
     private var configuredBoundsSize = CGSize.zero
     private var basePageToOverlayTransform: CGAffineTransform?
     private var renderGeneration = 0
@@ -1163,6 +1164,23 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     var renderedPageEditObjectLayerCount: Int {
         objectLayers.count
+    }
+
+    var renderedTextContentsScales: [CGFloat] {
+        objectLayers.compactMap { layer in
+            guard layer.name?.hasPrefix("nf.text.") == true else { return nil }
+            return (layer.sublayers?.first { $0 is CATextLayer } as? CATextLayer)?.contentsScale
+        }
+    }
+
+    var renderedTextFontNames: [String] {
+        objectLayers.compactMap { container in
+            guard container.name?.hasPrefix("nf.text.") == true,
+                  let textLayer = container.sublayers?.first(where: { $0 is CATextLayer }) as? CATextLayer,
+                  let attributedText = textLayer.string as? NSAttributedString,
+                  attributedText.length > 0 else { return nil }
+            return (attributedText.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.fontName
+        }
     }
 
     /// 테스트에서 실제 Core Animation 스택이 편집 객체 입력 순서를 따르는지 확인합니다.
@@ -1270,6 +1288,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         imageLayers = []
         imagePixelSizes = []
         imageSelectionLayers = []
+        renderedTextResizeHandleCount = 0
         objectLayers = []
 
         if let pageEditData {
@@ -1380,6 +1399,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
               let pageToOverlay = basePageToOverlayTransform else { return }
         interactionLayer.sublayers?.forEach { $0.removeFromSuperlayer() }
         imageSelectionLayers = []
+        renderedTextResizeHandleCount = 0
         renderInteractionSelection(
             from: page,
             pageToOverlay: pageToOverlay,
@@ -1409,6 +1429,36 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         refreshInteractionSelection()
     }
 
+    /// 텍스트 이동·크기 조절 중 해당 객체의 레이어만 교체해 다른 펜·이미지 레이어는 건드리지 않습니다.
+    func updateTextAnnotationPresentation(_ annotation: PortalPDFTextAnnotation) {
+        guard let pageToOverlay = basePageToOverlayTransform,
+              let index = objectLayers.firstIndex(where: {
+                  $0.name == "nf.text.\(annotation.textID.uuidString)"
+              }) else {
+            reloadInkPaths()
+            return
+        }
+        let previousLayer = objectLayers[index]
+        let updatedLayer = makeTextLayer(
+            metadata: annotation.persistenceMetadata,
+            pageToOverlay: pageToOverlay
+        )
+        if let page, let pdfView,
+           let textLayer = updatedLayer.sublayers?.first(where: { $0 is CATextLayer }) as? CATextLayer {
+            textLayer.contentsScale = textContentsScale(
+                for: pageToOverlayTransform(page: page, pdfView: pdfView)
+            )
+        }
+        updatedLayer.name = previousLayer.name
+        updatedLayer.zPosition = previousLayer.zPosition
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pageContentLayer.replaceSublayer(previousLayer, with: updatedLayer)
+        objectLayers[index] = updatedLayer
+        CATransaction.commit()
+        refreshInteractionSelection()
+    }
+
     private func imageLayerName(_ identifier: String) -> String {
         "nf.image.\(identifier)"
     }
@@ -1428,6 +1478,24 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 // 기존 이미지는 새 이미지가 준비될 때까지 그대로 확대 표시하고 완료 시 교체합니다.
                 rasterizeStrokeLayer(layer, scale: rasterizationScale)
             }
+        }
+        CATransaction.commit()
+    }
+
+    /// 확대가 끝난 시점의 실제 페이지 배율로 CATextLayer를 다시 래스터화해 문구가 흐려지지 않게 합니다.
+    func refreshTextRenderingScale() {
+        guard let page, let pdfView else { return }
+        let currentTransform = pageToOverlayTransform(page: page, pdfView: pdfView)
+        let contentsScale = textContentsScale(for: currentTransform)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        objectLayers.forEach { container in
+            guard container.name?.hasPrefix("nf.text.") == true,
+                  let textLayer = container.sublayers?.first(where: { $0 is CATextLayer }) as? CATextLayer else {
+                return
+            }
+            textLayer.contentsScale = contentsScale
+            textLayer.setNeedsDisplay()
         }
         CATransaction.commit()
     }
@@ -1682,14 +1750,22 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 continue
             }
 
+            if let text = annotation as? PortalPDFTextAnnotation, text.isPortalTextSelected {
+                let layers = makeTextSelectionLayers(
+                    annotation: text,
+                    pageToOverlay: pageToOverlay
+                )
+                layers.forEach { interactionLayer.addSublayer($0) }
+                imageSelectionLayers.append(contentsOf: layers)
+                renderedTextResizeHandleCount = text.resizeHandleCenters.count
+                continue
+            }
+
             let selectionBounds: CGRect?
             let rotationAngle: CGFloat
             if let shape = annotation as? PortalPDFShapeAnnotation, shape.isPortalSelected {
                 selectionBounds = shape.shapeBounds
                 rotationAngle = shape.rotationAngle
-            } else if let text = annotation as? PortalPDFTextAnnotation, text.isPortalTextSelected {
-                selectionBounds = text.textBounds
-                rotationAngle = 0
             } else {
                 continue
             }
@@ -1987,7 +2063,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
         let textLayer = CATextLayer()
         textLayer.frame = container.bounds.insetBy(dx: 5, dy: 4)
-        textLayer.contentsScale = traitCollection.displayScale
+        textLayer.contentsScale = textContentsScale(for: pageToOverlay)
         textLayer.isWrapped = true
         textLayer.truncationMode = .end
         textLayer.alignmentMode = switch metadata.alignmentRawValue {
@@ -1996,8 +2072,11 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         default: .left
         }
         let fontSize = CGFloat(metadata.fontSize)
-        let baseFont = UIFont(name: metadata.fontName, size: fontSize)
-            ?? .systemFont(ofSize: fontSize)
+        let usesStoredSystemFont = metadata.fontName.hasPrefix(".")
+            || metadata.fontName.localizedCaseInsensitiveContains("SFUI")
+        let baseFont = usesStoredSystemFont
+            ? UIFont.systemFont(ofSize: fontSize)
+            : (UIFont(name: metadata.fontName, size: fontSize) ?? .systemFont(ofSize: fontSize))
         var symbolicTraits = baseFont.fontDescriptor.symbolicTraits
         if metadata.isBold { symbolicTraits.insert(.traitBold) }
         if metadata.isItalic { symbolicTraits.insert(.traitItalic) }
@@ -2020,12 +2099,123 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                documentAttributes: nil
            ),
            attributedText.string == metadata.text {
-            textLayer.string = attributedText
+            textLayer.string = usesStoredSystemFont
+                ? systemFontNormalizedAttributedText(attributedText, fallbackFont: font)
+                : attributedText
         } else {
             textLayer.string = NSAttributedString(string: metadata.text, attributes: attributes)
         }
         container.addSublayer(textLayer)
         return container
+    }
+
+    /// RTF에 저장된 비공개 `.SFUI-*` 이름을 직접 생성하면 iOS가 Times로 대체하므로 공개 시스템 글꼴로 복원합니다.
+    private func systemFontNormalizedAttributedText(
+        _ attributedText: NSAttributedString,
+        fallbackFont: UIFont
+    ) -> NSAttributedString {
+        let normalized = NSMutableAttributedString(attributedString: attributedText)
+        let fullRange = NSRange(location: 0, length: normalized.length)
+        normalized.enumerateAttribute(.font, in: fullRange) { value, range, _ in
+            let storedFont = value as? UIFont
+            let pointSize = storedFont?.pointSize ?? fallbackFont.pointSize
+            let storedTraits = storedFont?.fontDescriptor.symbolicTraits
+                ?? fallbackFont.fontDescriptor.symbolicTraits
+            let systemFont = UIFont.systemFont(ofSize: pointSize)
+            let descriptor = systemFont.fontDescriptor.withSymbolicTraits(storedTraits)
+                ?? systemFont.fontDescriptor
+            normalized.addAttribute(
+                .font,
+                value: UIFont(descriptor: descriptor, size: pointSize),
+                range: range
+            )
+        }
+        return normalized
+    }
+
+    private func textContentsScale(for pageToOverlay: CGAffineTransform) -> CGFloat {
+        let xScale = hypot(pageToOverlay.a, pageToOverlay.b)
+        let yScale = hypot(pageToOverlay.c, pageToOverlay.d)
+        // 고배율에서 원래 화면 해상도의 텍스트 비트맵을 늘리지 않고 현재 표시 밀도로 다시 그립니다.
+        // 무제한 backing store는 많은 텍스트 객체에서 메모리를 급증시키므로 16x로 제한합니다.
+        return min(16, max(traitCollection.displayScale, traitCollection.displayScale * max(xScale, yScale)))
+    }
+
+    /// 텍스트 선택 UI는 숨은 PDFAnnotation이 아니라 실제 오버레이와 같은 좌표계에 표시합니다.
+    private func makeTextSelectionLayers(
+        annotation: PortalPDFTextAnnotation,
+        pageToOverlay: CGAffineTransform
+    ) -> [CAShapeLayer] {
+        let unitScale = max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b))
+        var layers: [CAShapeLayer] = []
+
+        let outlineInset = 1.5 / annotation.selectionDisplayScaleFactor
+        let outlinePath = UIBezierPath(rect: annotation.selectionOutlineRect.insetBy(
+            dx: outlineInset,
+            dy: outlineInset
+        ))
+        outlinePath.apply(pageToOverlay)
+        let outlineLayer = shapeLayer(path: outlinePath.cgPath)
+        outlineLayer.name = "nf.text.selection.outline"
+        outlineLayer.fillColor = UIColor.clear.cgColor
+        outlineLayer.strokeColor = UIColor.systemBlue.cgColor
+        outlineLayer.lineWidth = max(0.5, annotation.displayedSelectionLineWidth * unitScale)
+        outlineLayer.lineDashPattern = annotation.displayedSelectionDashLengths.map {
+            NSNumber(value: Double($0 * unitScale))
+        }
+        layers.append(outlineLayer)
+
+        let resizePath = UIBezierPath()
+        let resizeSide = annotation.displayedResizeHandleSide
+        annotation.resizeHandleCenters.values.forEach { center in
+            resizePath.append(UIBezierPath(rect: CGRect(
+                x: center.x - resizeSide / 2,
+                y: center.y - resizeSide / 2,
+                width: resizeSide,
+                height: resizeSide
+            )))
+        }
+        resizePath.apply(pageToOverlay)
+        let resizeLayer = shapeLayer(path: resizePath.cgPath)
+        resizeLayer.name = "nf.text.selection.resize"
+        resizeLayer.fillColor = UIColor.white.cgColor
+        resizeLayer.strokeColor = UIColor.black.cgColor
+        resizeLayer.lineWidth = max(0.5, annotation.displayedSelectionLineWidth * unitScale)
+        layers.append(resizeLayer)
+
+        let deleteDiameter = annotation.displayedDeleteHandleDiameter
+        let deleteCenter = annotation.deleteHandleCenter
+        let deleteRect = CGRect(
+            x: deleteCenter.x - deleteDiameter / 2,
+            y: deleteCenter.y - deleteDiameter / 2,
+            width: deleteDiameter,
+            height: deleteDiameter
+        )
+        let deleteCircle = UIBezierPath(ovalIn: deleteRect)
+        deleteCircle.apply(pageToOverlay)
+        let deleteLayer = shapeLayer(path: deleteCircle.cgPath)
+        deleteLayer.name = "nf.text.selection.delete"
+        deleteLayer.fillColor = UIColor.systemRed.cgColor
+        deleteLayer.strokeColor = UIColor.white.cgColor
+        deleteLayer.lineWidth = max(0.7, annotation.displayedSelectionLineWidth * unitScale)
+        layers.append(deleteLayer)
+
+        let editingScale = annotation.editingDisplayScaleFactor
+        let iconInset = 7 / editingScale
+        let deleteIcon = UIBezierPath()
+        deleteIcon.move(to: CGPoint(x: deleteRect.minX + iconInset, y: deleteRect.minY + iconInset))
+        deleteIcon.addLine(to: CGPoint(x: deleteRect.maxX - iconInset, y: deleteRect.maxY - iconInset))
+        deleteIcon.move(to: CGPoint(x: deleteRect.maxX - iconInset, y: deleteRect.minY + iconInset))
+        deleteIcon.addLine(to: CGPoint(x: deleteRect.minX + iconInset, y: deleteRect.maxY - iconInset))
+        deleteIcon.apply(pageToOverlay)
+        let deleteIconLayer = shapeLayer(path: deleteIcon.cgPath)
+        deleteIconLayer.name = "nf.text.selection.deleteIcon"
+        deleteIconLayer.fillColor = UIColor.clear.cgColor
+        deleteIconLayer.strokeColor = UIColor.white.cgColor
+        deleteIconLayer.lineWidth = max(1, 2 / editingScale * unitScale)
+        deleteIconLayer.lineCap = .round
+        layers.append(deleteIconLayer)
+        return layers
     }
 
     /// 이미지 픽셀을 확대 배율 크기의 새 비트맵으로 만들지 않고 원본 CGImage 하나를 재사용합니다.
@@ -2877,6 +3067,15 @@ extension PortalPDFKitView {
                 .updateImageAnnotationPresentation(annotation)
         }
 
+        /// 텍스트 드래그 중에는 해당 CATextLayer와 선택 UI만 갱신합니다.
+        func refreshTextAnnotationPresentation(
+            _ annotation: PortalPDFTextAnnotation,
+            on page: PDFPage
+        ) {
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                .updateTextAnnotationPresentation(annotation)
+        }
+
         /// PDFView 최상단에 UITextView 터치 전용 호스트를 생성합니다.
         /// 입력기 위치는 PDF Page 좌표에서 계속 변환하므로 확대·이동 후에도 주석 위치를 유지합니다.
         func textEditorContainer(for page: PDFPage, in pdfView: PDFView) -> UIView? {
@@ -3204,7 +3403,10 @@ extension PortalPDFKitView {
                     // 완료 획의 비트맵 캐시 해상도를 현재 배율에 맞춥니다.
                     pageOverlayViews.values
                         .compactMap { $0 as? PortalPDFInkOverlayView }
-                        .forEach { $0.refreshCompletedStrokeRasterizationScale() }
+                        .forEach {
+                            $0.refreshCompletedStrokeRasterizationScale()
+                            $0.refreshTextRenderingScale()
+                        }
                 }
             }
             guard !isRestoringViewport,
@@ -3282,6 +3484,8 @@ extension PortalPDFKitView {
             guard annotation.updateEditingDisplayScaleFactor(currentPDFScaleFactor) else { return }
             let dirtyPageBounds = previousBounds.union(annotation.bounds).insetBy(dx: -2, dy: -2)
             let dirtyViewBounds = pdfView.convert(dirtyPageBounds, from: page)
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                .refreshInteractionSelection()
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             pdfView.setNeedsDisplay(dirtyViewBounds)
@@ -5293,22 +5497,26 @@ extension PortalPDFKitView {
                 annotation.isPortalTextSelected = true
                 annotation.updateEditingDisplayScaleFactor(currentPDFScaleFactor)
                 if let page = annotation.page {
-                    refreshPortalAnnotationTiles([(page, annotation)], in: pdfView)
+                    (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                        .refreshInteractionSelection()
                 }
                 return
             }
-            var affected: [(PDFPage, PDFAnnotation)] = []
+            var affectedPages: [PDFPage] = []
             if let previous = selectedTextAnnotation, let previousPage = previous.page {
                 previous.isPortalTextSelected = false
-                affected.append((previousPage, previous))
+                affectedPages.append(previousPage)
             }
             annotation.isPortalTextSelected = true
             annotation.updateEditingDisplayScaleFactor(currentPDFScaleFactor)
             selectedTextAnnotation = annotation
             if let page = annotation.page {
-                affected.append((page, annotation))
+                affectedPages.append(page)
             }
-            refreshPortalAnnotationTiles(affected, in: pdfView)
+            affectedPages.forEach { page in
+                (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                    .refreshInteractionSelection()
+            }
         }
 
         func clearSelectedTextAnnotation(in pdfView: PDFView) {
@@ -5319,7 +5527,8 @@ extension PortalPDFKitView {
             annotation.isPortalTextSelected = false
             selectedTextAnnotation = nil
             if let page {
-                refreshPortalAnnotationTiles([(page, annotation)], in: pdfView)
+                (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                    .refreshInteractionSelection()
             }
         }
 
@@ -5374,21 +5583,11 @@ extension PortalPDFKitView {
                 case nil:
                     break
                 }
-                if let pdfView {
-                    // PDFAnnotation.bounds만 변경하면 PDFKit의 화면 타일과 주석 위치 캐시가
-                    // 이전 좌표를 계속 사용할 수 있습니다. 텍스트 박스 한 개만 다시 등록해
-                    // 드래그 중 새 위치가 즉시 보이도록 하고, 문서 전체 재렌더링은 피합니다.
-                    refreshPortalAnnotationTiles([(page, annotation)], in: pdfView)
-                    pdfView.documentView?.setNeedsDisplay()
-                }
+                refreshTextAnnotationPresentation(annotation, on: page)
             case .ended:
                 activeImageDragState = nil
                 annotation.prepareForPersistence()
-                if let pdfView {
-                    // 마지막 이동 좌표를 PDFKit 타일 캐시에도 확정하여 다음 탭이나 확대·축소가
-                    // 발생하기 전까지 이전 위치의 선택선이 남지 않도록 합니다.
-                    refreshPortalAnnotationTiles([(page, annotation)], in: pdfView)
-                }
+                refreshPersistentAnnotationOverlay(on: page)
                 onDocumentChanged()
             case .cancelled, .failed:
                 activeImageDragState = nil

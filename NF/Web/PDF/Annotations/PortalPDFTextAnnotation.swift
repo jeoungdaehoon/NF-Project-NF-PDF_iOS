@@ -106,14 +106,14 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
     private static let clippingSafetyMargin: CGFloat = 3
     private static let minimumEditingDisplayScaleFactor: CGFloat = 0.5
     /// PDF 확대 배율과 반대로 보정해 점선과 삭제 버튼의 화면상 크기를 일정하게 유지합니다.
-    private var editingDisplayScaleFactor: CGFloat = 1
-    private var selectionDisplayScaleFactor: CGFloat = 1
+    var editingDisplayScaleFactor: CGFloat = 1
+    var selectionDisplayScaleFactor: CGFloat = 1
 
-    private var displayedSelectionLineWidth: CGFloat {
+    var displayedSelectionLineWidth: CGFloat {
         1 / selectionDisplayScaleFactor
     }
 
-    private var displayedSelectionDashLengths: [CGFloat] {
+    var displayedSelectionDashLengths: [CGFloat] {
         [4 / selectionDisplayScaleFactor, 3 / selectionDisplayScaleFactor]
     }
 
@@ -121,11 +121,11 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
         Self.selectionPadding / selectionDisplayScaleFactor
     }
 
-    private var displayedDeleteHandleDiameter: CGFloat {
+    var displayedDeleteHandleDiameter: CGFloat {
         Self.deleteHandleDiameter / editingDisplayScaleFactor
     }
 
-    private var displayedResizeHandleSide: CGFloat {
+    var displayedResizeHandleSide: CGFloat {
         Self.resizeHandleSide / editingDisplayScaleFactor
     }
 
@@ -133,7 +133,7 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
         Self.deleteHandleMargin / editingDisplayScaleFactor
     }
 
-    private var selectionOutlineRect: CGRect {
+    var selectionOutlineRect: CGRect {
         textBounds.insetBy(dx: -displayedSelectionPadding, dy: -displayedSelectionPadding)
     }
 
@@ -147,7 +147,7 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
     }
 
     /// 점선 테두리 위 모서리 4개와 변 중앙 4개의 조절점 중심입니다.
-    private var resizeHandleCenters: [PortalPDFResizeHandle: CGPoint] {
+    var resizeHandleCenters: [PortalPDFResizeHandle: CGPoint] {
         let outlineRect = selectionOutlineRect
         return [
             .topLeft: CGPoint(x: outlineRect.minX, y: outlineRect.maxY),
@@ -218,11 +218,14 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
     }
 
     var resolvedFont: UIFont {
-        var traits: UIFontDescriptor.SymbolicTraits = []
+        let isStoredSystemFont = fontName.hasPrefix(".") || fontName.localizedCaseInsensitiveContains("SFUI")
+        let baseFont = isStoredSystemFont
+            ? UIFont.systemFont(ofSize: fontSize)
+            : (UIFont(name: fontName, size: fontSize) ?? UIFont.systemFont(ofSize: fontSize))
+        var traits = baseFont.fontDescriptor.symbolicTraits
         if isBold { traits.insert(.traitBold) }
         if isItalic { traits.insert(.traitItalic) }
-        let baseDescriptor = UIFontDescriptor(name: fontName, size: fontSize)
-        let descriptor = baseDescriptor.withSymbolicTraits(traits) ?? baseDescriptor
+        let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) ?? baseFont.fontDescriptor
         return UIFont(descriptor: descriptor, size: fontSize)
     }
 
@@ -249,6 +252,27 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
             return decoded
         }
         return NSAttributedString(string: text, attributes: textAttributes)
+    }
+
+    /// PDF Annotation은 상호작용 프록시로만 두고 오버레이가 현재 내용을 즉시 다시 그릴 때 사용합니다.
+    var persistenceMetadata: Metadata {
+        Metadata(
+            id: textID,
+            text: text,
+            bounds: textBounds,
+            fontName: fontName,
+            fontSize: Double(fontSize),
+            textColorRGBA: textColor.portalRGBA,
+            fillColorRGBA: fillColor.portalRGBA,
+            borderColorRGBA: borderColor.portalRGBA,
+            isBold: isBold,
+            isItalic: isItalic,
+            isUnderlined: isUnderlined,
+            isStruckThrough: isStruckThrough,
+            alignmentRawValue: alignment.rawValue,
+            linkURL: linkURL,
+            attributedTextRTF: attributedTextRTF
+        )
     }
 
     /// 범위별 문자 서식을 RTF로 저장해 PDFView 재진입 후에도 그대로 복원합니다.
@@ -325,23 +349,7 @@ final class PortalPDFTextAnnotation: PDFAnnotation {
 
     func prepareForPersistence() {
         guard bounds.width > 0, bounds.height > 0 else { return }
-        let metadata = Metadata(
-            id: textID,
-            text: text,
-            bounds: textBounds,
-            fontName: fontName,
-            fontSize: Double(fontSize),
-            textColorRGBA: textColor.portalRGBA,
-            fillColorRGBA: fillColor.portalRGBA,
-            borderColorRGBA: borderColor.portalRGBA,
-            isBold: isBold,
-            isItalic: isItalic,
-            isUnderlined: isUnderlined,
-            isStruckThrough: isStruckThrough,
-            alignmentRawValue: alignment.rawValue,
-            linkURL: linkURL,
-            attributedTextRTF: attributedTextRTF
-        )
+        let metadata = persistenceMetadata
         guard let data = try? JSONEncoder().encode(metadata) else { return }
         contents = Self.metadataPrefix + data.base64EncodedString()
         userName = "NF Editable Text"

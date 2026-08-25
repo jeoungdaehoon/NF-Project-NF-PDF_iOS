@@ -86,6 +86,51 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(overlay.renderedContentLayerKindsInBackToFrontOrder == ["ink", "image", "ink"])
     }
 
+    @Test func selectedTextShowsResizeHandlesAndRerendersForZoom() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        let text = PortalPDFTextAnnotation(
+            text: "선명한 텍스트",
+            bounds: CGRect(x: 60, y: 180, width: 220, height: 56)
+        )
+        text.setAttributedText(NSAttributedString(
+            string: text.text,
+            attributes: [.font: UIFont.systemFont(ofSize: 18)]
+        ))
+        text.isPortalTextSelected = true
+        text.updateEditingDisplayScaleFactor(1)
+        page.addAnnotation(text)
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.autoScales = false
+        pdfView.minScaleFactor = 0.1
+        pdfView.maxScaleFactor = 10
+        pdfView.document = pdfDocument
+        pdfView.scaleFactor = 1
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+        overlay.layoutIfNeeded()
+
+        #expect(overlay.renderedTextResizeHandleCount == 8)
+        #expect(overlay.renderedTextFontNames.allSatisfy { !$0.contains("TimesNewRoman") })
+        let initialScale = try #require(overlay.renderedTextContentsScales.first)
+
+        pdfView.scaleFactor = 4
+        pdfView.layoutDocumentView()
+        pdfView.layoutIfNeeded()
+        overlay.refreshTextRenderingScale()
+
+        let zoomedScale = try #require(overlay.renderedTextContentsScales.first)
+        #expect(zoomedScale >= initialScale)
+
+        text.editingBounds = CGRect(x: 80, y: 160, width: 260, height: 72)
+        overlay.updateTextAnnotationPresentation(text)
+        #expect(overlay.renderedPageEditObjectLayerCount == 1)
+        #expect(overlay.renderedTextResizeHandleCount == 8)
+    }
+
     @Test func pageEditsRoundTripOutsideThePDFAndRestoreInteractionProxies() throws {
         let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
         let page = try #require(pdfDocument.page(at: 0))
