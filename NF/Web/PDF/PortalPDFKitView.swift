@@ -1066,6 +1066,10 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         }
     }
 
+    var completedStrokeRasterizationScales: [CGFloat] {
+        inkLayers.map(\.rasterizationScale)
+    }
+
     func configure(
         page: PDFPage,
         pdfView: PDFView,
@@ -1218,13 +1222,11 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     /// FileManager의 `setLineLayersUpdateScale`처럼 확대가 끝난 뒤에만 완료 획 캐시 해상도를 갱신합니다.
     func refreshCompletedStrokeRasterizationScale() {
-        guard let page,
-              let pdfView,
-              let baseTransform = basePageToOverlayTransform else { return }
-        let currentTransform = pageToOverlayTransform(page: page, pdfView: pdfView)
-        let baseScale = max(0.0001, hypot(baseTransform.a, baseTransform.b))
-        let currentScale = max(0.0001, hypot(currentTransform.a, currentTransform.b))
-        let rasterizationScale = min(12, traitCollection.displayScale * currentScale / baseScale)
+        guard let pdfView else { return }
+        // FileManager LineLayer는 `UIGraphicsBeginImageContextWithOptions`에
+        // `scrollView.zoomScale + OVER_SCALE(5)`를 그대로 사용합니다. PDF 페이지
+        // 오버레이 내부 변환 비율은 부모 ScrollView 확대를 반영하지 않으므로 사용하지 않습니다.
+        let rasterizationScale = max(1, pdfView.scaleFactor + 5)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         inkLayers.forEach { $0.rasterizationScale = rasterizationScale }
@@ -1332,7 +1334,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             // 완료 획은 작은 획 영역 단위로 비트맵 캐시되어 이후 확대·펜 입력에서
             // 기존 벡터 경로를 반복 합성하지 않습니다.
             shapeLayer.shouldRasterize = true
-            shapeLayer.rasterizationScale = traitCollection.displayScale
+            shapeLayer.rasterizationScale = max(1, (pdfView?.scaleFactor ?? 1) + 5)
             switch stroke.rendering {
             case .stroke(let lineWidth, let lineCap, let lineJoin):
                 shapeLayer.fillColor = UIColor.clear.cgColor

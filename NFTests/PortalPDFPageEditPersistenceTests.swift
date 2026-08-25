@@ -234,6 +234,34 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(overlay.renderedInkStrokeCount == 120)
     }
 
+    @Test func completedInkRasterCacheUsesFileManagerZoomPlusOverscale() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        addInk(to: page, index: 0)
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.autoScales = false
+        pdfView.minScaleFactor = 0.1
+        pdfView.maxScaleFactor = 10
+        pdfView.document = pdfDocument
+        pdfView.scaleFactor = 10
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+
+        let highZoomRasterScale = pdfView.scaleFactor + 5
+        #expect(overlay.completedStrokeRasterizationScales.allSatisfy {
+            abs($0 - highZoomRasterScale) < 0.001
+        })
+
+        pdfView.scaleFactor = 2
+        overlay.refreshCompletedStrokeRasterizationScale()
+        let updatedRasterScale = pdfView.scaleFactor + 5
+        #expect(overlay.completedStrokeRasterizationScales.allSatisfy {
+            abs($0 - updatedRasterScale) < 0.001
+        })
+    }
+
     @discardableResult
     private func addInk(to page: PDFPage, index: Int) -> PDFAnnotation {
         let y = CGFloat(30 + (index % 300))
