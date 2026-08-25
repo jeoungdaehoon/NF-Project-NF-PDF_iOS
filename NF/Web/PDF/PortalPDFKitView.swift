@@ -1044,6 +1044,14 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let cgImage: CGImage
     }
     private var decodedImages: [UUID: CachedImage] = [:]
+    private struct CachedAnimatedImage {
+        let data: Data
+        let frames: [CGImage]
+        let keyTimes: [NSNumber]
+        let duration: CFTimeInterval
+    }
+    private var decodedAnimatedImages: [UUID: CachedAnimatedImage] = [:]
+    private var pendingAnimatedImageIDs: Set<UUID> = []
     /// FileManager의 DrawingView처럼 확대 중에는 이 컨테이너 하나만 transform 합니다.
     private lazy var pageContentLayer: CALayer = {
         let contentLayer = CALayer()
@@ -1079,6 +1087,10 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     var renderedImageSelectionLayerCount: Int {
         imageSelectionLayers.count
+    }
+
+    var renderedAnimatedImageCount: Int {
+        imageLayers.filter { $0.animation(forKey: "nf.gif.contents") != nil }.count
     }
 
     var renderedPageEditObjectLayerCount: Int {
@@ -1197,6 +1209,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         inkLayers = updatedStrokes.map { makeStrokeLayer($0) }
         let validImageIDs = Set(pageEditData?.objects.compactMap { $0.kind == .image ? $0.id : nil } ?? [])
         decodedImages = decodedImages.filter { validImageIDs.contains($0.key) }
+        decodedAnimatedImages = decodedAnimatedImages.filter { validImageIDs.contains($0.key) }
+        pendingAnimatedImageIDs.formIntersection(validImageIDs)
         renderGeneration += 1
     }
 
@@ -1285,6 +1299,32 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         )
     }
 
+    /// FileManager `StickerItemView`처럼 선택 이미지 하나의 기존 CALayer만 이동·회전·크기 변경합니다.
+    /// 페이지의 펜·다른 이미지·텍스트 레이어는 다시 만들지 않습니다.
+    func updateImageAnnotationPresentation(_ annotation: PortalPDFImageAnnotation) {
+        guard let pageToOverlay = basePageToOverlayTransform,
+              let identifier = annotation.value(forAnnotationKey: .name) as? String,
+              let imageLayer = imageLayers.first(where: { $0.name == imageLayerName(identifier) }) else {
+            reloadInkPaths()
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        applyImageLayerGeometry(
+            imageLayer,
+            bounds: annotation.imageBounds,
+            rotationAngle: annotation.rotationAngle,
+            isHorizontallyFlipped: annotation.isHorizontallyFlipped,
+            pageToOverlay: pageToOverlay
+        )
+        CATransaction.commit()
+        refreshInteractionSelection()
+    }
+
+    private func imageLayerName(_ identifier: String) -> String {
+        "nf.image.\(identifier)"
+    }
+
     /// FileManager의 `setLineLayersUpdateScale`처럼 확대가 끝난 뒤에만 완료 획 캐시 해상도를 갱신합니다.
     func refreshCompletedStrokeRasterizationScale() {
         guard let pdfView else { return }
@@ -1324,6 +1364,16 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 cgImage: cgImage,
                 pageToOverlay: pageToOverlay
             )
+            if let identifier = imageAnnotation.value(forAnnotationKey: .name) as? String {
+                imageLayer.name = imageLayerName(identifier)
+                if let objectID = UUID(uuidString: identifier) {
+                    installAnimatedGIFIfNeeded(
+                        imageAnnotation.animatedGIFData,
+                        objectID: objectID,
+                        on: imageLayer
+                    )
+                }
+            }
             pageContentLayer.addSublayer(imageLayer)
             imageLayers.append(imageLayer)
             imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
@@ -1625,8 +1675,10 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 let imageLayer = makeImageLayer(
                     metadata: metadata,
                     cgImage: cgImage,
+                    objectID: object.id,
                     pageToOverlay: pageToOverlay
                 )
+                imageLayer.name = imageLayerName(object.id.uuidString)
                 pageContentLayer.addSublayer(imageLayer)
                 imageLayers.append(imageLayer)
                 imagePixelSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
@@ -1683,26 +1735,123 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     private func makeImageLayer(
         metadata: PortalPDFImageAnnotation.Metadata,
         cgImage: CGImage,
+        objectID: UUID,
         pageToOverlay: CGAffineTransform
     ) -> CALayer {
-        let imageBounds = metadata.bounds
-        let center = CGPoint(x: imageBounds.midX, y: imageBounds.midY).applying(pageToOverlay)
-        let cosine = cos(CGFloat(metadata.rotationAngle))
-        let sine = sin(CGFloat(metadata.rotationAngle))
-        let horizontalDirection: CGFloat = metadata.isHorizontallyFlipped ? -1 : 1
-        let pageXAxis = CGPoint(x: horizontalDirection * cosine, y: horizontalDirection * sine)
-        let pageYAxis = CGPoint(x: sine, y: -cosine)
-        let overlayXAxis = pageXAxis.applyingLinearPart(of: pageToOverlay)
-        let overlayYAxis = pageYAxis.applyingLinearPart(of: pageToOverlay)
-
         let imageLayer = CALayer()
-        imageLayer.bounds = CGRect(origin: .zero, size: imageBounds.size)
-        imageLayer.position = center
+        imageLayer.name = imageLayerName(objectID.uuidString)
         imageLayer.contents = cgImage
         imageLayer.contentsGravity = .resize
         imageLayer.minificationFilter = .trilinear
         imageLayer.magnificationFilter = .linear
         imageLayer.allowsEdgeAntialiasing = true
+        applyImageLayerGeometry(
+            imageLayer,
+            bounds: metadata.bounds,
+            rotationAngle: CGFloat(metadata.rotationAngle),
+            isHorizontallyFlipped: metadata.isHorizontallyFlipped,
+            pageToOverlay: pageToOverlay
+        )
+        installAnimatedGIFIfNeeded(metadata.animatedGIFData, objectID: objectID, on: imageLayer)
+        return imageLayer
+    }
+
+    /// FileManager `StickerItemView`의 `animationImages`처럼 GIF 프레임을 한 번 디코딩해
+    /// 기존 이미지 CALayer의 contents 애니메이션으로 재생합니다.
+    private func installAnimatedGIFIfNeeded(
+        _ data: Data?,
+        objectID: UUID,
+        on imageLayer: CALayer
+    ) {
+        guard let data else { return }
+        if let cached = decodedAnimatedImages[objectID], cached.data == data {
+            applyAnimatedImage(cached, to: imageLayer)
+            return
+        }
+        guard pendingAnimatedImageIDs.insert(objectID).inserted else { return }
+        let expectedLayerName = imageLayer.name
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let decoded = Self.decodeAnimatedImage(data) else {
+                DispatchQueue.main.async { self?.pendingAnimatedImageIDs.remove(objectID) }
+                return
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.pendingAnimatedImageIDs.remove(objectID)
+                self.decodedAnimatedImages[objectID] = decoded
+                guard let currentLayer = self.imageLayers.first(where: {
+                    $0.superlayer != nil && $0.name == expectedLayerName
+                }) else { return }
+                self.applyAnimatedImage(decoded, to: currentLayer)
+            }
+        }
+    }
+
+    nonisolated private static func decodeAnimatedImage(_ data: Data) -> CachedAnimatedImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let frameCount = CGImageSourceGetCount(source)
+        guard frameCount > 1 else { return nil }
+        var frames: [CGImage] = []
+        var delays: [Double] = []
+        frames.reserveCapacity(frameCount)
+        delays.reserveCapacity(frameCount)
+        for index in 0..<frameCount {
+            guard let frame = CGImageSourceCreateImageAtIndex(
+                source,
+                index,
+                [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
+            ) else { continue }
+            frames.append(frame)
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+            let gif = properties?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            let unclamped = gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
+            let clamped = gif?[kCGImagePropertyGIFDelayTime] as? Double
+            delays.append(max(0.02, unclamped ?? clamped ?? 0.1))
+        }
+        guard frames.count > 1, frames.count == delays.count else { return nil }
+        let duration = delays.reduce(0, +)
+        guard duration > 0 else { return nil }
+        var elapsed = 0.0
+        let keyTimes = delays.map { delay -> NSNumber in
+            defer { elapsed += delay }
+            return NSNumber(value: elapsed / duration)
+        }
+        return CachedAnimatedImage(
+            data: data,
+            frames: frames,
+            keyTimes: keyTimes,
+            duration: duration
+        )
+    }
+
+    private func applyAnimatedImage(_ animatedImage: CachedAnimatedImage, to imageLayer: CALayer) {
+        let animation = CAKeyframeAnimation(keyPath: "contents")
+        animation.values = animatedImage.frames
+        animation.keyTimes = animatedImage.keyTimes
+        animation.duration = animatedImage.duration
+        animation.calculationMode = .discrete
+        animation.repeatCount = .infinity
+        animation.isRemovedOnCompletion = false
+        imageLayer.add(animation, forKey: "nf.gif.contents")
+    }
+
+    private func applyImageLayerGeometry(
+        _ imageLayer: CALayer,
+        bounds imageBounds: CGRect,
+        rotationAngle: CGFloat,
+        isHorizontallyFlipped: Bool,
+        pageToOverlay: CGAffineTransform
+    ) {
+        let center = CGPoint(x: imageBounds.midX, y: imageBounds.midY).applying(pageToOverlay)
+        let cosine = cos(rotationAngle)
+        let sine = sin(rotationAngle)
+        let horizontalDirection: CGFloat = isHorizontallyFlipped ? -1 : 1
+        let pageXAxis = CGPoint(x: horizontalDirection * cosine, y: horizontalDirection * sine)
+        let pageYAxis = CGPoint(x: sine, y: -cosine)
+        let overlayXAxis = pageXAxis.applyingLinearPart(of: pageToOverlay)
+        let overlayYAxis = pageYAxis.applyingLinearPart(of: pageToOverlay)
+        imageLayer.bounds = CGRect(origin: .zero, size: imageBounds.size)
+        imageLayer.position = center
         imageLayer.setAffineTransform(CGAffineTransform(
             a: overlayXAxis.x,
             b: overlayXAxis.y,
@@ -1711,7 +1860,6 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             tx: 0,
             ty: 0
         ))
-        return imageLayer
     }
 
     private func makeTextLayer(
@@ -2346,6 +2494,11 @@ extension PortalPDFKitView {
         var activePenLastViewPoint: CGPoint?
         /// 탭과 매우 짧은 한글 획도 점으로 저장하기 위한 현재 획의 샘플 수입니다.
         var activePenSampleCount: Int = 0
+        /// FileManager `PencilView.newLineDrawing`과 같은 3점 단위 Cubic 보간 상태입니다.
+        /// 매 입력마다 전체 좌표를 다시 스무딩하지 않고 새 곡선 조각만 누적합니다.
+        var activePenPageCurvePoints = [CGPoint](repeating: .zero, count: 4)
+        var activePenViewCurvePoints = [CGPoint](repeating: .zero, count: 4)
+        var activePenCurveIndex = 0
         /// 펜 도구 드래그 중 깜빡임 없이 표시하기 위해 PDFView 위에 올리는 임시 Shape Layer 입니다.
         var activePenOverlayLayer: CAShapeLayer?
         /// 압력 반응 펜의 전체 획을 하나의 연속 외곽선으로 표시하는 임시 Shape Layer 입니다.
@@ -2612,6 +2765,15 @@ extension PortalPDFKitView {
             (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.updatePageEditData(
                 updatePageEditDocument(on: page)
             )
+        }
+
+        /// 이미지 제스처 중에는 선택 객체의 기존 레이어만 갱신해 페이지 전체 재캡처·재구성을 피합니다.
+        func refreshImageAnnotationPresentation(
+            _ annotation: PortalPDFImageAnnotation,
+            on page: PDFPage
+        ) {
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                .updateImageAnnotationPresentation(annotation)
         }
 
         /// PDFView 최상단에 UITextView 터치 전용 호스트를 생성합니다.
@@ -2910,6 +3072,9 @@ extension PortalPDFKitView {
         }
 
         @objc private func handleViewportGestureEnded(_ recognizer: UIGestureRecognizer) {
+            let didFinishGesture = recognizer.state == .ended
+                || recognizer.state == .cancelled
+                || recognizer.state == .failed
             if recognizer.state == .began {
                 // 이전 고배율 제스처가 예약한 문서 재연결이 새 핀치·이동 중
                 // 실행되면 PDFKit ScrollView가 해제되며 충돌할 수 있으므로 즉시 취소합니다.
@@ -2919,7 +3084,7 @@ extension PortalPDFKitView {
             if let pdfView {
                 updateTextActionMenuPosition(in: pdfView)
                 updateImageActionMenuPosition(in: pdfView)
-                if recognizer === viewportPinchGesture {
+                if recognizer === viewportPinchGesture, didFinishGesture {
                     reportZoomPercentage(in: pdfView)
                 }
             }
@@ -2927,18 +3092,13 @@ extension PortalPDFKitView {
                 updateActiveTextEditorForViewportGesture(recognizer)
             }
             if recognizer === viewportPinchGesture {
-                // 선택 이미지의 상단 편집 버튼은 PDF 배율의 역수를 사용해 화면상 크기를 일정하게 유지합니다.
-                refreshSelectedImageEditingScaleIfNeeded()
-                // 텍스트 선택 점선과 왼쪽 삭제 버튼도 이미지와 같은 화면상 크기를 유지합니다.
-                refreshSelectedTextEditingScaleIfNeeded()
-                // 박스 선택 라인과 8개 크기 조절점도 현재 확대 배율에 맞춰 갱신합니다.
-                refreshSelectedShapeEditingScaleIfNeeded()
-                // 올가미는 PDF Page 좌표를 화면 좌표로 직접 변환해 그리므로 확대 중 매 프레임
-                // 경로와 조작점 위치를 다시 계산해야 선택 영역과 함께 정확히 확대·축소됩니다.
-                refreshLassoEditingScaleIfNeeded()
-                if recognizer.state == .ended
-                    || recognizer.state == .cancelled
-                    || recognizer.state == .failed {
+                if didFinishGesture {
+                    // FileManager처럼 핀치 중에는 선택 UI도 기존 레이어 트리와 함께 변환하고,
+                    // 손을 뗀 뒤 화면상 고정 크기와 고해상도 캐시를 한 번만 갱신합니다.
+                    refreshSelectedImageEditingScaleIfNeeded()
+                    refreshSelectedTextEditingScaleIfNeeded()
+                    refreshSelectedShapeEditingScaleIfNeeded()
+                    refreshLassoEditingScaleIfNeeded()
                     // 확대 프레임에서는 레이어 계층만 변환하고, FileManager처럼 손을 뗀 뒤에만
                     // 완료 획의 비트맵 캐시 해상도를 현재 배율에 맞춥니다.
                     pageOverlayViews.values
@@ -4298,7 +4458,11 @@ extension PortalPDFKitView {
             // 이 시점에 요청을 소비해 버리면 이후 updateUIView에서도 재시도하지 않아
             // 사진을 골라도 보이지 않는 문제가 발생합니다. 실제 추가에 성공한 뒤에만
             // 요청 ID를 기록해 다음 화면 갱신에서 안전하게 재시도합니다.
-            guard addImageAnnotation(pendingImage.image, in: pdfView) else { return }
+            guard addImageAnnotation(
+                pendingImage.image,
+                animatedGIFData: pendingImage.isAnimatedGIF ? pendingImage.sourceData : nil,
+                in: pdfView
+            ) else { return }
             lastInsertedImageID = pendingImage.id
             onDocumentChanged()
         }
@@ -4339,12 +4503,18 @@ extension PortalPDFKitView {
             case .rotateClockwise:
                 // 추가 편집 바의 회전은 선택 박스·핸들·Annotation 위치를 돌리지 않고
                 // 박스 안의 이미지 콘텐츠만 시계 방향으로 회전합니다.
-                replaceImageAnnotation(
-                    annotation,
-                    with: annotation.clockwiseRotatedContentImage(),
-                    on: page,
-                    in: pdfView
-                )
+                if annotation.animatedGIFData != nil {
+                    annotation.rotationAngle += .pi / 2
+                    annotation.prepareForPersistence()
+                    refreshImageAnnotationPresentation(annotation, on: page)
+                } else {
+                    replaceImageAnnotation(
+                        annotation,
+                        with: annotation.clockwiseRotatedContentImage(),
+                        on: page,
+                        in: pdfView
+                    )
+                }
             case .flipHorizontal:
                 // PDFKit이 기존 Annotation의 렌더 캐시를 유지하지 않도록 새 객체로 교체합니다.
                 // 이미지 본문만 반전하고 위치·크기·회전·선택 상태는 그대로 유지합니다.
@@ -4352,6 +4522,7 @@ extension PortalPDFKitView {
                     annotation,
                     with: annotation.contentImageForEditing,
                     horizontalFlip: !annotation.isHorizontallyFlipped,
+                    preservesAnimation: true,
                     on: page,
                     in: pdfView
                 )
@@ -6504,6 +6675,9 @@ extension PortalPDFKitView {
                 activePenOverlayPath = makeRoundedPath(startPoint: firstViewPoint)
                 activePenLastViewPoint = firstViewPoint
                 activePenSampleCount = 1
+                activePenPageCurvePoints[0] = firstPagePoint
+                activePenViewCurvePoints[0] = firstViewPoint
+                activePenCurveIndex = 0
                 appendPenSamples(
                     viewPoints.dropFirst(),
                     pressures: viewPressures.dropFirst(),
@@ -6514,7 +6688,9 @@ extension PortalPDFKitView {
             case .changed:
                 guard let page = activePenPage else { return }
                 appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
-                scheduleActivePenOverlayRefresh()
+                if penType == .pressure {
+                    scheduleActivePenOverlayRefresh()
+                }
             case .ended:
                 guard let page = activePenPage,
                       let pagePath = activePenPath else {
@@ -6523,6 +6699,9 @@ extension PortalPDFKitView {
                     return
                 }
                 appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
+                if penType != .pressure {
+                    finishFileManagerRoundedPenPath()
+                }
                 let pointCountBeforeDot = activePenPagePoints.count
                 ensureVisibleDotIfNeeded(pagePath: pagePath)
                 var completedAnnotation: PDFAnnotation?
@@ -6539,7 +6718,7 @@ extension PortalPDFKitView {
                     completedAnnotation = addPressureInkAnnotations(to: page)
                 } else {
                     flushActivePenOverlayRefresh()
-                    completedAnnotation = addInkAnnotation(path: pagePath, to: page)
+                    completedAnnotation = addInkAnnotation(path: pagePath, to: page, isPathSmoothed: true)
                 }
                 if selectedTool == .neon {
                     resetActiveDrawing()
@@ -6975,17 +7154,19 @@ extension PortalPDFKitView {
                 recognizer.rotation = 0
                 if let imageAnnotation = annotation as? PortalPDFImageAnnotation,
                    let page = imageAnnotation.page {
-                    refreshPersistentAnnotationOverlay(on: page)
+                    refreshImageAnnotationPresentation(imageAnnotation, on: page)
+                } else {
+                    pdfView?.setNeedsDisplay()
                 }
-                pdfView?.setNeedsDisplay()
             case .changed:
                 annotation.rotationAngle += recognizer.rotation
                 recognizer.rotation = 0
                 if let imageAnnotation = annotation as? PortalPDFImageAnnotation,
                    let page = imageAnnotation.page {
-                    refreshPersistentAnnotationOverlay(on: page)
+                    refreshImageAnnotationPresentation(imageAnnotation, on: page)
+                } else {
+                    pdfView?.setNeedsDisplay()
                 }
-                pdfView?.setNeedsDisplay()
             case .ended:
                 onDocumentChanged()
             default:
@@ -7192,10 +7373,11 @@ extension PortalPDFKitView {
                     let angle = atan2(point.y - center.y, point.x - center.x)
                     scaleAnnotation(annotation, by: distance / previousDistance, on: page)
                     annotation.rotationAngle += normalizedAngle(angle - previousAngle)
-                    if annotation is PortalPDFImageAnnotation {
-                        refreshPersistentAnnotationOverlay(on: page)
+                    if let imageAnnotation = annotation as? PortalPDFImageAnnotation {
+                        refreshImageAnnotationPresentation(imageAnnotation, on: page)
+                    } else {
+                        pdfView?.setNeedsDisplay()
                     }
-                    pdfView?.setNeedsDisplay()
                     self.activeImageDragState = .transforming(previousDistance: distance, previousAngle: angle)
                 case .resizingBounds(let handle, let initialBounds, let initialPoint):
                     let candidate = resizedEditingBounds(
@@ -7209,11 +7391,12 @@ extension PortalPDFKitView {
                         candidate,
                         in: page.bounds(for: .cropBox)
                     )
-                    if annotation is PortalPDFImageAnnotation {
-                        refreshPersistentAnnotationOverlay(on: page)
+                    if let imageAnnotation = annotation as? PortalPDFImageAnnotation {
+                        refreshImageAnnotationPresentation(imageAnnotation, on: page)
+                    } else {
+                        pdfView?.setNeedsDisplay()
+                        pdfView?.documentView?.setNeedsDisplay()
                     }
-                    pdfView?.setNeedsDisplay()
-                    pdfView?.documentView?.setNeedsDisplay()
                 }
             case .ended, .cancelled, .failed:
                 if activeImageDragState != nil, state == .ended {
@@ -7278,7 +7461,12 @@ extension PortalPDFKitView {
             to page: PDFPage,
             in pdfView: PDFView
         ) where S.Element == CGPoint, P.Element == CGFloat {
-            for (viewPoint, pressure) in zip(viewPoints, pressures) {
+            let pairedSamples = Array(zip(viewPoints, pressures))
+            // FileManager의 기본 Round Pencil은 이벤트당 마지막 실제 위치 하나를 사용하고
+            // 3점마다 곡선 조각을 추가합니다. 압력 펜만 coalesced 좌표 전체를 유지합니다.
+            let samples = penType == .pressure ? pairedSamples : Array(pairedSamples.suffix(1))
+            var didExtendVisiblePath = false
+            for (viewPoint, pressure) in samples {
                 // 페이지 사이 여백이나 다른 페이지로 넘어간 좌표는 현재 획에 섞지 않습니다.
                 guard pdfView.page(for: viewPoint, nearest: false) === page else { continue }
                 if let lastViewPoint = activePenLastViewPoint {
@@ -7298,14 +7486,95 @@ extension PortalPDFKitView {
                 } else {
                     filteredPressure = normalizedPressure
                 }
-                activePenPath?.addLine(to: pagePoint)
                 activePenPagePoints.append(pagePoint)
                 activePenViewPoints.append(viewPoint)
                 activePenPressures.append(filteredPressure)
-                activePenOverlayPath?.addLine(to: viewPoint)
+                if penType == .pressure {
+                    activePenPath?.addLine(to: pagePoint)
+                    activePenOverlayPath?.addLine(to: viewPoint)
+                    didExtendVisiblePath = true
+                } else {
+                    didExtendVisiblePath = appendFileManagerRoundedPenSample(
+                        pagePoint: pagePoint,
+                        viewPoint: viewPoint
+                    ) || didExtendVisiblePath
+                }
                 activePenLastViewPoint = viewPoint
                 activePenSampleCount += 1
             }
+            if didExtendVisiblePath, penType != .pressure {
+                refreshActivePenOverlay()
+            }
+        }
+
+        /// FileManager `newLineDrawing`의 3점 Cubic 연결을 페이지/화면 경로에 동시에 적용합니다.
+        @discardableResult
+        func appendFileManagerRoundedPenSample(pagePoint: CGPoint, viewPoint: CGPoint) -> Bool {
+            activePenCurveIndex += 1
+            guard activePenCurveIndex < activePenPageCurvePoints.count else { return false }
+            activePenPageCurvePoints[activePenCurveIndex] = pagePoint
+            activePenViewCurvePoints[activePenCurveIndex] = viewPoint
+            guard activePenCurveIndex == 3 else { return false }
+
+            let pageMidpoint = CGPoint(
+                x: (activePenPageCurvePoints[1].x + activePenPageCurvePoints[3].x) / 2,
+                y: (activePenPageCurvePoints[1].y + activePenPageCurvePoints[3].y) / 2
+            )
+            let viewMidpoint = CGPoint(
+                x: (activePenViewCurvePoints[1].x + activePenViewCurvePoints[3].x) / 2,
+                y: (activePenViewCurvePoints[1].y + activePenViewCurvePoints[3].y) / 2
+            )
+            activePenPath?.move(to: activePenPageCurvePoints[0])
+            activePenPath?.addCurve(
+                to: pageMidpoint,
+                controlPoint1: activePenPageCurvePoints[0],
+                controlPoint2: activePenPageCurvePoints[1]
+            )
+            activePenOverlayPath?.move(to: activePenViewCurvePoints[0])
+            activePenOverlayPath?.addCurve(
+                to: viewMidpoint,
+                controlPoint1: activePenViewCurvePoints[0],
+                controlPoint2: activePenViewCurvePoints[1]
+            )
+            activePenPageCurvePoints[0] = pageMidpoint
+            activePenPageCurvePoints[1] = activePenPageCurvePoints[3]
+            activePenViewCurvePoints[0] = viewMidpoint
+            activePenViewCurvePoints[1] = activePenViewCurvePoints[3]
+            activePenCurveIndex = 1
+            return true
+        }
+
+        /// 손을 뗄 때 남은 두 좌표를 FileManager `endLineDrawing`과 같은 곡선으로 마감합니다.
+        func finishFileManagerRoundedPenPath() {
+            // UIGestureRecognizer의 ended 좌표가 마지막 moved 좌표와 같으면 중복 필터를 통과하지
+            // 않습니다. FileManager는 ended에서도 `newLineDrawing`을 한 번 호출하므로 그 동작과
+            // 같게 마지막 좌표를 복제해 짧은 획과 마지막 꼬리를 빠뜨리지 않습니다.
+            if activePenCurveIndex == 1 {
+                activePenPageCurvePoints[2] = activePenPageCurvePoints[1]
+                activePenViewCurvePoints[2] = activePenViewCurvePoints[1]
+                activePenCurveIndex = 2
+            }
+            guard activePenCurveIndex == 2 else { return }
+            let pageMidpoint = CGPoint(
+                x: (activePenPageCurvePoints[0].x + activePenPageCurvePoints[2].x) / 2,
+                y: (activePenPageCurvePoints[0].y + activePenPageCurvePoints[2].y) / 2
+            )
+            let viewMidpoint = CGPoint(
+                x: (activePenViewCurvePoints[0].x + activePenViewCurvePoints[2].x) / 2,
+                y: (activePenViewCurvePoints[0].y + activePenViewCurvePoints[2].y) / 2
+            )
+            activePenPath?.move(to: activePenPageCurvePoints[0])
+            activePenPath?.addCurve(
+                to: activePenPageCurvePoints[2],
+                controlPoint1: activePenPageCurvePoints[0],
+                controlPoint2: pageMidpoint
+            )
+            activePenOverlayPath?.move(to: activePenViewCurvePoints[0])
+            activePenOverlayPath?.addCurve(
+                to: activePenViewCurvePoints[2],
+                controlPoint1: activePenViewCurvePoints[0],
+                controlPoint2: viewMidpoint
+            )
         }
 
         /// 이동이 거의 없는 짧은 한글 획도 둥근 점으로 표시되도록 최소 길이를 추가합니다.
@@ -8566,7 +8835,11 @@ extension PortalPDFKitView {
             - pdfView: 현재 표시 중인 PDFView 입니다.
          */
         @discardableResult
-        func addImageAnnotation(_ image: UIImage, in pdfView: PDFView) -> Bool {
+        func addImageAnnotation(
+            _ image: UIImage,
+            animatedGIFData: Data? = nil,
+            in pdfView: PDFView
+        ) -> Bool {
             let viewCenter = CGPoint(x: pdfView.bounds.midX, y: pdfView.bounds.midY)
             guard let page = pdfView.page(for: viewCenter, nearest: true) ?? pdfView.currentPage else { return false }
             let pageCenter = pdfView.convert(viewCenter, to: page)
@@ -8579,7 +8852,15 @@ extension PortalPDFKitView {
                 center: pageCenter
             )
             guard annotationBounds.width > 8, annotationBounds.height > 8 else { return false }
-            let annotation = PortalPDFImageAnnotation(image: image, bounds: annotationBounds)
+            let persistedImageData = image.jpegData(compressionQuality: 0.84)
+                ?? image.pngData()
+                ?? Data()
+            let annotation = PortalPDFImageAnnotation(
+                image: image,
+                persistedImageData: persistedImageData,
+                bounds: annotationBounds,
+                animatedGIFData: animatedGIFData
+            )
             page.addAnnotation(annotation)
             // 이미지·점선 선택 영역·오른쪽 조절 버튼까지 페이지 밖으로 잘리지 않도록 보정합니다.
             annotation.editingBounds = annotation.editingBounds
@@ -8609,13 +8890,17 @@ extension PortalPDFKitView {
             with image: UIImage,
             horizontalFlip: Bool? = nil,
             editingBounds: CGRect? = nil,
+            preservesAnimation: Bool = false,
             on page: PDFPage,
             in pdfView: PDFView
         ) {
             let annotationsInDisplayOrder = page.annotations
+            let imageData = image.jpegData(compressionQuality: 0.84) ?? image.pngData() ?? Data()
             let replacement = PortalPDFImageAnnotation(
                 image: image,
-                bounds: editingBounds ?? annotation.editingBounds
+                persistedImageData: imageData,
+                bounds: editingBounds ?? annotation.editingBounds,
+                animatedGIFData: preservesAnimation ? annotation.animatedGIFData : nil
             )
             replacement.rotationAngle = annotation.rotationAngle
             replacement.isHorizontallyFlipped = horizontalFlip ?? annotation.isHorizontallyFlipped
@@ -9021,10 +9306,11 @@ extension PortalPDFKitView {
             let pageBounds = page.bounds(for: .cropBox)
             let movedBounds = annotation.editingBounds.offsetBy(dx: delta.x, dy: delta.y)
             annotation.editingBounds = annotation.constrainedEditingBounds(movedBounds, in: pageBounds)
-            if annotation is PortalPDFImageAnnotation {
-                refreshPersistentAnnotationOverlay(on: page)
+            if let imageAnnotation = annotation as? PortalPDFImageAnnotation {
+                refreshImageAnnotationPresentation(imageAnnotation, on: page)
+            } else {
+                pdfView?.setNeedsDisplay()
             }
-            pdfView?.setNeedsDisplay()
         }
 
         /**
@@ -9068,10 +9354,9 @@ extension PortalPDFKitView {
                 height: nextHeight
             )
             annotation.editingBounds = annotation.constrainedEditingBounds(nextBounds, in: pageBounds)
-            if annotation is PortalPDFImageAnnotation {
-                refreshPersistentAnnotationOverlay(on: page)
+            if !(annotation is PortalPDFImageAnnotation) {
+                pdfView?.setNeedsDisplay()
             }
-            pdfView?.setNeedsDisplay()
         }
 
         /**
@@ -9252,6 +9537,9 @@ extension PortalPDFKitView {
             activePenOverlayPath = nil
             activePenLastViewPoint = nil
             activePenSampleCount = 0
+            activePenPageCurvePoints = [CGPoint](repeating: .zero, count: 4)
+            activePenViewCurvePoints = [CGPoint](repeating: .zero, count: 4)
+            activePenCurveIndex = 0
             activePenOverlayLayer = nil
             activePressureOverlayLayer = nil
             activeBoxPage = nil

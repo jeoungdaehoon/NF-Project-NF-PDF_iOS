@@ -21,6 +21,22 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         let bounds: CGRect
         let rotationAngle: Double
         let isHorizontallyFlipped: Bool
+        /// FileManager의 `ImagesObject`처럼 GIF 원본 프레임 컨테이너를 정지 이미지와 별도로 보존합니다.
+        let animatedGIFData: Data?
+
+        init(
+            imageData: Data,
+            bounds: CGRect,
+            rotationAngle: Double,
+            isHorizontallyFlipped: Bool,
+            animatedGIFData: Data? = nil
+        ) {
+            self.imageData = imageData
+            self.bounds = bounds
+            self.rotationAngle = rotationAngle
+            self.isHorizontallyFlipped = isHorizontallyFlipped
+            self.animatedGIFData = animatedGIFData
+        }
     }
     struct HistoryState {
         fileprivate let image: UIImage
@@ -29,6 +45,7 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         fileprivate let rotationAngle: CGFloat
         fileprivate let isHorizontallyFlipped: Bool
         fileprivate let displayScaleFactor: CGFloat
+        fileprivate let animatedGIFData: Data?
     }
     /// 축소 시 이미지 본문이 유지되는 최소 변 길이입니다.
     static let minimumContentSide: CGFloat = 20
@@ -52,6 +69,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
     let image: UIImage
     /// 재진입 시 편집 객체를 복원하기 위해 PDF Annotation 메타데이터에 넣을 압축 이미지입니다.
     let persistedImageData: Data
+    /// 화면 애니메이션용 GIF 원본입니다. PDF 내보내기에서는 첫 프레임이 사용됩니다.
+    let animatedGIFData: Data?
     /// 실제 이미지 본문 영역입니다. PDFKit의 bounds는 회전 후 이미지·점선·핸들을 모두 담는 렌더링 안전 영역입니다.
     var imageBounds: CGRect
     /// 이미지 편집 모드에서 점선 선택 박스를 표시할지 여부입니다.
@@ -102,13 +121,20 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         self.init(
             image: image,
             persistedImageData: image.jpegData(compressionQuality: 0.84) ?? image.pngData() ?? Data(),
-            bounds: bounds
+            bounds: bounds,
+            animatedGIFData: nil
         )
     }
 
-    init(image: UIImage, persistedImageData: Data, bounds: CGRect) {
+    init(
+        image: UIImage,
+        persistedImageData: Data,
+        bounds: CGRect,
+        animatedGIFData: Data? = nil
+    ) {
         self.image = image
         self.persistedImageData = persistedImageData
+        self.animatedGIFData = animatedGIFData
         self.imageBounds = bounds
         // 화면 표시는 원본 CGImage 오버레이가 담당합니다. Stamp는 숨김·빈 bounds 상태에서도
         // PDFKit이 고배율 래스터 효과 레이어를 만들 수 있어 런타임 객체는 Square로 유지합니다.
@@ -132,7 +158,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         let restored = PortalPDFImageAnnotation(
             image: image,
             persistedImageData: metadata.imageData,
-            bounds: metadata.bounds
+            bounds: metadata.bounds,
+            animatedGIFData: metadata.animatedGIFData
         )
         restored.rotationAngle = CGFloat(metadata.rotationAngle)
         restored.isHorizontallyFlipped = metadata.isHorizontallyFlipped
@@ -149,7 +176,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
             bounds: imageBounds,
             rotationAngle: rotationAngle,
             isHorizontallyFlipped: isHorizontallyFlipped,
-            displayScaleFactor: selectionDisplayScaleFactor
+            displayScaleFactor: selectionDisplayScaleFactor,
+            animatedGIFData: animatedGIFData
         )
     }
 
@@ -157,7 +185,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         let clone = PortalPDFImageAnnotation(
             image: state.image,
             persistedImageData: state.persistedImageData,
-            bounds: state.bounds
+            bounds: state.bounds,
+            animatedGIFData: state.animatedGIFData
         )
         clone.rotationAngle = state.rotationAngle
         clone.isHorizontallyFlipped = state.isHorizontallyFlipped
@@ -201,7 +230,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
             imageData: persistedImageData,
             bounds: imageBounds,
             rotationAngle: Double(rotationAngle),
-            isHorizontallyFlipped: isHorizontallyFlipped
+            isHorizontallyFlipped: isHorizontallyFlipped,
+            animatedGIFData: animatedGIFData
         )
         guard let data = try? JSONEncoder().encode(metadata) else { return }
         contents = Self.metadataPrefix + data.base64EncodedString()

@@ -285,7 +285,8 @@ struct PortalPDFPageEditDocument: Codable {
                     imageData: image.persistedImageData,
                     bounds: image.imageBounds,
                     rotationAngle: Double(image.rotationAngle),
-                    isHorizontallyFlipped: image.isHorizontallyFlipped
+                    isHorizontallyFlipped: image.isHorizontallyFlipped,
+                    animatedGIFData: image.animatedGIFData
                 )
             )
         }
@@ -405,7 +406,8 @@ private extension PortalPDFPageEditDocument.Object {
             let annotation = PortalPDFImageAnnotation(
                 image: uiImage,
                 persistedImageData: image.imageData,
-                bounds: image.bounds
+                bounds: image.bounds,
+                animatedGIFData: image.animatedGIFData
             )
             annotation.rotationAngle = CGFloat(image.rotationAngle)
             annotation.isHorizontallyFlipped = image.isHorizontallyFlipped

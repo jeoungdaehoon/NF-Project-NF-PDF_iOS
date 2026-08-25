@@ -116,6 +116,16 @@ struct PortalPDFPendingImage: Equatable {
     let id = UUID()
     /// PDF 페이지에 추가할 UIKit 이미지입니다.
     let image: UIImage
+    /// GIF 등 원본 컨테이너를 보존해야 하는 이미지의 파일 데이터입니다.
+    let sourceData: Data?
+    /// 원본 데이터가 두 프레임 이상인 GIF인지 나타냅니다.
+    let isAnimatedGIF: Bool
+
+    init(image: UIImage, sourceData: Data? = nil, isAnimatedGIF: Bool = false) {
+        self.image = image
+        self.sourceData = sourceData
+        self.isAnimatedGIF = isAnimatedGIF
+    }
 
     /// SwiftUI 갱신 시 이미지 객체가 아닌 삽입 요청 식별자를 기준으로 동일 여부를 판단합니다.
     static func == (lhs: PortalPDFPendingImage, rhs: PortalPDFPendingImage) -> Bool {

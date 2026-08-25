@@ -81,10 +81,21 @@ extension PortalPDFPreviewView {
     func photoLibraryItemButton(_ item: PortalPhotoLibraryItem) -> some View {
         Button {
             Task { @MainActor in
-                guard let image = await loadPhotoAssetImage(item.asset, targetSize: CGSize(width: 160, height: 160)) else {
+                guard let data = await loadPhotoAssetData(item.asset) else {
                     return
                 }
-                pendingImageAnnotation = PortalPDFPendingImage(image: image)
+                let prepared = await Task.detached(priority: .userInitiated) {
+                    let raster = UIImage.pdfAnnotationRaster(from: data)
+                    let source = CGImageSourceCreateWithData(data as CFData, nil)
+                    return (raster, source.map { CGImageSourceGetCount($0) > 1 } ?? false)
+                }.value
+                guard let raster = prepared.0 else { return }
+                let image = UIImage(cgImage: raster.cgImage, scale: 1, orientation: .up)
+                pendingImageAnnotation = PortalPDFPendingImage(
+                    image: image,
+                    sourceData: prepared.1 ? data : nil,
+                    isAnimatedGIF: prepared.1
+                )
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.72, blendDuration: 0.05)) {
                     isImageGalleryPresented = false
                 }

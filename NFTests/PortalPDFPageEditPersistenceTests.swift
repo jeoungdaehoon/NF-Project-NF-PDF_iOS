@@ -3,9 +3,11 @@
 // NFTests
 //
 
+import ImageIO
 import PDFKit
 import Testing
 import UIKit
+import UniformTypeIdentifiers
 @testable import NF
 
 @MainActor
@@ -274,6 +276,100 @@ struct PortalPDFPageEditPersistenceTests {
         })
     }
 
+    @Test func selectedImagePresentationUpdatesWithoutRebuildingDensePage() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        for index in 0..<160 {
+            addInk(to: page, index: index)
+        }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        let imageAnnotation = PortalPDFImageAnnotation(
+            image: image,
+            bounds: CGRect(x: 180, y: 240, width: 90, height: 90)
+        )
+        imageAnnotation.isPortalSelected = true
+        page.addAnnotation(imageAnnotation)
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+        let initialGeneration = overlay.pageEditRenderGeneration
+
+        for offset in stride(from: CGFloat(0), through: 120, by: 6) {
+            imageAnnotation.editingBounds = CGRect(
+                x: 180 + offset,
+                y: 240 - offset / 2,
+                width: 90 + offset / 4,
+                height: 90 + offset / 4
+            )
+            imageAnnotation.rotationAngle = offset / 200
+            overlay.updateImageAnnotationPresentation(imageAnnotation)
+        }
+
+        #expect(overlay.pageEditRenderGeneration == initialGeneration)
+        #expect(overlay.renderedInkStrokeCount == 160)
+        #expect(overlay.renderedImageCount == 1)
+    }
+
+    @Test func animatedGIFSourceDataRoundTripsThroughPageEditSidecar() throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        let poster = UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12)).image { context in
+            UIColor.systemPurple.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 12, height: 12))
+        }
+        let gifData = Data("GIF89a-NF-two-frame-source".utf8)
+        page.addAnnotation(PortalPDFImageAnnotation(
+            image: poster,
+            persistedImageData: try #require(poster.pngData()),
+            bounds: CGRect(x: 80, y: 100, width: 96, height: 96),
+            animatedGIFData: gifData
+        ))
+
+        let edits = PortalPDFPageEditDocument.capture(from: pdfDocument)
+        let capturedImage = try #require(edits.page(at: 0)?.objects.first?.image)
+        #expect(capturedImage.animatedGIFData == gifData)
+
+        let testDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NFGIFEdits-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let repository = PortalPDFPageEditRepository(directoryURL: testDirectory)
+        try repository.save(edits, identifier: "animated-gif")
+        let restored = try #require(repository.load(identifier: "animated-gif"))
+        #expect(restored.page(at: 0)?.objects.first?.image?.animatedGIFData == gifData)
+    }
+
+    @Test func animatedGIFUsesOnePersistentImageLayerWithContentsAnimation() async throws {
+        let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(pdfDocument.page(at: 0))
+        let red = solidImage(color: .systemRed)
+        let blue = solidImage(color: .systemBlue)
+        let gifData = try #require(makeAnimatedGIFData(images: [red, blue]))
+        page.addAnnotation(PortalPDFImageAnnotation(
+            image: red,
+            persistedImageData: try #require(red.pngData()),
+            bounds: CGRect(x: 90, y: 120, width: 100, height: 100),
+            animatedGIFData: gifData
+        ))
+        let editPage = try #require(PortalPDFPageEditDocument.capture(from: pdfDocument).page(at: 0))
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = pdfDocument
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: editPage)
+
+        for _ in 0..<50 where overlay.renderedAnimatedImageCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(overlay.renderedImageCount == 1)
+        #expect(overlay.renderedAnimatedImageCount == 1)
+    }
+
     @discardableResult
     private func addInk(to page: PDFPage, index: Int) -> PDFAnnotation {
         let y = CGFloat(30 + (index % 300))
@@ -300,6 +396,34 @@ struct PortalPDFPageEditPersistenceTests {
             UIColor.white.setFill()
             context.cgContext.fill(bounds)
         }
+    }
+
+    private func solidImage(color: UIColor) -> UIImage {
+        UIGraphicsImageRenderer(size: CGSize(width: 12, height: 12)).image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 12, height: 12))
+        }
+    }
+
+    private func makeAnimatedGIFData(images: [UIImage]) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data,
+            UTType.gif.identifier as CFString,
+            images.count,
+            nil
+        ) else { return nil }
+        CGImageDestinationSetProperties(destination, [
+            kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]
+        ] as CFDictionary)
+        for image in images {
+            guard let cgImage = image.cgImage else { continue }
+            CGImageDestinationAddImage(destination, cgImage, [
+                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 0.05]
+            ] as CFDictionary)
+        }
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 
     private func nonWhitePixelCount(in page: PDFPage) -> Int {

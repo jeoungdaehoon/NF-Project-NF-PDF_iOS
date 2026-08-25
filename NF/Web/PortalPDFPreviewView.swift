@@ -1985,14 +1985,21 @@ struct PortalPDFPreviewView: View {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
             // PhotosPicker의 원본 JPEG/HEIC 디코딩을 메인 액터 밖에서 끝냅니다.
             // 첫 이미지도 이동을 시작하기 전에 이미 GPU에 올릴 수 있는 래스터가 준비됩니다.
-            let preparedRaster = await Task.detached(priority: .userInitiated) {
-                UIImage.pdfAnnotationRaster(from: data)
+            let preparedImage = await Task.detached(priority: .userInitiated) {
+                let raster = UIImage.pdfAnnotationRaster(from: data)
+                let source = CGImageSourceCreateWithData(data as CFData, nil)
+                let isAnimatedGIF = source.map { CGImageSourceGetCount($0) > 1 } ?? false
+                return (raster, isAnimatedGIF)
             }.value
-            guard let preparedRaster else { return }
+            guard let preparedRaster = preparedImage.0 else { return }
             let image = UIImage(cgImage: preparedRaster.cgImage, scale: 1, orientation: .up)
             switch imagePickerPurpose {
             case .insert:
-                pendingImageAnnotation = PortalPDFPendingImage(image: image)
+                pendingImageAnnotation = PortalPDFPendingImage(
+                    image: image,
+                    sourceData: preparedImage.1 ? data : nil,
+                    isAnimatedGIF: preparedImage.1
+                )
             case .replace:
                 pendingImageEditCommand = PortalPDFImageEditCommand(operation: .replace(image))
             }
@@ -2091,6 +2098,22 @@ struct PortalPDFPreviewView: View {
                 options: options
             ) { image, _ in
                 continuation.resume(returning: image)
+            }
+        }
+    }
+
+    /// GIF 삽입 시 프레임 컨테이너가 정지 썸네일로 소실되지 않도록 PHAsset 원본 데이터를 읽습니다.
+    func loadPhotoAssetData(_ asset: PHAsset) async -> Data? {
+        await withCheckedContinuation { continuation in
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .highQualityFormat
+            options.version = .current
+            options.isNetworkAccessAllowed = true
+            PHImageManager.default().requestImageDataAndOrientation(
+                for: asset,
+                options: options
+            ) { data, _, _, _ in
+                continuation.resume(returning: data)
             }
         }
     }
