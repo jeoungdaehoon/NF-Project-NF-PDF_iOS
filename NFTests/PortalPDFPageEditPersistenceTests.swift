@@ -168,7 +168,7 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(!fileManager.fileExists(atPath: directory.path))
     }
 
-    @Test func overlayAppendsOneInkWithoutRebuildingExistingImagesAndStrokes() throws {
+    @Test func overlayAppendsOneInkWithoutRebuildingExistingImagesAndStrokes() async throws {
         let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
         let page = try #require(pdfDocument.page(at: 0))
         for index in 0..<180 {
@@ -202,12 +202,24 @@ struct PortalPDFPageEditPersistenceTests {
         )
         #expect(didAppend)
         let updatedPage = try #require(edits.page(at: 0))
-        overlay.updatePageEditData(updatedPage)
+        var hiddenWhileRasterizing = false
+        await withCheckedContinuation { continuation in
+            overlay.updatePageEditData(
+                updatedPage,
+                appendedStrokeRasterReady: {
+                    continuation.resume()
+                }
+            )
+            hiddenWhileRasterizing = overlay.hiddenCompletedStrokeLayerCount == 1
+        }
 
         #expect(overlay.pageEditRenderGeneration == initialGeneration)
         #expect(overlay.renderedInkStrokeCount == 181)
         #expect(overlay.renderedImageCount == 12)
         #expect(overlay.completedStrokeLayersUseBoundedRasterCache)
+        #expect(overlay.completedStrokeRasterImageCount == 1)
+        #expect(hiddenWhileRasterizing)
+        #expect(overlay.hiddenCompletedStrokeLayerCount == 0)
     }
 
     @Test func overlayBoundsChangesTransformContainersWithoutRebuildingObjects() throws {

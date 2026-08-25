@@ -995,12 +995,43 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let drawingBounds: CGRect
     }
 
+    /// FileManager의 LineLayer처럼 완료 획 벡터와 준비된 비트맵을 함께 보관합니다.
+    private final class RasterStrokeLayer: CAShapeLayer {
+        let sourcePath: CGPath
+        let sourceColor: CGColor
+        let sourceRendering: Stroke.Rendering
+        var rasterGeneration = 0
+        var pendingRasterReadyCallbacks: [() -> Void] = []
+
+        init(stroke: Stroke, localPath: CGPath) {
+            sourcePath = localPath
+            sourceColor = stroke.color
+            sourceRendering = stroke.rendering
+            super.init()
+        }
+
+        override init(layer: Any) {
+            guard let source = layer as? RasterStrokeLayer else {
+                fatalError("RasterStrokeLayer requires the same layer type")
+            }
+            sourcePath = source.sourcePath
+            sourceColor = source.sourceColor
+            sourceRendering = source.sourceRendering
+            rasterGeneration = source.rasterGeneration
+            super.init(layer: layer)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+    }
+
     private weak var page: PDFPage?
     private weak var pdfView: PDFView?
     /// PDF Annotation 대신 화면에 직접 그릴 페이지별 편집 데이터입니다.
     private var pageEditData: PortalPDFPageEditDocument.Page?
     private var strokes: [Stroke] = []
-    private var inkLayers: [CAShapeLayer] = []
+    private var inkLayers: [RasterStrokeLayer] = []
     private var imageLayers: [CALayer] = []
     private var objectLayers: [CALayer] = []
     private var imagePixelSizes: [CGSize] = []
@@ -1060,7 +1091,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     var completedStrokeLayersUseBoundedRasterCache: Bool {
         !inkLayers.isEmpty && inkLayers.allSatisfy {
-            $0.shouldRasterize
+            ($0.shouldRasterize || $0.contents != nil)
                 && $0.frame.width < bounds.width
                 && $0.frame.height < bounds.height
         }
@@ -1068,6 +1099,14 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     var completedStrokeRasterizationScales: [CGFloat] {
         inkLayers.map(\.rasterizationScale)
+    }
+
+    var completedStrokeRasterImageCount: Int {
+        inkLayers.filter { $0.contents != nil }.count
+    }
+
+    var hiddenCompletedStrokeLayerCount: Int {
+        inkLayers.filter(\.isHidden).count
     }
 
     func configure(
@@ -1081,16 +1120,25 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         reloadInkPaths()
     }
 
-    func updatePageEditData(_ pageEditData: PortalPDFPageEditDocument.Page?) {
+    func updatePageEditData(
+        _ pageEditData: PortalPDFPageEditDocument.Page?,
+        appendedStrokeRasterReady: (() -> Void)? = nil
+    ) {
         if let previousPage = self.pageEditData,
            let pageEditData,
            canAppendOnly(previousPage: previousPage, updatedPage: pageEditData) {
             self.pageEditData = pageEditData
-            appendLastPageEditObject(from: pageEditData)
+            appendLastPageEditObject(
+                from: pageEditData,
+                rasterReady: appendedStrokeRasterReady
+            )
             return
         }
         self.pageEditData = pageEditData
         reloadInkPaths()
+        if let appendedStrokeRasterReady {
+            DispatchQueue.main.async(execute: appendedStrokeRasterReady)
+        }
     }
 
     override func layoutSubviews() {
@@ -1189,10 +1237,14 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         return zip(previousObjects, updatedObjects).allSatisfy { $0.id == $1.id }
     }
 
-    private func appendLastPageEditObject(from page: PortalPDFPageEditDocument.Page) {
+    private func appendLastPageEditObject(
+        from page: PortalPDFPageEditDocument.Page,
+        rasterReady: (() -> Void)?
+    ) {
         guard let object = page.objects.max(by: { $0.displayIndex < $1.displayIndex }),
               let pageToOverlay = basePageToOverlayTransform else {
             reloadInkPaths()
+            if let rasterReady { DispatchQueue.main.async(execute: rasterReady) }
             return
         }
         let pageUnitScale = max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b))
@@ -1204,7 +1256,20 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             updatedStrokes: &appendedStrokes
         )
         strokes.append(contentsOf: appendedStrokes)
-        inkLayers.append(contentsOf: appendedStrokes.map(makeStrokeLayer))
+        if appendedStrokes.isEmpty {
+            if let rasterReady { DispatchQueue.main.async(execute: rasterReady) }
+        } else {
+            var remainingRasterCount = appendedStrokes.count
+            let strokeReady = {
+                remainingRasterCount -= 1
+                if remainingRasterCount == 0 {
+                    rasterReady?()
+                }
+            }
+            inkLayers.append(contentsOf: appendedStrokes.map {
+                makeStrokeLayer($0, rasterReady: strokeReady)
+            })
+        }
         refreshInteractionSelection()
     }
 
@@ -1229,7 +1294,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let rasterizationScale = max(1, pdfView.scaleFactor + 5)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        inkLayers.forEach { $0.rasterizationScale = rasterizationScale }
+        inkLayers.forEach { layer in
+            layer.rasterizationScale = rasterizationScale
+            if layer.contents != nil {
+                // 기존 이미지는 새 이미지가 준비될 때까지 그대로 확대 표시하고 완료 시 교체합니다.
+                rasterizeStrokeLayer(layer, scale: rasterizationScale)
+            }
+        }
         CATransaction.commit()
     }
 
@@ -1320,21 +1391,35 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
 
     }
 
-    private func makeStrokeLayer(_ stroke: Stroke) -> CAShapeLayer {
-            let shapeLayer = CAShapeLayer()
+    private func makeStrokeLayer(
+        _ stroke: Stroke,
+        rasterReady: (() -> Void)? = nil
+    ) -> RasterStrokeLayer {
             let drawingBounds = stroke.drawingBounds.standardized.integral
-            shapeLayer.frame = drawingBounds
             var localTransform = CGAffineTransform(
                 translationX: -drawingBounds.minX,
                 y: -drawingBounds.minY
             )
-            shapeLayer.path = stroke.path.copy(using: &localTransform)
+            let localPath = stroke.path.copy(using: &localTransform) ?? stroke.path
+            let shapeLayer = RasterStrokeLayer(stroke: stroke, localPath: localPath)
+            shapeLayer.frame = drawingBounds
+            shapeLayer.path = localPath
             shapeLayer.contentsScale = traitCollection.displayScale
             shapeLayer.allowsEdgeAntialiasing = true
+            shapeLayer.actions = [
+                "contents": NSNull(),
+                "hidden": NSNull(),
+                "opacity": NSNull(),
+                "path": NSNull(),
+                "sublayers": NSNull(),
+            ]
             // 완료 획은 작은 획 영역 단위로 비트맵 캐시되어 이후 확대·펜 입력에서
             // 기존 벡터 경로를 반복 합성하지 않습니다.
             shapeLayer.shouldRasterize = true
             shapeLayer.rasterizationScale = max(1, (pdfView?.scaleFactor ?? 1) + 5)
+            // 신규 완료 획은 백그라운드 비트맵이 준비될 때까지 숨기고 실시간 레이어만 유지합니다.
+            // 반투명 하이라이터도 두 레이어가 겹쳐 잠시 진해지지 않습니다.
+            shapeLayer.isHidden = rasterReady != nil
             switch stroke.rendering {
             case .stroke(let lineWidth, let lineCap, let lineJoin):
                 shapeLayer.fillColor = UIColor.clear.cgColor
@@ -1357,8 +1442,83 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 shapeLayer.fillRule = .nonZero
                 shapeLayer.strokeColor = UIColor.clear.cgColor
             }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             pageContentLayer.addSublayer(shapeLayer)
+            CATransaction.commit()
+            if let rasterReady {
+                rasterizeStrokeLayer(
+                    shapeLayer,
+                    scale: shapeLayer.rasterizationScale,
+                    completion: rasterReady
+                )
+            }
             return shapeLayer
+    }
+
+    /// FileManager LineLayer.addLine과 동일하게 완료 획 비트맵을 백그라운드에서 준비합니다.
+    /// 준비 전에는 실시간 벡터가 계속 보이고, 준비 완료 시 한 트랜잭션에서 이미지로 교체합니다.
+    private func rasterizeStrokeLayer(
+        _ layer: RasterStrokeLayer,
+        scale: CGFloat,
+        completion: (() -> Void)? = nil
+    ) {
+        if let completion {
+            layer.pendingRasterReadyCallbacks.append(completion)
+        }
+        layer.rasterGeneration += 1
+        let generation = layer.rasterGeneration
+        let size = layer.bounds.size
+        let path = layer.sourcePath
+        let color = layer.sourceColor
+        let rendering = layer.sourceRendering
+        guard size.width > 0, size.height > 0 else {
+            let callbacks = layer.pendingRasterReadyCallbacks
+            layer.pendingRasterReadyCallbacks = []
+            layer.isHidden = false
+            callbacks.forEach { $0() }
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak layer] in
+            let format = UIGraphicsImageRendererFormat()
+            format.opaque = false
+            format.scale = scale
+            let image = UIGraphicsImageRenderer(size: size, format: format).image { rendererContext in
+                let context = rendererContext.cgContext
+                context.addPath(path)
+                switch rendering {
+                case .stroke(let lineWidth, let lineCap, let lineJoin):
+                    context.setFillColor(UIColor.clear.cgColor)
+                    context.setStrokeColor(color)
+                    context.setLineWidth(lineWidth)
+                    context.setLineCap(lineCap)
+                    context.setLineJoin(lineJoin)
+                    context.strokePath()
+                case .fill:
+                    context.setFillColor(color)
+                    context.fillPath(using: .winding)
+                }
+            }
+            DispatchQueue.main.async {
+                guard let layer,
+                      layer.rasterGeneration == generation else { return }
+                let callbacks = layer.pendingRasterReadyCallbacks
+                layer.pendingRasterReadyCallbacks = []
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                layer.contents = image.cgImage
+                layer.contentsScale = scale
+                layer.contentsGravity = .resize
+                layer.path = nil
+                layer.shouldRasterize = false
+                layer.rasterizationScale = scale
+                layer.isHidden = false
+                // 영구 이미지 표시와 Coordinator의 실시간 레이어 제거를 같은 트랜잭션에 넣습니다.
+                callbacks.forEach { $0() }
+                CATransaction.commit()
+            }
+        }
     }
 
     /// 숨은 Annotation 프록시 중 현재 선택된 객체의 조절 UI만 별도 벡터 레이어로 표시합니다.
@@ -2406,7 +2566,11 @@ extension PortalPDFKitView {
         }
 
         /// 새 펜 획 하나는 페이지 전체 재캡처 없이 정본과 화면 레이어 끝에 바로 추가합니다.
-        func appendPageEditAnnotation(_ annotation: PDFAnnotation, on page: PDFPage) -> Bool {
+        func appendPageEditAnnotation(
+            _ annotation: PDFAnnotation,
+            on page: PDFPage,
+            strokeRasterReady: (() -> Void)? = nil
+        ) -> Bool {
             guard let document = pdfView?.document,
                   annotation.page === page else { return false }
             let pageIndex = document.index(for: page)
@@ -2418,9 +2582,14 @@ extension PortalPDFKitView {
                       to: pageIndex
                   ) else { return false }
             PortalPDFPageEditDocument.suppressManagedAnnotations(on: page)
-            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?.updatePageEditData(
-                pageEditDocument.page(at: pageIndex)
-            )
+            if let overlay = pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView {
+                overlay.updatePageEditData(
+                    pageEditDocument.page(at: pageIndex),
+                    appendedStrokeRasterReady: strokeRasterReady
+                )
+            } else if let strokeRasterReady {
+                DispatchQueue.main.async(execute: strokeRasterReady)
+            }
             return true
         }
 
@@ -3642,13 +3811,18 @@ extension PortalPDFKitView {
         /// 변경 페이지가 주어지면 해당 페이지만 캡처·렌더하고 자동 저장과 히스토리를 확정합니다.
         func onDocumentChanged(
             changedPages: [PDFPage] = [],
-            appendedAnnotation: PDFAnnotation? = nil
+            appendedAnnotation: PDFAnnotation? = nil,
+            appendedStrokeRasterReady: (() -> Void)? = nil
         ) {
             let usedAppendFastPath: Bool
             if let appendedAnnotation,
                changedPages.count == 1,
                let page = changedPages.first {
-                usedAppendFastPath = appendPageEditAnnotation(appendedAnnotation, on: page)
+                usedAppendFastPath = appendPageEditAnnotation(
+                    appendedAnnotation,
+                    on: page,
+                    strokeRasterReady: appendedStrokeRasterReady
+                )
             } else {
                 usedAppendFastPath = false
             }
@@ -3663,6 +3837,9 @@ extension PortalPDFKitView {
                     guard visited.insert(identifier).inserted else { return }
                     refreshPersistentAnnotationOverlay(on: page)
                 }
+            }
+            if !usedAppendFastPath, let appendedStrokeRasterReady {
+                DispatchQueue.main.async(execute: appendedStrokeRasterReady)
             }
             schedulePageEditPersistence()
             guard !isApplyingHistory else {
@@ -6368,13 +6545,23 @@ extension PortalPDFKitView {
                     resetActiveDrawing()
                     scheduleTransientNeonClear()
                 } else {
-                    // 완료 획을 ID 기반 영구 레이어로 먼저 추가한 뒤 실시간 레이어를 제거해
-                    // 이미지와 기존 필기 수에 관계없이 화면 전환이 끊기지 않게 합니다.
+                    // FileManager처럼 완료 비트맵이 준비될 때까지 실시간 레이어를 유지합니다.
+                    // 준비 콜백에서 영구 이미지와 실시간 벡터를 한 트랜잭션으로 교체합니다.
+                    let finishingLiveLayers: [CALayer] = [
+                        activePenOverlayLayer,
+                        activePressureOverlayLayer,
+                    ].compactMap { $0 }
+                    resetActiveDrawing(keepingInkOverlayLayers: true)
                     onDocumentChanged(
                         changedPages: [page],
-                        appendedAnnotation: completedAnnotation
+                        appendedAnnotation: completedAnnotation,
+                        appendedStrokeRasterReady: {
+                            CATransaction.begin()
+                            CATransaction.setDisableActions(true)
+                            finishingLiveLayers.forEach { $0.removeFromSuperlayer() }
+                            CATransaction.commit()
+                        }
                     )
-                    resetActiveDrawing()
                 }
                 performPendingPencilDoubleTapIfNeeded()
             case .cancelled, .failed:
@@ -9050,10 +9237,12 @@ extension PortalPDFKitView {
          - Version: 1.0.0
          - Date: 2026.07.30
          */
-        func resetActiveDrawing() {
+        func resetActiveDrawing(keepingInkOverlayLayers: Bool = false) {
             stopActivePenOverlayRefresh()
-            activePenOverlayLayer?.removeFromSuperlayer()
-            activePressureOverlayLayer?.removeFromSuperlayer()
+            if !keepingInkOverlayLayers {
+                activePenOverlayLayer?.removeFromSuperlayer()
+                activePressureOverlayLayer?.removeFromSuperlayer()
+            }
             activeBoxOverlayLayer?.removeFromSuperlayer()
             activePenPage = nil
             activePenPath = nil
