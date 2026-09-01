@@ -7,6 +7,7 @@
 
 import AuthenticationServices
 import SwiftUI
+import UniformTypeIdentifiers
 
 /**
  Intro, OnBoarding, Login, WebView 화면 전환을 담당하는 Root Route View 입니다. ( J.D.H )
@@ -29,6 +30,8 @@ struct PortalRouteView: View {
     @State private var attachmentPreviewItem: PortalAttachmentPreviewItem?
     /// 웹 탭바에서 진입한 네이티브 PDF 문서 페이지 표시 여부입니다.
     @State private var isPDFDocumentsPresented = false
+    /// Mac 메뉴의 PDF 가져오기 명령이 표시하는 시스템 파일 선택기입니다.
+    @State private var isDesktopPDFImporterPresented = false
     /// 현재 로컬에 보관 중인 활성·휴지통 PDF 문서 수입니다.
     @State private var localPDFDocumentCount = 0
     /// 탭바 표시 조건과 네이티브 문서 페이지가 공유하는 로컬 저장소입니다.
@@ -131,6 +134,25 @@ struct PortalRouteView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: PortalPDFLocalStorageRepository.didChangeNotification)) { _ in
             refreshLocalPDFDocumentCount()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nfDesktopOpenPDFLibrary)) { _ in
+            openPDFDocuments()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .nfDesktopImportPDF)) { _ in
+            isDesktopPDFImporterPresented = true
+        }
+        .fileImporter(
+            isPresented: $isDesktopPDFImporterPresented,
+            allowedContentTypes: [.pdf],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                importExternalPDF(url)
+            case .failure:
+                routeMessage = "PDF 파일을 선택하지 못했습니다."
+            }
         }
         .alert("안내", isPresented: routeMessageBinding) {
             Button("확인") {

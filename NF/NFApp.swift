@@ -32,12 +32,48 @@ struct NFApp: App {
      - Returns: `some Scene`
      */
     var body: some Scene {
+#if targetEnvironment(macCatalyst)
+        WindowGroup("NF PDF") {
+            rootContent
+                .frame(minWidth: 960, minHeight: 640)
+        }
+        .defaultSize(width: 1280, height: 820)
+        .commands {
+            NFDesktopCommands()
+        }
+#else
         WindowGroup {
-            /// Android 프로젝트와 동일하게 Route 화면이 Intro, OnBoarding, Login, WebView 흐름을 관리합니다.
-            PortalRouteView()
-                .environmentObject(portalThemeController)
-                .environment(\.portalAppTheme, portalThemeController.theme)
-                .preferredColorScheme(portalThemeController.theme.colorScheme)
+            rootContent
+        }
+#endif
+    }
+
+    /// iOS와 Mac Catalyst가 같은 로그인·포털·PDF 상태 그래프를 공유합니다.
+    private var rootContent: some View {
+        PortalRouteView()
+            .environmentObject(portalThemeController)
+            .environment(\.portalAppTheme, portalThemeController.theme)
+            .preferredColorScheme(portalThemeController.theme.colorScheme)
+    }
+}
+
+#if targetEnvironment(macCatalyst)
+/// Mac 메뉴 막대에서 자주 쓰는 문서 기능을 키보드로 바로 실행합니다.
+private struct NFDesktopCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("PDF 가져오기…") {
+                NotificationCenter.default.post(name: .nfDesktopImportPDF, object: nil)
+            }
+            .keyboardShortcut("o", modifiers: [.command])
+        }
+
+        CommandMenu("문서") {
+            Button("NF PDF 문서 열기") {
+                NotificationCenter.default.post(name: .nfDesktopOpenPDFLibrary, object: nil)
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
         }
     }
 }
+#endif

@@ -9,6 +9,7 @@ xcuserdata/
 # Build output
 build/
 DerivedData/
+dist/
 
 # Swift Package Manager
 .swiftpm/
