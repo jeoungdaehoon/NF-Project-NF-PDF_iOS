@@ -72,6 +72,8 @@ private let portalSupportedWebViewFontPayload: String = {
 struct PortalWebView: View {
 #if targetEnvironment(macCatalyst)
     @StateObject private var desktopChrome = PortalDesktopChromeModel()
+    @StateObject private var secondaryDesktopChrome = PortalDesktopChromeModel()
+    @State private var isDesktopSplitViewEnabled = false
     @EnvironmentObject private var portalThemeController: PortalAppThemeController
 #endif
 
@@ -92,7 +94,48 @@ struct PortalWebView: View {
     let localPDFDocumentCount: Int
 
     var body: some View {
-        let content = PortalWebViewContent(
+#if targetEnvironment(macCatalyst)
+        HStack(spacing: 0) {
+            PortalDesktopPane(
+                model: desktopChrome,
+                theme: portalThemeController.theme,
+                reservesTrafficLightArea: true,
+                showsBreadcrumbs: isDesktopSplitViewEnabled || desktopChrome.isNavigationMenuHidden,
+                isSplitViewEnabled: isDesktopSplitViewEnabled,
+                onToggleSplitView: toggleDesktopSplitView,
+                content: makeContent(portalURL: portalURL).desktopChrome(desktopChrome)
+            )
+
+            if isDesktopSplitViewEnabled {
+                Rectangle()
+                    .fill(portalThemeController.theme.border.color)
+                    .frame(width: 1)
+
+                PortalDesktopPane(
+                    model: secondaryDesktopChrome,
+                    theme: portalThemeController.theme,
+                    reservesTrafficLightArea: false,
+                    showsBreadcrumbs: true,
+                    isSplitViewEnabled: true,
+                    onToggleSplitView: toggleDesktopSplitView,
+                    content: makeContent(
+                        portalURL: secondaryDesktopChrome.splitInitialURL ?? portalURL
+                    ).desktopChrome(secondaryDesktopChrome)
+                )
+            }
+        }
+        // UITitlebar의 기본 제목을 숨긴 뒤에도 Catalyst가 남기는 상단 safe area까지
+        // 통합 헤더가 확장돼, 신호등과 같은 줄에 탐색 컨트롤을 표시합니다.
+        .ignoresSafeArea(.container, edges: .top)
+        .background(MacCatalystTitlebarConfigurator())
+#else
+        makeContent(portalURL: portalURL)
+#endif
+    }
+
+    /** 동일한 로그인 세션과 앱 브리지를 사용하는 Portal WebView를 생성합니다. */
+    private func makeContent(portalURL: URL) -> PortalWebViewContent {
+        PortalWebViewContent(
             portalURL: portalURL,
             loginInfo: loginInfo,
             onLoginInfo: onLoginInfo,
@@ -109,34 +152,19 @@ struct PortalWebView: View {
             onOpenPDFDocuments: onOpenPDFDocuments,
             localPDFDocumentCount: localPDFDocumentCount
         )
+    }
 
 #if targetEnvironment(macCatalyst)
-        VStack(spacing: 0) {
-            PortalDesktopToolbar(model: desktopChrome, theme: portalThemeController.theme)
-            if desktopChrome.isNavigationMenuHidden {
-                PortalDesktopBreadcrumbBar(model: desktopChrome, theme: portalThemeController.theme)
-            }
-            GeometryReader { geometry in
-                let scale = desktopChrome.zoomScale
-                content.desktopChrome(desktopChrome)
-                    // WebView의 실제 레이아웃 영역을 역배율로 줄인 뒤 네이티브 View 전체를
-                    // 확대해 Safari처럼 글꼴·아이콘·간격·스크롤 영역을 함께 변경합니다.
-                    .frame(
-                        width: geometry.size.width / scale,
-                        height: geometry.size.height / scale
-                    )
-                    .scaleEffect(scale, anchor: .topLeading)
-            }
-            .clipped()
+    /** 현재 페이지를 오른쪽 편집 영역에 복제하거나 열린 2분할을 닫습니다. */
+    private func toggleDesktopSplitView() {
+        if isDesktopSplitViewEnabled {
+            isDesktopSplitViewEnabled = false
+        } else {
+            secondaryDesktopChrome.prepareForSplit(from: desktopChrome, fallbackURL: portalURL)
+            isDesktopSplitViewEnabled = true
         }
-        // UITitlebar의 기본 제목을 숨긴 뒤에도 Catalyst가 남기는 상단 safe area까지
-        // 통합 헤더가 확장돼, 신호등과 같은 줄에 탐색 컨트롤을 표시합니다.
-        .ignoresSafeArea(.container, edges: .top)
-        .background(MacCatalystTitlebarConfigurator())
-#else
-        content
-#endif
     }
+#endif
 }
 
 /** iOS와 Mac Catalyst에서 공유하는 WKWebView 및 Portal 브리지 구현입니다. */
@@ -224,6 +252,13 @@ private struct PortalWebViewContent: UIViewRepresentable {
             WKUserScript(
                 source: Coordinator.macNavigationObserverScript,
                 injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        userContentController.addUserScript(
+            WKUserScript(
+                source: Coordinator.macDesktopAssistBarHiderScript,
+                injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true
             )
         )
@@ -391,6 +426,8 @@ extension PortalWebViewContent {
                         url: location.href,
                         title: title
                     });
+                    // Mac 전용 보조 기능은 전체 DOM을 감시하지 않고 실제 경로 변경 때만 갱신합니다.
+                    window.dispatchEvent(new CustomEvent('nfPortalMacNavigationChanged'));
                 }, typeof delay === 'number' ? delay : 120);
             }
 
@@ -410,9 +447,15 @@ extension PortalWebViewContent {
                 setTimeout(function() { notifyNavigationChanged(0); }, 500);
             }, true);
 
+            var documentRootObserver = null;
             function installDOMObserver() {
                 var navigation = document.getElementById('portal-navigation');
-                if (!navigation || navigation.__nfPortalMacObserved) return;
+                if (!navigation) return false;
+                if (documentRootObserver) {
+                    documentRootObserver.disconnect();
+                    documentRootObserver = null;
+                }
+                if (navigation.__nfPortalMacObserved) return true;
                 navigation.__nfPortalMacObserved = true;
                 new MutationObserver(function() { notifyNavigationChanged(100); }).observe(navigation, {
                     subtree: true,
@@ -421,6 +464,7 @@ extension PortalWebViewContent {
                     attributeFilter: ['aria-current', 'data-state']
                 });
                 notifyNavigationChanged(0);
+                return true;
             }
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', installDOMObserver, { once: true });
@@ -432,12 +476,109 @@ extension PortalWebViewContent {
                     setTimeout(observeDocumentRoot, 0);
                     return;
                 }
-                new MutationObserver(installDOMObserver).observe(document.documentElement, {
+                if (installDOMObserver()) return;
+                documentRootObserver = new MutationObserver(function() {
+                    installDOMObserver();
+                });
+                documentRootObserver.observe(document.documentElement, {
                     childList: true,
                     subtree: true
                 });
             }
             observeDocumentRoot();
+        })();
+        """
+        /// Mac 데스크톱에서는 모바일 입력용으로 고정된 하단 웹 편집 어시스트바를 숨깁니다.
+        static let macDesktopAssistBarHiderScript = """
+        (function() {
+            if (window.__nfPortalMacAssistBarHiderInstalled) return;
+            window.__nfPortalMacAssistBarHiderInstalled = true;
+
+            var hiddenAttribute = 'data-nf-portal-mac-assist-hidden';
+            var style = document.createElement('style');
+            style.id = '__nfPortalMacAssistBarHiderStyle';
+            style.textContent = '[' + hiddenAttribute + '] { display: none !important; }';
+            (document.head || document.documentElement).appendChild(style);
+
+            var scanTimer = null;
+            function scheduleScan(delay) {
+                clearTimeout(scanTimer);
+                scanTimer = setTimeout(hideBottomAssistBar, typeof delay === 'number' ? delay : 80);
+            }
+
+            function visibleRect(element) {
+                if (!element || !element.getBoundingClientRect) return null;
+                var rect = element.getBoundingClientRect();
+                if (rect.width < 1 || rect.height < 1) return null;
+                var computed = window.getComputedStyle(element);
+                if (computed.display === 'none' || computed.visibility === 'hidden') return null;
+                return rect;
+            }
+
+            function hideBottomAssistBar() {
+                // 한 번 숨긴 고정 바는 SPA 페이지 이동 뒤에도 유지되므로 다시 전체 문서를 검색하지 않습니다.
+                if (document.querySelector('[' + hiddenAttribute + ']')) return true;
+                var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+                var viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+                if (viewportWidth < 1 || viewportHeight < 1) return false;
+
+                var bottomControls = Array.from(document.querySelectorAll(
+                    'button, [role="button"], input, select, [contenteditable="true"]'
+                )).filter(function(control) {
+                    var rect = visibleRect(control);
+                    return rect && rect.top >= viewportHeight - 120 && rect.bottom <= viewportHeight + 8;
+                });
+
+                var candidates = [];
+                bottomControls.forEach(function(control) {
+                    var element = control.parentElement;
+                    var depth = 0;
+                    while (element && element !== document.body && depth < 8) {
+                        var rect = visibleRect(element);
+                        if (rect &&
+                            rect.top >= viewportHeight - 120 &&
+                            rect.bottom >= viewportHeight - 12 &&
+                            rect.height >= 34 && rect.height <= 100 &&
+                            rect.width >= viewportWidth * 0.65) {
+                            var position = window.getComputedStyle(element).position;
+                            var controlCount = element.querySelectorAll(
+                                'button, [role="button"], input, select, [contenteditable="true"]'
+                            ).length;
+                            if ((position === 'fixed' || position === 'sticky') && controlCount >= 6) {
+                                candidates.push({ element: element, rect: rect, count: controlCount });
+                            }
+                        }
+                        element = element.parentElement;
+                        depth += 1;
+                    }
+                });
+
+                candidates.sort(function(left, right) {
+                    if (right.rect.width !== left.rect.width) return right.rect.width - left.rect.width;
+                    return left.rect.height - right.rect.height;
+                });
+                if (candidates.length > 0) {
+                    candidates[0].element.setAttribute(hiddenAttribute, 'true');
+                    return true;
+                }
+                return false;
+            }
+
+            window.addEventListener('resize', function() { scheduleScan(0); });
+            window.addEventListener('popstate', function() { scheduleScan(80); });
+            window.addEventListener('nfPortalMacNavigationChanged', function() { scheduleScan(150); });
+            document.addEventListener('focusin', function(event) {
+                var target = event.target;
+                if (!target || !target.closest) return;
+                if (target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')) {
+                    scheduleScan(80);
+                }
+            }, true);
+            hideBottomAssistBar();
+            // 비동기 Portal 초기화만 제한 횟수로 확인합니다. 차트 셀 변경은 더 이상 재검색을 유발하지 않습니다.
+            [250, 1000, 2500].forEach(function(delay) {
+                setTimeout(hideBottomAssistBar, delay);
+            });
         })();
         """
 #endif
@@ -1349,6 +1490,8 @@ private final class PortalDesktopChromeModel: ObservableObject {
 
     /// SwiftUI가 WKWebView 전체 프레임에 적용할 Mac 전용 화면 배율입니다.
     var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
+    /// 2분할을 열 때 오른쪽 WebView가 최초로 복제할 현재 페이지입니다.
+    private(set) var splitInitialURL: URL?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -1360,13 +1503,32 @@ private final class PortalDesktopChromeModel: ObservableObject {
         }
     }
 
+    /** 오른쪽 편집 영역이 현재 페이지와 탐색 표시 상태를 복제해 시작하도록 준비합니다. */
+    func prepareForSplit(from source: PortalDesktopChromeModel, fallbackURL: URL) {
+        let sourceURL = source.webView?.url
+            ?? source.pages.first(where: { $0.id == source.activePageID })?.url
+            ?? fallbackURL
+        splitInitialURL = sourceURL
+        pages = source.pages
+        activePageID = sourceURL.absoluteString
+        canGoBack = false
+        canGoForward = false
+        isNavigationMenuHidden = source.isNavigationMenuHidden
+        zoomPercent = source.zoomPercent
+        breadcrumbs = source.breadcrumbs
+        webView = nil
+    }
+
     func connect(_ webView: WKWebView) {
+        let isNewWebView = self.webView !== webView
         self.webView = webView
         /// WKWebView.pageZoom은 일부 WebKit 버전에서 고정 글꼴 크기를 확대하지 않고
         /// 레이아웃만 확대하므로 사용하지 않습니다. 실제 확대는 SwiftUI에서 WebView
         /// 전체 프레임에 적용해 사이드바·본문·아이콘·간격·글꼴을 동일 비율로 변경합니다.
-        webView.pageZoom = 1
-        applyDesktopFitLayout(to: webView)
+        if isNewWebView {
+            webView.pageZoom = 1
+            applyDesktopFitLayout(to: webView)
+        }
         refreshNavigationState(in: webView)
     }
 
@@ -1444,32 +1606,63 @@ private final class PortalDesktopChromeModel: ObservableObject {
             // 이전 빌드가 주입한 강제 숨김 CSS는 제거합니다. 레이아웃은 포털이 직접 재계산해야 합니다.
             document.getElementById('__nfPortalDesktopSidebarStyle')?.remove();
 
+            // 문서 로드 직후 예약된 이전 요청이 사용자의 최신 열기/닫기 요청을 덮어쓰지 않도록 구분합니다.
+            var requestToken = (window.__nfPortalMacSidebarRequestToken || 0) + 1;
+            window.__nfPortalMacSidebarRequestToken = requestToken;
+            var currentNavigation = document.getElementById('portal-navigation');
+            if (\(targetCollapsed) && currentNavigation) {
+                var initialDisplay = window.getComputedStyle(currentNavigation).display;
+                if (initialDisplay && initialDisplay !== 'none') {
+                    window.__nfPortalMacSidebarVisibleDisplay = initialDisplay;
+                }
+            }
+
+            function applyRequestedVisibility() {
+                if (window.__nfPortalMacSidebarRequestToken !== requestToken) return false;
+                var navigation = document.getElementById('portal-navigation');
+                var content = document.getElementById('portal-content');
+                var root = navigation && navigation.parentElement;
+                if (!navigation || !content || !root) return false;
+
+                if (\(targetCollapsed)) {
+                    var currentDisplay = window.getComputedStyle(navigation).display;
+                    if (currentDisplay && currentDisplay !== 'none') {
+                        window.__nfPortalMacSidebarVisibleDisplay = currentDisplay;
+                    }
+                    navigation.dataset.nfPortalMacHidden = 'true';
+                    navigation.style.setProperty('display', 'none', 'important');
+                    root.style.setProperty('display', 'block', 'important');
+                    root.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+                    content.style.setProperty('width', '100%', 'important');
+                } else {
+                    var visibleDisplay = window.__nfPortalMacSidebarVisibleDisplay || 'flex';
+                    delete navigation.dataset.nfPortalMacHidden;
+                    navigation.style.removeProperty('display');
+                    root.style.removeProperty('display');
+                    root.style.removeProperty('grid-template-columns');
+                    content.style.removeProperty('width');
+
+                    // 포털 상태가 비동기로 갱신된 뒤에도 숨겨져 있으면 마지막 정상 표시값으로 복원합니다.
+                    if (window.getComputedStyle(navigation).display === 'none' || navigation.getBoundingClientRect().width < 1) {
+                        navigation.style.setProperty('display', visibleDisplay, 'important');
+                    }
+                }
+                return true;
+            }
+
             var request = new CustomEvent('nfPortalDesktopSidebarToggle', {
                 detail: { collapsed: \(targetCollapsed), platform: 'mac' },
                 cancelable: true
             });
             // 포털이 이 이벤트를 처리하면 preventDefault()로 처리 완료를 알립니다.
-            if (!window.dispatchEvent(request)) return true;
+            var handledByPortal = !window.dispatchEvent(request);
+            var appliedImmediately = applyRequestedVisibility();
 
-            // 이전 포털 버전에서도 상세 영역 폭이 정상 재계산되도록 사이드바와 루트만 조정합니다.
-            var navigation = document.getElementById('portal-navigation');
-            var content = document.getElementById('portal-content');
-            var root = navigation && navigation.parentElement;
-            if (!navigation || !content || !root) return false;
-            if (\(targetCollapsed)) {
-                navigation.dataset.nfPortalMacHidden = 'true';
-                navigation.style.setProperty('display', 'none', 'important');
-                root.style.setProperty('display', 'block', 'important');
-                root.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
-                content.style.setProperty('width', '100%', 'important');
-            } else {
-                delete navigation.dataset.nfPortalMacHidden;
-                navigation.style.removeProperty('display');
-                root.style.removeProperty('display');
-                root.style.removeProperty('grid-template-columns');
-                content.style.removeProperty('width');
-            }
-            return true;
+            // React 렌더링이 늦게 끝나는 페이지에서도 가장 최근 요청만 다시 적용합니다.
+            [0, 80, 250].forEach(function(delay) {
+                setTimeout(applyRequestedVisibility, delay);
+            });
+            return handledByPortal || appliedImmediately;
         })();
         """
         webView.evaluateJavaScript(script) { result, _ in
@@ -1482,9 +1675,13 @@ private final class PortalDesktopChromeModel: ObservableObject {
 
     func refreshNavigationState(in webView: WKWebView) {
         self.webView = webView
-        canGoBack = webView.canGoBack
-        canGoForward = webView.canGoForward
-        if let currentURL = webView.url {
+        if canGoBack != webView.canGoBack {
+            canGoBack = webView.canGoBack
+        }
+        if canGoForward != webView.canGoForward {
+            canGoForward = webView.canGoForward
+        }
+        if let currentURL = webView.url, activePageID != currentURL.absoluteString {
             activePageID = currentURL.absoluteString
         }
     }
@@ -1697,15 +1894,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
         (function() {
             var styleId = '__nfPortalDesktopFitLayoutStyle';
             var style = document.getElementById(styleId);
-            if (!style) {
-                style = document.createElement('style');
-                style.id = styleId;
-                document.head.appendChild(style);
-            }
-            document.querySelectorAll('.nf-portal-mac-zoom-root').forEach(function(element) {
-                element.classList.remove('nf-portal-mac-zoom-root');
-            });
-            style.textContent = `
+            var css = `
                 html, body {
                     width: 100% !important;
                     max-width: 100% !important;
@@ -1727,10 +1916,16 @@ private final class PortalDesktopChromeModel: ObservableObject {
                     box-sizing: border-box !important;
                 }
             `;
-            document.documentElement.scrollLeft = 0;
-            document.body.scrollLeft = 0;
+            if (!style) {
+                style = document.createElement('style');
+                style.id = styleId;
+                document.head.appendChild(style);
+            }
+            if (style.textContent !== css) style.textContent = css;
+            if (document.documentElement.scrollLeft !== 0) document.documentElement.scrollLeft = 0;
+            if (document.body.scrollLeft !== 0) document.body.scrollLeft = 0;
             var host = document.querySelector('.portal-content-scroll-host');
-            if (host) host.scrollLeft = 0;
+            if (host && host.scrollLeft !== 0) host.scrollLeft = 0;
             return true;
         })();
         """
@@ -1743,17 +1938,60 @@ private final class PortalDesktopChromeModel: ObservableObject {
     }
 }
 
+/** 각 분할 영역의 탭·경로·WebView를 독립적으로 구성합니다. */
+private struct PortalDesktopPane<Content: View>: View {
+    @ObservedObject var model: PortalDesktopChromeModel
+    let theme: PortalAppTheme
+    let reservesTrafficLightArea: Bool
+    let showsBreadcrumbs: Bool
+    let isSplitViewEnabled: Bool
+    let onToggleSplitView: () -> Void
+    let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PortalDesktopToolbar(
+                model: model,
+                theme: theme,
+                reservesTrafficLightArea: reservesTrafficLightArea,
+                isSplitViewEnabled: isSplitViewEnabled,
+                onToggleSplitView: onToggleSplitView
+            )
+            if showsBreadcrumbs {
+                PortalDesktopBreadcrumbBar(model: model, theme: theme)
+            }
+            GeometryReader { geometry in
+                let scale = model.zoomScale
+                content
+                    // WebView의 실제 레이아웃 영역을 역배율로 줄인 뒤 네이티브 View 전체를
+                    // 확대해 Safari처럼 글꼴·아이콘·간격·스크롤 영역을 함께 변경합니다.
+                    .frame(
+                        width: geometry.size.width / scale,
+                        height: geometry.size.height / scale
+                    )
+                    .scaleEffect(scale, anchor: .topLeading)
+            }
+            .clipped()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /** 데스크톱 앱처럼 페이지 히스토리를 탭으로 보여 주는 상단 탐색 바입니다. */
 private struct PortalDesktopToolbar: View {
     @ObservedObject var model: PortalDesktopChromeModel
     let theme: PortalAppTheme
+    let reservesTrafficLightArea: Bool
+    let isSplitViewEnabled: Bool
+    let onToggleSplitView: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
             Button(action: model.toggleNavigationMenu) {
-                Image(systemName: model.isNavigationMenuHidden ? "sidebar.left" : "sidebar.left")
+                Image(systemName: model.isNavigationMenuHidden ? "line.3.horizontal" : "sidebar.left")
                     .frame(width: 22, height: 22)
             }
+            .accessibilityLabel(model.isNavigationMenuHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
             .help(model.isNavigationMenuHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
 
             Divider().frame(height: 22)
@@ -1795,6 +2033,16 @@ private struct PortalDesktopToolbar: View {
 
             Divider().frame(height: 22)
 
+            Button(action: onToggleSplitView) {
+                Image(systemName: isSplitViewEnabled ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                    .frame(width: 22, height: 22)
+            }
+            .fixedSize()
+            .accessibilityLabel(isSplitViewEnabled ? "화면 2분할 닫기" : "화면 좌우 2분할")
+            .help(isSplitViewEnabled ? "화면 2분할 닫기" : "현재 페이지를 좌우로 2분할")
+
+            Divider().frame(height: 22)
+
             Menu {
                 ForEach(Array(stride(from: 80, through: 160, by: 5)), id: \.self) { percent in
                     Button {
@@ -1816,7 +2064,7 @@ private struct PortalDesktopToolbar: View {
         }
         .font(.system(size: 14, weight: .medium))
         .foregroundStyle(theme.foreground.color)
-        .padding(.leading, 92)
+        .padding(.leading, reservesTrafficLightArea ? 92 : 12)
         .padding(.trailing, 14)
         .frame(height: 46)
         .background(theme.surface.color)

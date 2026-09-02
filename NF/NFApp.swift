@@ -35,7 +35,7 @@ struct NFApp: App {
 #if targetEnvironment(macCatalyst)
         WindowGroup("NF PDF") {
             rootContent
-                .frame(minWidth: 1180, minHeight: 760)
+                .frame(minWidth: 760, minHeight: 520)
         }
         .defaultSize(width: 2220, height: 1320)
         .commands {
@@ -54,10 +54,43 @@ struct NFApp: App {
             .environmentObject(portalThemeController)
             .environment(\.portalAppTheme, portalThemeController.theme)
             .preferredColorScheme(portalThemeController.theme.colorScheme)
+#if targetEnvironment(macCatalyst)
+            .background(NFDesktopWindowResizeConfigurator())
+#endif
     }
 }
 
 #if targetEnvironment(macCatalyst)
+/** Mac Catalyst 창이 모든 테두리와 모서리에서 자유롭게 크기 조절되도록 범위를 설정합니다. */
+private struct NFDesktopWindowResizeConfigurator: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        WindowResizeConfigurationView()
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? WindowResizeConfigurationView)?.configureWindowIfPossible()
+    }
+
+    private final class WindowResizeConfigurationView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            configureWindowIfPossible()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            configureWindowIfPossible()
+        }
+
+        func configureWindowIfPossible() {
+            guard let restrictions = window?.windowScene?.sizeRestrictions else { return }
+            restrictions.minimumSize = CGSize(width: 760, height: 520)
+            restrictions.maximumSize = CGSize(width: 16_384, height: 16_384)
+            restrictions.allowsFullScreen = true
+        }
+    }
+}
+
 /// Mac 메뉴 막대에서 자주 쓰는 문서 기능을 키보드로 바로 실행합니다.
 private struct NFDesktopCommands: Commands {
     var body: some Commands {
