@@ -113,6 +113,9 @@ struct PortalWebView: View {
 #if targetEnvironment(macCatalyst)
         VStack(spacing: 0) {
             PortalDesktopToolbar(model: desktopChrome, theme: portalThemeController.theme)
+            if desktopChrome.isNavigationMenuHidden {
+                PortalDesktopBreadcrumbBar(model: desktopChrome, theme: portalThemeController.theme)
+            }
             GeometryReader { geometry in
                 let scale = desktopChrome.zoomScale
                 content.desktopChrome(desktopChrome)
@@ -216,6 +219,14 @@ private struct PortalWebViewContent: UIViewRepresentable {
         userContentController.add(context.coordinator, name: Coordinator.themeBridgeName)
 #if targetEnvironment(macCatalyst)
         userContentController.add(context.coordinator, name: Coordinator.macPageZoomBridgeName)
+        userContentController.add(context.coordinator, name: Coordinator.macNavigationStateBridgeName)
+        userContentController.addUserScript(
+            WKUserScript(
+                source: Coordinator.macNavigationObserverScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
 #endif
         /// WKWebView 기본 설정 입니다.
         let configuration = WKWebViewConfiguration()
@@ -306,6 +317,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.themeBridgeName)
 #if targetEnvironment(macCatalyst)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macPageZoomBridgeName)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macNavigationStateBridgeName)
 #endif
     }
 }
@@ -335,6 +347,99 @@ extension PortalWebViewContent {
 #if targetEnvironment(macCatalyst)
         /// 웹 설정 화면의 Mac 전용 화면 배율을 네이티브 WKWebView로 전달하는 Bridge 이름입니다.
         static let macPageZoomBridgeName = "NFPortalMacPageZoom"
+        /// Portal SPA 경로 변경을 Mac 상단 탭과 경로 바로 전달하는 Bridge 이름입니다.
+        static let macNavigationStateBridgeName = "NFPortalMacNavigationState"
+        /// 전체 문서 이동과 SPA History API 이동을 동일하게 감지하는 Mac 전용 UserScript입니다.
+        static let macNavigationObserverScript = """
+        (function() {
+            if (window.__nfPortalMacNavigationObserverInstalled) return;
+            window.__nfPortalMacNavigationObserverInstalled = true;
+
+            var lastSignature = '';
+            var notificationTimer = null;
+            function currentPageTitle() {
+                var navigation = document.getElementById('portal-navigation');
+                if (navigation) {
+                    var links = Array.from(navigation.querySelectorAll('a[href]'));
+                    var currentPath = location.pathname.replace(/\\/$/, '') + location.search;
+                    var active = links.find(function(anchor) {
+                        return anchor.getAttribute('aria-current') === 'page';
+                    }) || links.find(function(anchor) {
+                        try {
+                            var url = new URL(anchor.href, location.href);
+                            return url.pathname.replace(/\\/$/, '') + url.search === currentPath;
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+                    if (active) {
+                        var label = active.querySelector('span.truncate') || active.querySelector('span') || active;
+                        var text = String(label.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (text) return text;
+                    }
+                }
+                return String(document.title || '').trim();
+            }
+            function notifyNavigationChanged(delay) {
+                clearTimeout(notificationTimer);
+                notificationTimer = setTimeout(function() {
+                    var title = currentPageTitle();
+                    var signature = location.href + '|' + title;
+                    if (signature === lastSignature) return;
+                    lastSignature = signature;
+                    window.webkit.messageHandlers.\(macNavigationStateBridgeName).postMessage({
+                        url: location.href,
+                        title: title
+                    });
+                }, typeof delay === 'number' ? delay : 120);
+            }
+
+            ['pushState', 'replaceState'].forEach(function(methodName) {
+                var original = history[methodName];
+                history[methodName] = function() {
+                    var result = original.apply(this, arguments);
+                    notifyNavigationChanged(120);
+                    return result;
+                };
+            });
+            window.addEventListener('popstate', function() { notifyNavigationChanged(80); });
+            document.addEventListener('click', function(event) {
+                var link = event.target && event.target.closest ? event.target.closest('#portal-navigation a[href]') : null;
+                if (!link) return;
+                notifyNavigationChanged(150);
+                setTimeout(function() { notifyNavigationChanged(0); }, 500);
+            }, true);
+
+            function installDOMObserver() {
+                var navigation = document.getElementById('portal-navigation');
+                if (!navigation || navigation.__nfPortalMacObserved) return;
+                navigation.__nfPortalMacObserved = true;
+                new MutationObserver(function() { notifyNavigationChanged(100); }).observe(navigation, {
+                    subtree: true,
+                    childList: true,
+                    attributes: true,
+                    attributeFilter: ['aria-current', 'data-state']
+                });
+                notifyNavigationChanged(0);
+            }
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', installDOMObserver, { once: true });
+            } else {
+                installDOMObserver();
+            }
+            function observeDocumentRoot() {
+                if (!document.documentElement) {
+                    setTimeout(observeDocumentRoot, 0);
+                    return;
+                }
+                new MutationObserver(installDOMObserver).observe(document.documentElement, {
+                    childList: true,
+                    subtree: true
+                });
+            }
+            observeDocumentRoot();
+        })();
+        """
 #endif
         /// 부모 PortalWebView 정보 입니다.
         var parent: PortalWebViewContent
@@ -798,6 +903,15 @@ extension PortalWebViewContent {
             }
             return
         }
+        /// 전체 메뉴에서 발생한 SPA 경로 이동도 탭과 경로 바에 즉시 반영합니다.
+        if message.name == Self.macNavigationStateBridgeName,
+           let body = message.body as? [String: Any],
+           let webView {
+            let url = (body["url"] as? String).flatMap(URL.init(string:))
+            let title = body["title"] as? String
+            parent.desktopChrome?.recordCurrentPage(in: webView, url: url, title: title)
+            return
+        }
 #endif
         }
 
@@ -1210,12 +1324,20 @@ private final class PortalDesktopChromeModel: ObservableObject {
         var id: String { url.absoluteString }
     }
 
+    struct Breadcrumb: Identifiable, Equatable {
+        let title: String
+        let url: URL?
+
+        var id: String { "\(title)|\(url?.absoluteString ?? "group")" }
+    }
+
     @Published private(set) var pages: [Page] = []
     @Published private(set) var activePageID: String?
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
     @Published private(set) var isNavigationMenuHidden = false
     @Published private(set) var zoomPercent: Int
+    @Published private(set) var breadcrumbs: [Breadcrumb] = []
 
     private weak var webView: WKWebView?
     private let defaults: UserDefaults
@@ -1248,13 +1370,20 @@ private final class PortalDesktopChromeModel: ObservableObject {
         refreshNavigationState(in: webView)
     }
 
-    func recordCurrentPage(in webView: WKWebView) {
+    func recordCurrentPage(in webView: WKWebView, url overrideURL: URL? = nil, title overrideTitle: String? = nil) {
         connect(webView)
         applyDesktopReadability(to: webView)
+        if isNavigationMenuHidden {
+            applyNavigationMenuVisibility(true, in: webView)
+        }
 
-        guard let url = webView.url, url.scheme == "http" || url.scheme == "https" else { return }
-        let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let page = Page(url: url, title: title?.isEmpty == false ? title! : fallbackTitle(for: url), accessedAt: Date().timeIntervalSince1970)
+        guard let url = overrideURL ?? webView.url, url.scheme == "http" || url.scheme == "https" else { return }
+        let suppliedTitle = overrideTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let documentTitle = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pageTitle = suppliedTitle?.isEmpty == false
+            ? suppliedTitle!
+            : (documentTitle?.isEmpty == false ? documentTitle! : fallbackTitle(for: url))
+        let page = Page(url: url, title: pageTitle, accessedAt: Date().timeIntervalSince1970)
 
         pages.removeAll { $0.id == page.id }
         pages.append(page)
@@ -1264,6 +1393,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
         activePageID = page.id
         persistPages()
         syncRecentAccessPages(from: webView)
+        syncCurrentBreadcrumbs(from: webView)
         deliverZoomState(to: webView)
     }
 
@@ -1293,6 +1423,21 @@ private final class PortalDesktopChromeModel: ObservableObject {
     func toggleNavigationMenu() {
         guard let webView else { return }
         let shouldHide = !isNavigationMenuHidden
+        applyNavigationMenuVisibility(shouldHide, in: webView) { [weak self, weak webView] didApply in
+            guard didApply else { return }
+            self?.isNavigationMenuHidden = shouldHide
+            if shouldHide, let webView {
+                self?.syncCurrentBreadcrumbs(from: webView)
+            }
+        }
+    }
+
+    /** 단일 네이티브 숨김 상태를 현재 웹 문서의 사이드바 레이아웃에 적용합니다. */
+    private func applyNavigationMenuVisibility(
+        _ shouldHide: Bool,
+        in webView: WKWebView,
+        completion: ((Bool) -> Void)? = nil
+    ) {
         let targetCollapsed = shouldHide ? "true" : "false"
         let script = """
         (function() {
@@ -1327,10 +1472,10 @@ private final class PortalDesktopChromeModel: ObservableObject {
             return true;
         })();
         """
-        webView.evaluateJavaScript(script) { [weak self] result, _ in
-            guard (result as? Bool) == true || (result as? NSNumber)?.boolValue == true else { return }
+        webView.evaluateJavaScript(script) { result, _ in
+            let didApply = (result as? Bool) == true || (result as? NSNumber)?.boolValue == true
             DispatchQueue.main.async {
-                self?.isNavigationMenuHidden = shouldHide
+                completion?(didApply)
             }
         }
     }
@@ -1364,6 +1509,108 @@ private final class PortalDesktopChromeModel: ObservableObject {
     private func persistPages() {
         guard let data = try? JSONEncoder().encode(pages) else { return }
         defaults.set(data, forKey: Self.recentPagesKey)
+    }
+
+    /** 현재 활성 메뉴의 실제 사이드바 계층을 읽어 Mac 경로 바로 전달합니다. */
+    private func syncCurrentBreadcrumbs(from webView: WKWebView) {
+        let script = """
+        (function() {
+            var navigation = document.getElementById('portal-navigation');
+            if (!navigation) return [];
+
+            function cleanLabel(value) {
+                return String(value || '').replace(/\\s+/g, ' ').trim();
+            }
+            function conciseLabel(element) {
+                if (!element) return '';
+                var explicit = element.getAttribute('data-navigation-label') ||
+                    element.getAttribute('data-section-title') ||
+                    element.getAttribute('aria-label');
+                if (explicit) return cleanLabel(explicit);
+                var preferred = element.querySelector(':scope > span.truncate, :scope > span:not([aria-hidden="true"]), :scope > strong, :scope > h1, :scope > h2, :scope > h3');
+                return cleanLabel(preferred ? preferred.textContent : element.textContent);
+            }
+            function normalizedLocation(anchor) {
+                try {
+                    var url = new URL(anchor.href, window.location.href);
+                    return url.pathname.replace(/\\/$/, '') + url.search;
+                } catch (_) {
+                    return '';
+                }
+            }
+
+            var currentPath = window.location.pathname.replace(/\\/$/, '') + window.location.search;
+            var links = Array.from(navigation.querySelectorAll('a[href]'));
+            var activeLink = links.find(function(anchor) {
+                return anchor.getAttribute('aria-current') === 'page';
+            }) || links.find(function(anchor) {
+                return normalizedLocation(anchor) === currentPath;
+            });
+            if (!activeLink) return [];
+
+            var row = activeLink.closest('[data-navigation-key], li, [role="treeitem"]') || activeLink;
+            var branch = row;
+            var ancestors = [];
+            while (branch && branch !== navigation) {
+                var parent = branch.parentElement;
+                if (!parent || parent === navigation) break;
+                ancestors.unshift({ container: parent, branch: branch });
+                branch = parent;
+            }
+
+            var labels = [];
+            ancestors.forEach(function(level) {
+                var children = Array.from(level.container.children);
+                var branchIndex = children.indexOf(level.branch);
+                if (branchIndex < 0) return;
+                var candidates = children.slice(0, branchIndex).filter(function(child) {
+                    return child.matches('[data-navigation-label], [data-section-title], h1, h2, h3, h4, button, [role="button"]') &&
+                        !child.matches('a[href]');
+                });
+                var candidate = candidates[candidates.length - 1];
+                var label = conciseLabel(candidate);
+                if (label && label.length <= 40 && !labels.includes(label)) labels.push(label);
+            });
+
+            var navigationKey = cleanLabel(row.getAttribute && row.getAttribute('data-navigation-key'));
+            if (labels.length === 0 && /[>›/]/.test(navigationKey)) {
+                labels = navigationKey.split(/\\s*[>›/]\\s*/).map(cleanLabel).filter(Boolean);
+            }
+
+            var pageLabel = conciseLabel(activeLink.querySelector('span.truncate') || activeLink);
+            if (!pageLabel) pageLabel = cleanLabel(document.title) || '현재 페이지';
+            labels = labels.filter(function(label) { return label !== pageLabel; });
+            labels.push(pageLabel);
+
+            var originURL = window.location.origin + '/';
+            return [{ title: 'NF Portal', url: originURL }].concat(labels.map(function(label, index) {
+                return { title: label, url: index === labels.length - 1 ? activeLink.href : null };
+            }));
+        })();
+        """
+        webView.evaluateJavaScript(script) { [weak self, weak webView] result, _ in
+            guard let self, let webView else { return }
+            let records = result as? [[String: Any]] ?? []
+            let resolved = records.compactMap { record -> Breadcrumb? in
+                guard let rawTitle = record["title"] as? String else { return nil }
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty else { return nil }
+                let url = (record["url"] as? String).flatMap(URL.init(string:))
+                return Breadcrumb(title: title, url: url)
+            }
+            let fallback: [Breadcrumb] = {
+                guard let url = webView.url else { return [] }
+                let currentTitle = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = currentTitle?.isEmpty == false ? currentTitle! : self.fallbackTitle(for: url)
+                return [
+                    Breadcrumb(title: "NF Portal", url: URL(string: "/", relativeTo: url)?.absoluteURL),
+                    Breadcrumb(title: title, url: url)
+                ]
+            }()
+            DispatchQueue.main.async {
+                self.breadcrumbs = resolved.isEmpty ? fallback : resolved
+            }
+        }
     }
 
     /** 포털이 관리하는 최근 접속 이력을 오래된 항목부터 최신 항목 순으로 상단 탭에 동기화합니다. */
@@ -1577,6 +1824,53 @@ private struct PortalDesktopToolbar: View {
             Rectangle().fill(theme.border.color).frame(height: 1)
         }
         .buttonStyle(.borderless)
+    }
+}
+
+/** 전체 메뉴가 접힌 동안 현재 Portal 메뉴 계층을 Xcode 스타일로 표시하는 경로 바입니다. */
+private struct PortalDesktopBreadcrumbBar: View {
+    @ObservedObject var model: PortalDesktopChromeModel
+    let theme: PortalAppTheme
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                ForEach(Array(model.breadcrumbs.enumerated()), id: \.offset) { index, breadcrumb in
+                    if index > 0 {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(theme.muted.color)
+                    }
+                    if let url = breadcrumb.url {
+                        Button {
+                            model.open(.init(url: url, title: breadcrumb.title, accessedAt: Date().timeIntervalSince1970))
+                        } label: {
+                            if index == 0 {
+                                Label {
+                                    Text(breadcrumb.title).lineLimit(1)
+                                } icon: {
+                                    Image(systemName: "square.grid.2x2")
+                                }
+                            } else {
+                                Text(breadcrumb.title).lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(breadcrumb.title)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundStyle(theme.foreground.color)
+        .frame(height: 36)
+        .background(theme.surface.color)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(theme.border.color).frame(height: 1)
+        }
     }
 }
 
