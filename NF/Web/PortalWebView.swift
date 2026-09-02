@@ -6,6 +6,7 @@
 //
 
 import AVFoundation
+import Combine
 import Foundation
 import SwiftUI
 import UIKit
@@ -68,7 +69,75 @@ private let portalSupportedWebViewFontPayload: String = {
  - Date: 2026.07.29
  - SeeAlso: ``PortalWebViewModel``, ``PortalWebViewState``
  */
-struct PortalWebView: UIViewRepresentable {
+struct PortalWebView: View {
+#if targetEnvironment(macCatalyst)
+    @StateObject private var desktopChrome = PortalDesktopChromeModel()
+    @EnvironmentObject private var portalThemeController: PortalAppThemeController
+#endif
+
+    let portalURL: URL
+    let loginInfo: LoginInfo?
+    let onLoginInfo: (LoginInfo) -> Void
+    let onOpenExternal: (URL) -> Void
+    let onPreviewAttachment: (PortalAttachmentPreviewItem) -> Void
+    let onLogout: () -> Void
+    let onAccountAccessIssue: () -> Void
+    let onAccountDeleted: () -> Void
+    let onNetworkUnavailable: () -> Void
+    let onAutoLoginChanged: (Bool) -> Void
+    let autoLoginEnabled: Bool
+    let onPDFLocalStorageChanged: (Bool) -> Void
+    let pdfLocalStorageEnabled: Bool
+    let onOpenPDFDocuments: () -> Void
+    let localPDFDocumentCount: Int
+
+    var body: some View {
+        let content = PortalWebViewContent(
+            portalURL: portalURL,
+            loginInfo: loginInfo,
+            onLoginInfo: onLoginInfo,
+            onOpenExternal: onOpenExternal,
+            onPreviewAttachment: onPreviewAttachment,
+            onLogout: onLogout,
+            onAccountAccessIssue: onAccountAccessIssue,
+            onAccountDeleted: onAccountDeleted,
+            onNetworkUnavailable: onNetworkUnavailable,
+            onAutoLoginChanged: onAutoLoginChanged,
+            autoLoginEnabled: autoLoginEnabled,
+            onPDFLocalStorageChanged: onPDFLocalStorageChanged,
+            pdfLocalStorageEnabled: pdfLocalStorageEnabled,
+            onOpenPDFDocuments: onOpenPDFDocuments,
+            localPDFDocumentCount: localPDFDocumentCount
+        )
+
+#if targetEnvironment(macCatalyst)
+        VStack(spacing: 0) {
+            PortalDesktopToolbar(model: desktopChrome, theme: portalThemeController.theme)
+            GeometryReader { geometry in
+                let scale = desktopChrome.zoomScale
+                content.desktopChrome(desktopChrome)
+                    // WebView의 실제 레이아웃 영역을 역배율로 줄인 뒤 네이티브 View 전체를
+                    // 확대해 Safari처럼 글꼴·아이콘·간격·스크롤 영역을 함께 변경합니다.
+                    .frame(
+                        width: geometry.size.width / scale,
+                        height: geometry.size.height / scale
+                    )
+                    .scaleEffect(scale, anchor: .topLeading)
+            }
+            .clipped()
+        }
+        // UITitlebar의 기본 제목을 숨긴 뒤에도 Catalyst가 남기는 상단 safe area까지
+        // 통합 헤더가 확장돼, 신호등과 같은 줄에 탐색 컨트롤을 표시합니다.
+        .ignoresSafeArea(.container, edges: .top)
+        .background(MacCatalystTitlebarConfigurator())
+#else
+        content
+#endif
+    }
+}
+
+/** iOS와 Mac Catalyst에서 공유하는 WKWebView 및 Portal 브리지 구현입니다. */
+private struct PortalWebViewContent: UIViewRepresentable {
     /// 웹에서 수신한 팔레트를 네이티브 Safe Area와 문서 화면에 전달하는 앱 전역 테마 저장소입니다.
     @EnvironmentObject private var portalThemeController: PortalAppThemeController
     /// WKWebView가 처음 로드해야 하는 Portal URL 입니다.
@@ -101,8 +170,21 @@ struct PortalWebView: UIViewRepresentable {
     let onOpenPDFDocuments: () -> Void
     /// 활성 문서와 휴지통 문서를 포함한 로컬 PDF 문서 수입니다.
     let localPDFDocumentCount: Int
+#if targetEnvironment(macCatalyst)
+    /// Mac Catalyst 데스크톱 탐색 바 상태입니다.
+    var desktopChrome: PortalDesktopChromeModel? = nil
+#endif
     /// WebView 화면 데이터와 UI 기능을 처리하는 ViewModel 입니다.
     @StateObject private var viewModel = PortalWebViewModel()
+
+#if targetEnvironment(macCatalyst)
+    /** 상위 Mac Catalyst 화면의 데스크톱 탐색 바를 연결합니다. */
+    func desktopChrome(_ desktopChrome: PortalDesktopChromeModel) -> Self {
+        var next = self
+        next.desktopChrome = desktopChrome
+        return next
+    }
+#endif
 
     /**
      WKWebView Coordinator를 생성합니다.
@@ -132,11 +214,18 @@ struct PortalWebView: UIViewRepresentable {
         userContentController.add(context.coordinator, name: Coordinator.pdfLocalStorageBridgeName)
         userContentController.add(context.coordinator, name: Coordinator.pdfDocumentsBridgeName)
         userContentController.add(context.coordinator, name: Coordinator.themeBridgeName)
+#if targetEnvironment(macCatalyst)
+        userContentController.add(context.coordinator, name: Coordinator.macPageZoomBridgeName)
+#endif
         /// WKWebView 기본 설정 입니다.
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = userContentController
         configuration.websiteDataStore = .default()
         configuration.allowsInlineMediaPlayback = true
+#if targetEnvironment(macCatalyst)
+        /// Catalyst에서도 Safari·Chrome과 같은 데스크톱용 HTML/CSS 분기를 사용합니다.
+        configuration.defaultWebpagePreferences.preferredContentMode = .desktop
+#endif
         /// WKWebView 인스턴스를 생성합니다.
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
@@ -151,6 +240,13 @@ struct PortalWebView: UIViewRepresentable {
         /// 기본 UserAgent를 보존한 상태에서 NF iOS 식별 값을 추가합니다.
         let defaultUserAgent = webView.value(forKey: "userAgent") as? String ?? ""
         webView.customUserAgent = "\(defaultUserAgent) \(PortalConfig.userAgentSuffix)"
+#if targetEnvironment(macCatalyst)
+        /// 저장된 Mac 전용 화면 배율과 데스크톱 탐색 상태를 연결합니다.
+        webView.scrollView.showsHorizontalScrollIndicator = false
+        webView.scrollView.alwaysBounceHorizontal = false
+        webView.scrollView.isDirectionalLockEnabled = true
+        desktopChrome?.connect(webView)
+#endif
         /// 최초 Portal URL을 로드합니다.
         webView.load(URLRequest(url: PortalConfig.normalizePortalURL(portalURL)))
         context.coordinator.webView = webView
@@ -173,6 +269,9 @@ struct PortalWebView: UIViewRepresentable {
         webView.backgroundColor = portalThemeController.theme.background.uiColor
         /// Coordinator가 최신 WebView State와 Web 브리지 Callback을 사용하도록 부모 값을 갱신합니다.
         context.coordinator.parent = self
+#if targetEnvironment(macCatalyst)
+        desktopChrome?.connect(webView)
+#endif
         /// Portal 편집 어시스트가 앱 지원 폰트를 즉시 사용할 수 있도록 폰트 목록을 다시 전달합니다.
         context.coordinator.deliverSupportedFonts(to: webView)
         /// 웹 설정에서 자동 로그인 값이 변경된 경우 최신 앱 State를 다시 전달합니다.
@@ -205,11 +304,14 @@ struct PortalWebView: UIViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.pdfLocalStorageBridgeName)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.pdfDocumentsBridgeName)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.themeBridgeName)
+#if targetEnvironment(macCatalyst)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macPageZoomBridgeName)
+#endif
     }
 }
 
 // MARK: - WKWebView Delegate Coordinator 입니다.
-extension PortalWebView {
+extension PortalWebViewContent {
     /**
      WKWebView Navigation, UI, JavaScript Bridge 처리를 담당하는 Coordinator 입니다. ( J.D.H )
      - Version: 1.0.0
@@ -230,8 +332,12 @@ extension PortalWebView {
         static let pdfDocumentsBridgeName = "NFPortalIOSPDFDocuments"
         /// 웹 화면 테마의 실제 CSS 팔레트를 네이티브 앱으로 전달하는 Bridge 이름입니다.
         static let themeBridgeName = "NFPortalIOSTheme"
+#if targetEnvironment(macCatalyst)
+        /// 웹 설정 화면의 Mac 전용 화면 배율을 네이티브 WKWebView로 전달하는 Bridge 이름입니다.
+        static let macPageZoomBridgeName = "NFPortalMacPageZoom"
+#endif
         /// 부모 PortalWebView 정보 입니다.
-        var parent: PortalWebView
+        var parent: PortalWebViewContent
         /// WebView 화면 기능 처리를 담당하는 ViewModel 입니다.
         private let viewModel: PortalWebViewModel
         /// 현재 연결된 WKWebView 입니다.
@@ -257,7 +363,7 @@ extension PortalWebView {
             - parent: 부모 PortalWebView 입니다.
             - viewModel: WebView 화면 ViewModel 입니다.
          */
-        init(parent: PortalWebView, viewModel: PortalWebViewModel) {
+        init(parent: PortalWebViewContent, viewModel: PortalWebViewModel) {
             self.parent = parent
             self.viewModel = viewModel
         }
@@ -336,6 +442,9 @@ extension PortalWebView {
          - Date: 2026.08.05
          */
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+#if targetEnvironment(macCatalyst)
+            parent.desktopChrome?.refreshNavigationState(in: webView)
+#endif
             guard !hasCompletedInitialLoad, !hasReportedNetworkIssue else { return }
             initialLoadTimeoutWorkItem?.cancel()
             let workItem = DispatchWorkItem { [weak self] in
@@ -346,6 +455,13 @@ extension PortalWebView {
                 deadline: .now() + initialLoadTimeout,
                 execute: workItem
             )
+        }
+
+        /// 응답 문서가 WKWebView에 반영되는 시점에 뒤로·앞으로 상태를 다시 계산합니다.
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+#if targetEnvironment(macCatalyst)
+            parent.desktopChrome?.refreshNavigationState(in: webView)
+#endif
         }
 
         /**
@@ -422,6 +538,9 @@ extension PortalWebView {
             Task { @MainActor in
                 viewModel.setCanGoBack(webView.canGoBack)
             }
+#if targetEnvironment(macCatalyst)
+            parent.desktopChrome?.recordCurrentPage(in: webView)
+#endif
         /// Portal 페이지에 Google 로그인/로그아웃 Bridge와 길게 누르기 차단 스크립트를 주입합니다.
         injectGoogleLoginBridge(to: webView)
         injectLogoutBridge(to: webView)
@@ -666,6 +785,20 @@ extension PortalWebView {
             }
             return
         }
+#if targetEnvironment(macCatalyst)
+        /// 화면 설정의 배율 슬라이더 값을 Mac Catalyst WKWebView에 즉시 적용합니다.
+        if message.name == Self.macPageZoomBridgeName {
+            let percent: Int? = {
+                if let number = message.body as? NSNumber { return number.intValue }
+                if let body = message.body as? [String: Any], let number = body["percent"] as? NSNumber { return number.intValue }
+                return nil
+            }()
+            if let percent {
+                parent.desktopChrome?.setZoom(percent: percent)
+            }
+            return
+        }
+#endif
         }
 
         /**
@@ -1063,3 +1196,412 @@ extension PortalWebView {
         }
     }
 }
+
+// MARK: - Mac Catalyst 전용 데스크톱 Chrome
+
+#if targetEnvironment(macCatalyst)
+/** Mac Catalyst용 WebView 탐색 바의 상태와 동작을 관리합니다. */
+private final class PortalDesktopChromeModel: ObservableObject {
+    struct Page: Identifiable, Equatable, Codable {
+        let url: URL
+        let title: String
+        let accessedAt: TimeInterval
+
+        var id: String { url.absoluteString }
+    }
+
+    @Published private(set) var pages: [Page] = []
+    @Published private(set) var activePageID: String?
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+    @Published private(set) var isNavigationMenuHidden = false
+    @Published private(set) var zoomPercent: Int
+
+    private weak var webView: WKWebView?
+    private let defaults: UserDefaults
+    private static let recentPagesKey = "NFPortalMacRecentPages.v1"
+    private static let zoomPercentKey = "NFPortalMacPageZoomPercent.v1"
+    private static let defaultZoomPercent = 120
+    private static let minimumZoomPercent = 80
+    private static let maximumZoomPercent = 160
+
+    /// SwiftUI가 WKWebView 전체 프레임에 적용할 Mac 전용 화면 배율입니다.
+    var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let storedZoom = defaults.integer(forKey: Self.zoomPercentKey)
+        zoomPercent = Self.clampedZoom(storedZoom == 0 ? Self.defaultZoomPercent : storedZoom)
+        if let data = defaults.data(forKey: Self.recentPagesKey),
+           let storedPages = try? JSONDecoder().decode([Page].self, from: data) {
+            pages = Array(storedPages.suffix(12))
+        }
+    }
+
+    func connect(_ webView: WKWebView) {
+        self.webView = webView
+        /// WKWebView.pageZoom은 일부 WebKit 버전에서 고정 글꼴 크기를 확대하지 않고
+        /// 레이아웃만 확대하므로 사용하지 않습니다. 실제 확대는 SwiftUI에서 WebView
+        /// 전체 프레임에 적용해 사이드바·본문·아이콘·간격·글꼴을 동일 비율로 변경합니다.
+        webView.pageZoom = 1
+        applyDesktopFitLayout(to: webView)
+        refreshNavigationState(in: webView)
+    }
+
+    func recordCurrentPage(in webView: WKWebView) {
+        connect(webView)
+        applyDesktopReadability(to: webView)
+
+        guard let url = webView.url, url.scheme == "http" || url.scheme == "https" else { return }
+        let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let page = Page(url: url, title: title?.isEmpty == false ? title! : fallbackTitle(for: url), accessedAt: Date().timeIntervalSince1970)
+
+        pages.removeAll { $0.id == page.id }
+        pages.append(page)
+        if pages.count > 12 {
+            pages.removeFirst(pages.count - 12)
+        }
+        activePageID = page.id
+        persistPages()
+        syncRecentAccessPages(from: webView)
+        deliverZoomState(to: webView)
+    }
+
+    func goBack() {
+        guard let webView, webView.canGoBack else { return }
+        webView.goBack()
+        DispatchQueue.main.async { [weak self, weak webView] in
+            guard let webView else { return }
+            self?.refreshNavigationState(in: webView)
+        }
+    }
+
+    func goForward() {
+        guard let webView, webView.canGoForward else { return }
+        webView.goForward()
+        DispatchQueue.main.async { [weak self, weak webView] in
+            guard let webView else { return }
+            self?.refreshNavigationState(in: webView)
+        }
+    }
+
+    func open(_ page: Page) {
+        webView?.load(URLRequest(url: page.url))
+        activePageID = page.id
+    }
+
+    func toggleNavigationMenu() {
+        guard let webView else { return }
+        let shouldHide = !isNavigationMenuHidden
+        let targetCollapsed = shouldHide ? "true" : "false"
+        let script = """
+        (function() {
+            // 이전 빌드가 주입한 강제 숨김 CSS는 제거합니다. 레이아웃은 포털이 직접 재계산해야 합니다.
+            document.getElementById('__nfPortalDesktopSidebarStyle')?.remove();
+
+            var request = new CustomEvent('nfPortalDesktopSidebarToggle', {
+                detail: { collapsed: \(targetCollapsed), platform: 'mac' },
+                cancelable: true
+            });
+            // 포털이 이 이벤트를 처리하면 preventDefault()로 처리 완료를 알립니다.
+            if (!window.dispatchEvent(request)) return true;
+
+            // 이전 포털 버전에서도 상세 영역 폭이 정상 재계산되도록 사이드바와 루트만 조정합니다.
+            var navigation = document.getElementById('portal-navigation');
+            var content = document.getElementById('portal-content');
+            var root = navigation && navigation.parentElement;
+            if (!navigation || !content || !root) return false;
+            if (\(targetCollapsed)) {
+                navigation.dataset.nfPortalMacHidden = 'true';
+                navigation.style.setProperty('display', 'none', 'important');
+                root.style.setProperty('display', 'block', 'important');
+                root.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+                content.style.setProperty('width', '100%', 'important');
+            } else {
+                delete navigation.dataset.nfPortalMacHidden;
+                navigation.style.removeProperty('display');
+                root.style.removeProperty('display');
+                root.style.removeProperty('grid-template-columns');
+                content.style.removeProperty('width');
+            }
+            return true;
+        })();
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            guard (result as? Bool) == true || (result as? NSNumber)?.boolValue == true else { return }
+            DispatchQueue.main.async {
+                self?.isNavigationMenuHidden = shouldHide
+            }
+        }
+    }
+
+    func refreshNavigationState(in webView: WKWebView) {
+        self.webView = webView
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+        if let currentURL = webView.url {
+            activePageID = currentURL.absoluteString
+        }
+    }
+
+    func setZoom(percent: Int) {
+        let next = Self.clampedZoom(percent)
+        zoomPercent = next
+        defaults.set(next, forKey: Self.zoomPercentKey)
+        guard let webView else { return }
+        webView.pageZoom = 1
+        applyDesktopFitLayout(to: webView)
+        let currentOffset = webView.scrollView.contentOffset
+        webView.scrollView.setContentOffset(CGPoint(x: 0, y: currentOffset.y), animated: false)
+        deliverZoomState(to: webView)
+    }
+
+    private static func clampedZoom(_ value: Int) -> Int {
+        let stepped = Int((Double(value) / 5).rounded()) * 5
+        return min(maximumZoomPercent, max(minimumZoomPercent, stepped))
+    }
+
+    private func persistPages() {
+        guard let data = try? JSONEncoder().encode(pages) else { return }
+        defaults.set(data, forKey: Self.recentPagesKey)
+    }
+
+    /** 포털이 관리하는 최근 접속 이력을 오래된 항목부터 최신 항목 순으로 상단 탭에 동기화합니다. */
+    private func syncRecentAccessPages(from webView: WKWebView) {
+        let script = """
+        (function() {
+            try {
+                var accessed = JSON.parse(window.localStorage.getItem('hlp-navigation-recent-access') || '{}');
+                var rows = Array.from(document.querySelectorAll('[data-navigation-key]'));
+                return Object.entries(accessed)
+                    .filter(function(entry) { return Number.isFinite(Number(entry[1])); })
+                    .sort(function(first, second) { return Number(first[1]) - Number(second[1]); })
+                    .map(function(entry) {
+                        var key = entry[0];
+                        var row = rows.find(function(element) { return element.getAttribute('data-navigation-key') === key; });
+                        var link = row && row.querySelector('a[href]');
+                        if (!link) return null;
+                        var label = row.querySelector('span.truncate') || link.querySelector('span') || link;
+                        return { url: link.href, title: (label.textContent || '').trim(), accessedAt: Number(entry[1]) / 1000 };
+                    })
+                    .filter(Boolean)
+                    .slice(-12);
+            } catch (_) {
+                return [];
+            }
+        })();
+        """
+        webView.evaluateJavaScript(script) { [weak self] result, _ in
+            guard let self, let records = result as? [[String: Any]], !records.isEmpty else { return }
+            var synchronized: [Page] = []
+            for record in records {
+                guard let urlText = record["url"] as? String,
+                      let url = URL(string: urlText),
+                      let accessedAt = (record["accessedAt"] as? NSNumber)?.doubleValue else { continue }
+                let rawTitle = (record["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let page = Page(url: url, title: rawTitle?.isEmpty == false ? rawTitle! : self.fallbackTitle(for: url), accessedAt: accessedAt)
+                synchronized.removeAll { $0.id == page.id }
+                synchronized.append(page)
+            }
+            guard !synchronized.isEmpty else { return }
+            DispatchQueue.main.async {
+                self.pages = synchronized
+                if let currentURL = webView.url?.absoluteString {
+                    self.activePageID = currentURL
+                }
+                self.persistPages()
+            }
+        }
+    }
+
+    private func deliverZoomState(to webView: WKWebView) {
+        let script = """
+        (function() {
+            var percent = \(zoomPercent);
+            try { window.localStorage.setItem('nfPortalMacPageZoom', String(percent)); } catch (_) {}
+            window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', { detail: { percent: percent } }));
+        })();
+        """
+        webView.evaluateJavaScript(script)
+    }
+
+    private func applyDesktopReadability(to webView: WKWebView) {
+#if targetEnvironment(macCatalyst)
+        applyDesktopFitLayout(to: webView)
+        let script = """
+        (function() {
+            var styleId = '__nfPortalDesktopReadabilityStyle';
+            if (document.getElementById(styleId)) return;
+            var style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+            `;
+            document.head.appendChild(style);
+        })();
+        """
+        webView.evaluateJavaScript(script)
+#endif
+    }
+
+    /** 네이티브 WebView 확대 후에도 문서가 가로로 넘치지 않도록 웹 레이아웃 폭만 제한합니다. */
+    private func applyDesktopFitLayout(to webView: WKWebView) {
+        let script = """
+        (function() {
+            var styleId = '__nfPortalDesktopFitLayoutStyle';
+            var style = document.getElementById(styleId);
+            if (!style) {
+                style = document.createElement('style');
+                style.id = styleId;
+                document.head.appendChild(style);
+            }
+            document.querySelectorAll('.nf-portal-mac-zoom-root').forEach(function(element) {
+                element.classList.remove('nf-portal-mac-zoom-root');
+            });
+            style.textContent = `
+                html, body {
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    overflow-x: hidden !important;
+                    overscroll-behavior-x: none !important;
+                }
+                #portal-content,
+                .portal-content-scroll-host {
+                    min-width: 0 !important;
+                    max-width: 100% !important;
+                    overflow-x: hidden !important;
+                    box-sizing: border-box !important;
+                }
+                #portal-main {
+                    width: 100% !important;
+                    min-width: 0 !important;
+                    max-width: min(var(--portal-main-max-width, 100%), 100%) !important;
+                    overflow-x: clip !important;
+                    box-sizing: border-box !important;
+                }
+            `;
+            document.documentElement.scrollLeft = 0;
+            document.body.scrollLeft = 0;
+            var host = document.querySelector('.portal-content-scroll-host');
+            if (host) host.scrollLeft = 0;
+            return true;
+        })();
+        """
+        webView.evaluateJavaScript(script)
+    }
+
+    private func fallbackTitle(for url: URL) -> String {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return path.isEmpty ? (url.host ?? "Portal") : path
+    }
+}
+
+/** 데스크톱 앱처럼 페이지 히스토리를 탭으로 보여 주는 상단 탐색 바입니다. */
+private struct PortalDesktopToolbar: View {
+    @ObservedObject var model: PortalDesktopChromeModel
+    let theme: PortalAppTheme
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button(action: model.toggleNavigationMenu) {
+                Image(systemName: model.isNavigationMenuHidden ? "sidebar.left" : "sidebar.left")
+                    .frame(width: 22, height: 22)
+            }
+            .help(model.isNavigationMenuHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
+
+            Divider().frame(height: 22)
+
+            Button(action: model.goBack) {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(!model.canGoBack)
+            .help("뒤로 가기")
+
+            Button(action: model.goForward) {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(!model.canGoForward)
+            .help("앞으로 가기")
+
+            Divider().frame(height: 22)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(model.pages) { page in
+                        Button {
+                            model.open(page)
+                        } label: {
+                            Text(page.title)
+                                .lineLimit(1)
+                                .frame(maxWidth: 190)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(page.id == model.activePageID ? theme.accent.color.opacity(0.24) : theme.background.color.opacity(0.72))
+                                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help(page.url.absoluteString)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+
+            Divider().frame(height: 22)
+
+            Menu {
+                ForEach(Array(stride(from: 80, through: 160, by: 5)), id: \.self) { percent in
+                    Button {
+                        model.setZoom(percent: percent)
+                    } label: {
+                        if percent == model.zoomPercent {
+                            Label("\(percent)%", systemImage: "checkmark")
+                        } else {
+                            Text("\(percent)%")
+                        }
+                    }
+                }
+            } label: {
+                Label("\(model.zoomPercent)%", systemImage: "textformat.size")
+                    .labelStyle(.titleAndIcon)
+            }
+            .fixedSize()
+            .help("웹 콘텐츠 화면 배율")
+        }
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(theme.foreground.color)
+        .padding(.leading, 92)
+        .padding(.trailing, 14)
+        .frame(height: 46)
+        .background(theme.surface.color)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(theme.border.color).frame(height: 1)
+        }
+        .buttonStyle(.borderless)
+    }
+}
+
+/** 기본 macOS 제목을 숨겨 신호등과 같은 높이의 테마형 통합 헤더를 표시합니다. */
+private struct MacCatalystTitlebarConfigurator: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        TitlebarConfigurationView()
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? TitlebarConfigurationView)?.configureTitlebarIfPossible()
+    }
+
+    private final class TitlebarConfigurationView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            configureTitlebarIfPossible()
+        }
+
+        func configureTitlebarIfPossible() {
+            guard let titlebar = window?.windowScene?.titlebar else { return }
+            titlebar.titleVisibility = .hidden
+            titlebar.toolbar = nil
+            titlebar.separatorStyle = .none
+        }
+    }
+}
+#endif

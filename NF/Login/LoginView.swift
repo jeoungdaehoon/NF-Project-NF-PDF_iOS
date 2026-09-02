@@ -136,7 +136,7 @@ struct LoginView: View {
                     .foregroundStyle(NFColor.muted)
                     .padding(.trailing, 20)
                     .padding(.bottom, 12)
-                    .accessibilityLabel("앱 버전 \(AppVersion.number)")
+                    .accessibilityLabel("앱 버전 \(AppVersion.number), 빌드 \(AppVersion.buildNumber)")
             }
         }
     }

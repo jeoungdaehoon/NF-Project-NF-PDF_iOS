@@ -35,9 +35,9 @@ struct NFApp: App {
 #if targetEnvironment(macCatalyst)
         WindowGroup("NF PDF") {
             rootContent
-                .frame(minWidth: 960, minHeight: 640)
+                .frame(minWidth: 1180, minHeight: 760)
         }
-        .defaultSize(width: 1280, height: 820)
+        .defaultSize(width: 2220, height: 1320)
         .commands {
             NFDesktopCommands()
         }
