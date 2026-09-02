@@ -1488,7 +1488,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
     private static let minimumZoomPercent = 80
     private static let maximumZoomPercent = 160
 
-    /// SwiftUI가 WKWebView 전체 프레임에 적용할 Mac 전용 화면 배율입니다.
+    /// WebKit이 문서 레이아웃 단계에서 적용할 Mac 전용 화면 배율입니다.
     var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
     /// 2분할을 열 때 오른쪽 WebView가 최초로 복제할 현재 페이지입니다.
     private(set) var splitInitialURL: URL?
@@ -1522,11 +1522,13 @@ private final class PortalDesktopChromeModel: ObservableObject {
     func connect(_ webView: WKWebView) {
         let isNewWebView = self.webView !== webView
         self.webView = webView
-        /// WKWebView.pageZoom은 일부 WebKit 버전에서 고정 글꼴 크기를 확대하지 않고
-        /// 레이아웃만 확대하므로 사용하지 않습니다. 실제 확대는 SwiftUI에서 WebView
-        /// 전체 프레임에 적용해 사이드바·본문·아이콘·간격·글꼴을 동일 비율로 변경합니다.
+        /// WebView 전체에 SwiftUI transform을 적용하면 대형 차트의 모든 WebKit 레이어가
+        /// 매 프레임 다시 합성됩니다. 문서 배율은 WebKit 레이아웃 단계에서 처리합니다.
+        let pageZoom = zoomScale
+        if abs(webView.pageZoom - pageZoom) > 0.001 {
+            webView.pageZoom = pageZoom
+        }
         if isNewWebView {
-            webView.pageZoom = 1
             applyDesktopFitLayout(to: webView)
         }
         refreshNavigationState(in: webView)
@@ -1691,7 +1693,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
         zoomPercent = next
         defaults.set(next, forKey: Self.zoomPercentKey)
         guard let webView else { return }
-        webView.pageZoom = 1
+        webView.pageZoom = zoomScale
         applyDesktopFitLayout(to: webView)
         let currentOffset = webView.scrollView.contentOffset
         webView.scrollView.setContentOffset(CGPoint(x: 0, y: currentOffset.y), animated: false)
@@ -1888,7 +1890,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
 #endif
     }
 
-    /** 네이티브 WebView 확대 후에도 문서가 가로로 넘치지 않도록 웹 레이아웃 폭만 제한합니다. */
+    /** WebKit 문서 배율 변경 후에도 문서가 가로로 넘치지 않도록 웹 레이아웃 폭을 제한합니다. */
     private func applyDesktopFitLayout(to webView: WKWebView) {
         let script = """
         (function() {
@@ -1960,18 +1962,8 @@ private struct PortalDesktopPane<Content: View>: View {
             if showsBreadcrumbs {
                 PortalDesktopBreadcrumbBar(model: model, theme: theme)
             }
-            GeometryReader { geometry in
-                let scale = model.zoomScale
-                content
-                    // WebView의 실제 레이아웃 영역을 역배율로 줄인 뒤 네이티브 View 전체를
-                    // 확대해 Safari처럼 글꼴·아이콘·간격·스크롤 영역을 함께 변경합니다.
-                    .frame(
-                        width: geometry.size.width / scale,
-                        height: geometry.size.height / scale
-                    )
-                    .scaleEffect(scale, anchor: .topLeading)
-            }
-            .clipped()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
