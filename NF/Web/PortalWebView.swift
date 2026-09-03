@@ -1896,6 +1896,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
         (function() {
             var styleId = '__nfPortalDesktopFitLayoutStyle';
             var style = document.getElementById(styleId);
+            document.documentElement.setAttribute('lang', 'ko-KR');
             var css = `
                 html, body {
                     width: 100% !important;
@@ -1917,6 +1918,35 @@ private final class PortalDesktopChromeModel: ObservableObject {
                     overflow-x: clip !important;
                     box-sizing: border-box !important;
                 }
+                /*
+                 Catalyst는 pageZoom 상태에서 네이티브 날짜 표시기 폭을 잘못 계산해
+                 연도 마지막 숫자 위에 달력 아이콘을 그립니다. 네이티브 표시기는
+                 오른쪽 클릭 영역으로만 유지하고, 아이콘은 입력 배경에 따로 그려
+                 날짜 문자열과 표시기가 같은 레이아웃 폭을 공유하지 않게 합니다.
+                */
+                input[type="date"] {
+                    position: relative !important;
+                    min-inline-size: 14em !important;
+                    padding-inline-end: 2.75em !important;
+                    box-sizing: border-box !important;
+                    white-space: nowrap !important;
+                    -webkit-locale: "ko-KR" !important;
+                    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%238a8a8a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M16 3v4M8 3v4M3 11h18'/%3E%3C/svg%3E") !important;
+                    background-repeat: no-repeat !important;
+                    background-position: right 0.75em center !important;
+                    background-size: 1.1em 1.1em !important;
+                }
+                input[type="date"]::-webkit-calendar-picker-indicator {
+                    position: absolute !important;
+                    inset-block: 0 !important;
+                    inset-inline-end: 0 !important;
+                    width: 2.75em !important;
+                    height: 100% !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    opacity: 0 !important;
+                    cursor: pointer !important;
+                }
             `;
             if (!style) {
                 style = document.createElement('style');
@@ -1924,6 +1954,9 @@ private final class PortalDesktopChromeModel: ObservableObject {
                 document.head.appendChild(style);
             }
             if (style.textContent !== css) style.textContent = css;
+            document.querySelectorAll('input[type="date"]').forEach(function(input) {
+                input.setAttribute('lang', 'ko-KR');
+            });
             if (document.documentElement.scrollLeft !== 0) document.documentElement.scrollLeft = 0;
             if (document.body.scrollLeft !== 0) document.body.scrollLeft = 0;
             var host = document.querySelector('.portal-content-scroll-host');
