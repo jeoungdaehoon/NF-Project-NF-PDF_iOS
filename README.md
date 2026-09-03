@@ -1,6 +1,8 @@
-# NF PDF iOS
+# NF PDF iOS + 네이티브 macOS
 
 NF iOS 포털과 기존 FileManager/PDF 기능을 하나의 SwiftUI 앱으로 통합한 프로젝트입니다.
+
+macOS 앱은 iOS/Catalyst 화면을 확대해 사용하는 방식이 아니라 별도 `NF-macOS` 타깃에서 AppKit `WKWebView`로 실행됩니다. 상단 방문 탭, 경로 표시, 사이드바 열기/닫기, 뒤로/앞으로, 지속형 화면 배율, 좌우 2분할과 자유로운 창 크기 조절을 macOS 전용 코드로 제공합니다.
 
 ## 포함 기능
 
@@ -63,6 +65,16 @@ xcodebuild -project NF.xcodeproj -scheme NF \
   -destination 'generic/platform=iOS Simulator' \
   CODE_SIGNING_ALLOWED=NO build
 ```
+
+네이티브 macOS 앱은 다음 명령으로 검증합니다.
+
+```sh
+xcodebuild -project NF.xcodeproj -scheme NF-macOS \
+  -destination 'platform=macOS' \
+  CODE_SIGNING_ALLOWED=NO build
+```
+
+로컬 설치용 DMG는 `./Scripts/build-macos-dmg.sh`로 생성합니다.
 
 클라우드 서비스 테스트는 `NFTests/PortalPDFCloudServicesTests.swift`에 있습니다.
 페이지 편집 데이터 분리·복원 테스트는 `NFTests/PortalPDFPageEditPersistenceTests.swift`에 있으며 실제 iPad에서도 실행할 수 있습니다.
