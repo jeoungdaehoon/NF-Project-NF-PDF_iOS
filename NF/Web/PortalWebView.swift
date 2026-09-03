@@ -2083,7 +2083,11 @@ private struct PortalDesktopToolbar: View {
             } label: {
                 Label("\(model.zoomPercent)%", systemImage: "textformat.size")
                     .labelStyle(.titleAndIcon)
+                    // Catalyst의 Menu 라벨은 부모 foregroundStyle을 무시하고
+                    // 시스템 강조색을 사용할 수 있으므로 현재 포털 테마색을 직접 적용합니다.
+                    .foregroundStyle(theme.foreground.color)
             }
+            .tint(theme.foreground.color)
             .fixedSize()
             .help("웹 콘텐츠 화면 배율")
         }

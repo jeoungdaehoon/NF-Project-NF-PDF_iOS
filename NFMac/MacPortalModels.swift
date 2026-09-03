@@ -139,10 +139,10 @@ final class MacPortalBrowserModel: ObservableObject {
         sidebarHidden = defaults.bool(forKey: "nf.mac.portal.sidebarHidden.\(identifier).v2")
         if let data = defaults.data(forKey: "nf.mac.portal.pages.\(identifier).v2"),
            let stored = try? JSONDecoder().decode([MacPortalPage].self, from: data) {
-            pages = Array(stored.sorted { $0.accessedAt < $1.accessedAt }.suffix(14))
-            if let last = pages.last {
-                self.initialURL = last.url
-                activePageID = last.id
+            pages = Array(stored.sorted { $0.accessedAt > $1.accessedAt }.prefix(14))
+            if let first = pages.first {
+                self.initialURL = first.url
+                activePageID = first.id
             }
         }
     }
@@ -171,8 +171,8 @@ final class MacPortalBrowserModel: ObservableObject {
         let resolvedTitle = cleanTitle?.isEmpty == false ? cleanTitle! : fallbackTitle(for: url)
         let page = MacPortalPage(url: url, title: resolvedTitle, accessedAt: Date().timeIntervalSince1970)
         pages.removeAll { $0.id == page.id }
-        pages.append(page)
-        pages = Array(pages.suffix(14))
+        pages.insert(page, at: 0)
+        pages = Array(pages.prefix(14))
         activePageID = page.id
         initialURL = url
         persistPages()
@@ -182,8 +182,28 @@ final class MacPortalBrowserModel: ObservableObject {
     }
 
     func open(_ page: MacPortalPage) {
+        guard let index = pages.firstIndex(where: { $0.id == page.id }) else { return }
+        var selectedPage = pages.remove(at: index)
+        selectedPage.accessedAt = Date().timeIntervalSince1970
+        pages.insert(selectedPage, at: 0)
         activePageID = page.id
+        initialURL = page.url
+        persistPages()
         webView?.load(URLRequest(url: page.url))
+    }
+
+    func close(_ page: MacPortalPage) {
+        guard pages.count > 1,
+              let index = pages.firstIndex(where: { $0.id == page.id }) else { return }
+        let closesActivePage = page.id == activePageID
+        pages.remove(at: index)
+
+        if closesActivePage, let nextPage = pages.first {
+            activePageID = nextPage.id
+            initialURL = nextPage.url
+            webView?.load(URLRequest(url: nextPage.url))
+        }
+        persistPages()
     }
 
     func open(_ breadcrumb: MacPortalBreadcrumb) {

@@ -6,7 +6,6 @@ struct MacPortalRootView: View {
     @EnvironmentObject private var preferences: MacPortalPreferences
     @StateObject private var authentication = MacAuthenticationModel()
     @State private var showingIntro = true
-    @State private var rawAppleNonce: String?
 
     var body: some View {
         ZStack {
@@ -17,10 +16,7 @@ struct MacPortalRootView: View {
                 MacPortalWorkspace(authentication: authentication)
                     .transition(.opacity)
             } else {
-                MacLoginView(
-                    authentication: authentication,
-                    rawAppleNonce: $rawAppleNonce
-                )
+                MacLoginView(authentication: authentication)
                 .transition(.opacity)
             }
         }
@@ -68,30 +64,53 @@ private struct MacIntroView: View {
 }
 
 private struct MacLoginView: View {
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @ObservedObject var authentication: MacAuthenticationModel
-    @Binding var rawAppleNonce: String?
+    @State private var borderRotation = 0.0
+    @State private var rawAppleNonce: String?
+
+    private let privacyURL = URL(string: "\(MacPortalConfig.origin)/privacy")!
+    private let accountDeletionURL = URL(string: "\(MacPortalConfig.origin)/account-deletion")!
 
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 22) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("NF PROJECT OPERATIONS")
-                            .font(.caption.weight(.bold))
-                            .tracking(2.5)
-                            .foregroundStyle(.secondary)
-                        Text("NF Project Portal")
-                            .font(.system(size: 34, weight: .bold))
-                    }
-                    Spacer()
-                    Text("NF").font(.system(size: 28, weight: .semibold, design: .rounded))
-                }
-                Text("Apple 또는 Google 계정으로 로그인할 수 있습니다. 로그인 세션은 macOS 전용 보안 쿠키 저장소에 유지됩니다.")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.secondary)
+            MacLoginPalette.background.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                MacNoteFreeMark()
+                    .frame(width: 32, height: 32)
+
+                Text("NF PROJECT OPERATIONS")
+                    .font(.system(size: 12, weight: .semibold))
+                    .tracking(2.2)
+                    .foregroundStyle(MacLoginPalette.muted)
+                    .padding(.top, 20)
+
+                Text("NF Project Portal")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(MacLoginPalette.title)
+                    .padding(.top, 12)
+
+                Text("Gmail 또는 Google Workspace 계정으로 가입할 수 있습니다. 계정별 데이터는 분리되며 상호 동의한 회원만 서로의 프로젝트를 볼 수 있습니다.")
+                    .font(.system(size: 14, weight: .regular))
+                    .lineSpacing(6)
+                    .foregroundStyle(MacLoginPalette.body)
                     .fixedSize(horizontal: false, vertical: true)
-                VStack(spacing: 12) {
+                    .padding(.top, 12)
+
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(.white)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "apple.logo")
+                        Text("Apple로 로그인")
+                    }
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.black)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+
                     SignInWithAppleButton(.signIn) { request in
                         authentication.beginAppleRequest(request, rawNonce: &rawAppleNonce)
                     } onCompletion: { result in
@@ -99,36 +118,136 @@ private struct MacLoginView: View {
                         rawAppleNonce = nil
                     }
                     .signInWithAppleButtonStyle(.white)
-                    .frame(width: 380, height: 44)
-
-                    Button(action: authentication.startGoogleLogin) {
-                        HStack(spacing: 8) {
-                            if authentication.isProcessing { ProgressView().controlSize(.small) }
-                            Text(authentication.isProcessing ? "로그인 정보 확인 중…" : "Google 계정으로 로그인")
-                                .font(.system(size: 15, weight: .semibold))
-                        }
-                        .frame(width: 380, height: 44)
-                        .foregroundStyle(.white)
-                        .background(Color.accentColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(authentication.isProcessing)
+                    .opacity(0.001)
                 }
                 .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .disabled(authentication.isProcessing)
+                .opacity(authentication.isProcessing ? 0.72 : 1)
+                .padding(.top, 32)
+
+                Button(action: authentication.startGoogleLogin) {
+                    HStack(spacing: 8) {
+                        if authentication.isProcessing {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        }
+                        Text(authentication.isProcessing ? "로그인 페이지로 이동 중…" : "Google 계정으로 로그인")
+                            .font(.system(size: 16, weight: .medium))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .background(MacLoginPalette.blue)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(authentication.isProcessing)
+                .opacity(authentication.isProcessing ? 0.72 : 1)
+                .padding(.top, 12)
+
+                Divider()
+                    .overlay(MacLoginPalette.border)
+                    .padding(.top, 24)
+
+                HStack(spacing: 16) {
+                    Link("개인정보처리방침", destination: privacyURL)
+                    Link("계정 및 데이터 삭제 요청", destination: accountDeletionURL)
+                }
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(MacLoginPalette.muted)
+                .padding(.top, 16)
             }
-            .padding(34)
-            .frame(width: 560)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(Color.accentColor, lineWidth: 1.5))
-            .shadow(radius: 30, y: 14)
+            .padding(32)
+            .frame(width: 448)
+            .background(MacLoginPalette.card)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay { loginCardBorder(lineWidth: 2) }
+            .background {
+                loginCardBorder(lineWidth: 3)
+                    .blur(radius: 5)
+                    .opacity(0.58)
+            }
+            .shadow(color: .black.opacity(0.35), radius: 25, x: 0, y: 12)
         }
         .overlay(alignment: .bottomTrailing) {
             Text(MacAppVersion.displayText)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MacLoginPalette.muted)
                 .padding(18)
         }
+        .onAppear(perform: updateBorderAnimation)
+        .onChange(of: accessibilityReduceMotion) { _, _ in updateBorderAnimation() }
+    }
+
+    private func loginCardBorder(lineWidth: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(
+                AngularGradient(
+                    colors: [
+                        MacLoginPalette.borderLight,
+                        MacLoginPalette.borderDeep,
+                        MacLoginPalette.borderBlue,
+                        .white,
+                        MacLoginPalette.borderLight,
+                    ],
+                    center: .center,
+                    angle: .degrees(borderRotation)
+                ),
+                lineWidth: lineWidth
+            )
+            .allowsHitTesting(false)
+    }
+
+    private func updateBorderAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { borderRotation = 0 }
+        guard !accessibilityReduceMotion else { return }
+        withAnimation(.linear(duration: 3.2).repeatForever(autoreverses: false)) {
+            borderRotation = 360
+        }
+    }
+}
+
+private enum MacLoginPalette {
+    static let background = Color(red: 0.098, green: 0.098, blue: 0.098)
+    static let card = Color(red: 0.125, green: 0.125, blue: 0.125)
+    static let border = Color(red: 0.20, green: 0.20, blue: 0.20)
+    static let title = Color(red: 0.831, green: 0.831, blue: 0.831)
+    static let body = Color(red: 0.651, green: 0.651, blue: 0.651)
+    static let muted = Color(red: 0.561, green: 0.561, blue: 0.561)
+    static let blue = Color(red: 0.184, green: 0.494, blue: 0.847)
+    static let borderLight = Color(red: 0.561, green: 0.718, blue: 1.0)
+    static let borderDeep = Color(red: 0.122, green: 0.333, blue: 0.820)
+    static let borderBlue = Color(red: 0.275, green: 0.404, blue: 0.925)
+}
+
+private struct MacNoteFreeMark: View {
+    var body: some View {
+        Canvas { context, size in
+            let scale = min(size.width, size.height) / 32
+            var mark = Path()
+            mark.move(to: CGPoint(x: 5 * scale, y: 27 * scale))
+            mark.addLine(to: CGPoint(x: 5 * scale, y: 5 * scale))
+            mark.addLine(to: CGPoint(x: 25 * scale, y: 27 * scale))
+            mark.addLine(to: CGPoint(x: 25 * scale, y: 5 * scale))
+            context.stroke(
+                mark,
+                with: .linearGradient(
+                    Gradient(colors: [.white, Color(white: 0.74), .white]),
+                    startPoint: .zero,
+                    endPoint: CGPoint(x: size.width, y: size.height)
+                ),
+                style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .square, lineJoin: .miter)
+            )
+
+            let accentRect = CGRect(x: 25.2 * scale, y: 25.2 * scale, width: 2.2 * scale, height: 2.2 * scale)
+            context.fill(Path(ellipseIn: accentRect), with: .color(MacLoginPalette.borderBlue))
+        }
+        .accessibilityLabel("NoteFree")
     }
 }
 
@@ -167,6 +286,7 @@ private struct MacPortalWorkspace: View {
                 )
             }
         }
+        .ignoresSafeArea(.container, edges: .top)
         .onAppear {
             configureCallbacks(for: primary)
             configureCallbacks(for: secondary)
@@ -233,16 +353,13 @@ private struct MacPortalToolbar: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 5) {
                     ForEach(model.pages) { page in
-                        Button { model.open(page) } label: {
-                            Text(page.title)
-                                .lineLimit(1)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(page.id == model.activePageID ? Color.accentColor.opacity(0.25) : .clear)
-                                .clipShape(RoundedRectangle(cornerRadius: 7))
-                        }
-                        .buttonStyle(.plain)
-                        .help(page.url.absoluteString)
+                        MacPortalTabButton(
+                            page: page,
+                            isSelected: page.id == model.activePageID,
+                            canClose: model.pages.count > 1,
+                            onSelect: { model.open(page) },
+                            onClose: { model.close(page) }
+                        )
                     }
                 }
             }
@@ -260,7 +377,11 @@ private struct MacPortalToolbar: View {
                 }
             } label: {
                 Label("\(preferences.zoomPercent)%", systemImage: "textformat.size")
+                    // borderless Menu가 상위 foregroundStyle 대신 시스템 색을 선택하는
+                    // 경우에도 웹에서 전달된 현재 테마의 문구색을 유지합니다.
+                    .foregroundStyle(model.themeForeground)
             }
+            .tint(model.themeForeground)
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
@@ -272,6 +393,43 @@ private struct MacPortalToolbar: View {
         .frame(height: 43)
         .background(model.themeBackground)
         .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+private struct MacPortalTabButton: View {
+    let page: MacPortalPage
+    let isSelected: Bool
+    let canClose: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button(action: onSelect) {
+                Text(page.title)
+                    .lineLimit(1)
+                    .padding(.leading, 10)
+                    .padding(.vertical, 5)
+            }
+            .help(page.url.absoluteString)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 18, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .help(canClose ? "탭 닫기" : "마지막 탭은 닫을 수 없습니다")
+            .disabled(!canClose)
+            .opacity(isHovering && canClose ? 1 : 0)
+            .accessibilityHidden(!canClose)
+        }
+        .padding(.trailing, 3)
+        .background(isSelected ? Color.accentColor.opacity(0.25) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }
 
