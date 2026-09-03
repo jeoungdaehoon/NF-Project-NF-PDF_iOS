@@ -22,7 +22,7 @@ enum MacAppVersion {
     }
 
     static var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "22"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "23"
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
@@ -62,10 +62,15 @@ enum MacPortalAppearance: String, CaseIterable, Identifiable {
 
 @MainActor
 final class MacPortalPreferences: ObservableObject {
-    @Published var zoomPercent: Int {
-        didSet {
-            zoomPercent = min(200, max(80, Int((Double(zoomPercent) / 5).rounded()) * 5))
-            defaults.set(zoomPercent, forKey: Self.zoomKey)
+    @Published private var storedZoomPercent: Int
+
+    var zoomPercent: Int {
+        get { storedZoomPercent }
+        set {
+            let normalized = Self.normalizedZoom(newValue)
+            guard storedZoomPercent != normalized else { return }
+            storedZoomPercent = normalized
+            defaults.set(normalized, forKey: Self.zoomKey)
         }
     }
 
@@ -80,8 +85,12 @@ final class MacPortalPreferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let storedZoom = defaults.integer(forKey: Self.zoomKey)
-        zoomPercent = storedZoom == 0 ? 120 : min(200, max(80, storedZoom))
+        storedZoomPercent = storedZoom == 0 ? 120 : Self.normalizedZoom(storedZoom)
         appearance = MacPortalAppearance(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
+    }
+
+    private static func normalizedZoom(_ value: Int) -> Int {
+        min(200, max(80, Int((Double(value) / 5).rounded()) * 5))
     }
 }
 

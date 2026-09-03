@@ -35,6 +35,8 @@ struct MacPortalWebView: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
         webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
         webView.appearance = preferences.appearance.webAppearance
+        context.coordinator.lastAppliedZoomPercent = preferences.zoomPercent
+        context.coordinator.lastAppliedAppearance = preferences.appearance
         model.connect(webView)
 
         var request = URLRequest(url: model.startURL())
@@ -47,15 +49,20 @@ struct MacPortalWebView: NSViewRepresentable {
         context.coordinator.model = model
         context.coordinator.preferences = preferences
         if model.webView !== webView { model.connect(webView) }
-        let zoom = CGFloat(preferences.zoomPercent) / 100
-        if abs(webView.pageZoom - zoom) > 0.001 { webView.pageZoom = zoom }
-        webView.appearance = preferences.appearance.webAppearance
-        let scheme = preferences.appearance == .dark ? "dark" : preferences.appearance == .light ? "light" : "normal"
-        webView.evaluateJavaScript("""
-        document.documentElement.style.colorScheme='\(scheme)';
-        try { localStorage.setItem('nfPortalMacPageZoom', '\(preferences.zoomPercent)'); } catch (_) {}
-        window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', { detail: { percent: \(preferences.zoomPercent) } }));
-        """)
+        if context.coordinator.lastAppliedZoomPercent != preferences.zoomPercent {
+            webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
+            context.coordinator.lastAppliedZoomPercent = preferences.zoomPercent
+            webView.evaluateJavaScript("""
+            try { localStorage.setItem('nfPortalMacPageZoom', '\(preferences.zoomPercent)'); } catch (_) {}
+            window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', { detail: { percent: \(preferences.zoomPercent) } }));
+            """)
+        }
+        if context.coordinator.lastAppliedAppearance != preferences.appearance {
+            webView.appearance = preferences.appearance.webAppearance
+            context.coordinator.lastAppliedAppearance = preferences.appearance
+            let scheme = preferences.appearance == .dark ? "dark" : preferences.appearance == .light ? "light" : "normal"
+            webView.evaluateJavaScript("document.documentElement.style.colorScheme='\(scheme)';")
+        }
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -69,6 +76,8 @@ struct MacPortalWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var model: MacPortalBrowserModel
         var preferences: MacPortalPreferences
+        var lastAppliedZoomPercent: Int?
+        var lastAppliedAppearance: MacPortalAppearance?
 
         init(model: MacPortalBrowserModel, preferences: MacPortalPreferences) {
             self.model = model

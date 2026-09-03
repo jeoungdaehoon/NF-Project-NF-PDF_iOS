@@ -91,25 +91,31 @@ private struct MacLoginView: View {
                     .font(.system(size: 16))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                SignInWithAppleButton(.signIn) { request in
-                    authentication.beginAppleRequest(request, rawNonce: &rawAppleNonce)
-                } onCompletion: { result in
-                    authentication.completeAppleLogin(result, rawNonce: rawAppleNonce)
-                    rawAppleNonce = nil
-                }
-                .signInWithAppleButtonStyle(.white)
-                .frame(height: 48)
-                Button(action: authentication.startGoogleLogin) {
-                    HStack {
-                        if authentication.isProcessing { ProgressView().controlSize(.small) }
-                        Text(authentication.isProcessing ? "로그인 정보 확인 중…" : "Google 계정으로 로그인")
-                            .frame(maxWidth: .infinity)
+                VStack(spacing: 12) {
+                    SignInWithAppleButton(.signIn) { request in
+                        authentication.beginAppleRequest(request, rawNonce: &rawAppleNonce)
+                    } onCompletion: { result in
+                        authentication.completeAppleLogin(result, rawNonce: rawAppleNonce)
+                        rawAppleNonce = nil
                     }
-                    .frame(height: 46)
+                    .signInWithAppleButtonStyle(.white)
+                    .frame(width: 380, height: 44)
+
+                    Button(action: authentication.startGoogleLogin) {
+                        HStack(spacing: 8) {
+                            if authentication.isProcessing { ProgressView().controlSize(.small) }
+                            Text(authentication.isProcessing ? "로그인 정보 확인 중…" : "Google 계정으로 로그인")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
+                        .frame(width: 380, height: 44)
+                        .foregroundStyle(.white)
+                        .background(Color.accentColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(authentication.isProcessing)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(authentication.isProcessing)
+                .frame(maxWidth: .infinity)
             }
             .padding(34)
             .frame(width: 560)
