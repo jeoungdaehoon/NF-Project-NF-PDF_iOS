@@ -276,6 +276,8 @@ private struct MacPortalWorkspace: View {
     @StateObject private var secondary = MacPortalBrowserModel(identifier: "secondary")
     @State private var isSplit = false
     @State private var activePane: MacPortalPaneSelection = .primary
+    @State private var isPDFLibraryPresented = false
+    @State private var remotePDFRequest: MacPDFRemoteRequest?
 
     var body: some View {
         HSplitView {
@@ -309,6 +311,21 @@ private struct MacPortalWorkspace: View {
         .onAppear {
             configureCallbacks(for: primary)
             configureCallbacks(for: secondary)
+            refreshPDFLibraryState()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MacPDFLocalStorageRepository.didChangeNotification)) { _ in
+            refreshPDFLibraryState()
+        }
+        .sheet(isPresented: $isPDFLibraryPresented, onDismiss: refreshPDFLibraryState) {
+            MacPDFLibraryView()
+                .frame(minWidth: 820, minHeight: 620)
+        }
+        .sheet(item: $remotePDFRequest, onDismiss: refreshPDFLibraryState) { request in
+            MacRemotePDFPreviewView(
+                request: request,
+                storesLocally: preferences.pdfLocalStorageEnabled
+            )
+            .frame(minWidth: 900, minHeight: 700)
         }
     }
 
@@ -316,6 +333,13 @@ private struct MacPortalWorkspace: View {
         model.onGoogleLogin = authentication.startGoogleLogin
         model.onLogout = authentication.logout
         model.onAuthenticationRequired = authentication.requireLogin
+        model.onOpenPDFDocuments = { isPDFLibraryPresented = true }
+        model.onPreviewPDFAttachment = { remotePDFRequest = $0 }
+    }
+
+    private func refreshPDFLibraryState() {
+        primary.refreshLocalPDFDocumentCount()
+        secondary.refreshLocalPDFDocumentCount()
     }
 
     private func toggleSplit() {
@@ -577,6 +601,10 @@ struct MacPortalSettingsView: View {
                 LabeledContent("앱") { Text("NF Project Portal") }
                 LabeledContent("버전") { Text(MacAppVersion.displayText) }
                 LabeledContent("플랫폼") { Text("네이티브 macOS · AppKit WebKit") }
+                Toggle("PDF 파일 로컬 저장", isOn: $preferences.pdfLocalStorageEnabled)
+                Text("웹의 설정 > 기본 정보와 같은 값입니다. PDF를 기기에 저장해 문서 목록에서 다시 열 수 있습니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             .padding(22)
             .tabItem { Label("기본", systemImage: "gearshape") }
@@ -604,7 +632,7 @@ struct MacPortalSettingsView: View {
             .padding(22)
             .tabItem { Label("화면", systemImage: "display") }
         }
-        .frame(width: 560, height: 250)
+        .frame(width: 560, height: 310)
     }
 }
 

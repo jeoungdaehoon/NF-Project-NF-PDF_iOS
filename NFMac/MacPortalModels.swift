@@ -83,15 +83,21 @@ final class MacPortalPreferences: ObservableObject {
         didSet { defaults.set(appearance.rawValue, forKey: Self.appearanceKey) }
     }
 
+    @Published var pdfLocalStorageEnabled: Bool {
+        didSet { defaults.set(pdfLocalStorageEnabled, forKey: Self.pdfLocalStorageKey) }
+    }
+
     private let defaults: UserDefaults
     private static let zoomKey = "nf.mac.portal.zoomPercent.v2"
     private static let appearanceKey = "nf.mac.portal.appearance.v1"
+    static let pdfLocalStorageKey = "nf.portal.pdf.localStorage.enabled"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let storedZoom = defaults.integer(forKey: Self.zoomKey)
         storedZoomPercent = storedZoom == 0 ? 120 : Self.normalizedZoom(storedZoom)
         appearance = MacPortalAppearance(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
+        pdfLocalStorageEnabled = defaults.bool(forKey: Self.pdfLocalStorageKey)
     }
 
     private static func normalizedZoom(_ value: Int) -> Int {
@@ -128,11 +134,14 @@ final class MacPortalBrowserModel: ObservableObject {
     }
     @Published var themeBackground = Color(nsColor: .windowBackgroundColor)
     @Published var themeForeground = Color(nsColor: .labelColor)
+    @Published private(set) var localPDFDocumentCount = 0
 
     weak var webView: WKWebView?
     var onGoogleLogin: (() -> Void)?
     var onLogout: (() -> Void)?
     var onAuthenticationRequired: (() -> Void)?
+    var onOpenPDFDocuments: (() -> Void)?
+    var onPreviewPDFAttachment: ((MacPDFRemoteRequest) -> Void)?
     let identifier: String
     private let defaults: UserDefaults
     private var initialURL: URL
@@ -166,6 +175,11 @@ final class MacPortalBrowserModel: ObservableObject {
     func connect(_ webView: WKWebView) {
         self.webView = webView
         refreshNavigationState()
+        refreshLocalPDFDocumentCount()
+    }
+
+    func refreshLocalPDFDocumentCount() {
+        localPDFDocumentCount = MacPDFLocalStorageRepository().libraryItemCount()
     }
 
     func startURL() -> URL { initialURL }

@@ -27,6 +27,8 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacNavigation")
         controller.add(context.coordinator, name: "NFPortalIOSGoogleLogin")
         controller.add(context.coordinator, name: "NFPortalIOSLogout")
+        controller.add(context.coordinator, name: "NFPortalIOSPDFLocalStorage")
+        controller.add(context.coordinator, name: "NFPortalIOSPDFDocuments")
         controller.add(context.coordinator, name: "NFPortalMacPageZoom")
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
@@ -49,6 +51,8 @@ struct MacPortalWebView: NSViewRepresentable {
         webView.appearance = preferences.appearance.webAppearance
         context.coordinator.lastAppliedZoomPercent = preferences.zoomPercent
         context.coordinator.lastAppliedAppearance = preferences.appearance
+        context.coordinator.lastAppliedPDFLocalStorageEnabled = preferences.pdfLocalStorageEnabled
+        context.coordinator.lastAppliedPDFDocumentCount = model.localPDFDocumentCount
         model.connect(webView)
 
         var request = URLRequest(url: model.startURL())
@@ -77,6 +81,10 @@ struct MacPortalWebView: NSViewRepresentable {
             let scheme = preferences.appearance == .dark ? "dark" : preferences.appearance == .light ? "light" : "normal"
             webView.evaluateJavaScript("document.documentElement.style.colorScheme='\(scheme)';")
         }
+        if context.coordinator.lastAppliedPDFLocalStorageEnabled != preferences.pdfLocalStorageEnabled
+            || context.coordinator.lastAppliedPDFDocumentCount != model.localPDFDocumentCount {
+            context.coordinator.deliverPDFState(to: webView)
+        }
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
@@ -85,6 +93,8 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacNavigation",
             "NFPortalIOSGoogleLogin",
             "NFPortalIOSLogout",
+            "NFPortalIOSPDFLocalStorage",
+            "NFPortalIOSPDFDocuments",
             "NFPortalMacPageZoom",
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
@@ -102,6 +112,8 @@ struct MacPortalWebView: NSViewRepresentable {
         var onSidebarNavigate: (URL) -> Void
         var lastAppliedZoomPercent: Int?
         var lastAppliedAppearance: MacPortalAppearance?
+        var lastAppliedPDFLocalStorageEnabled: Bool?
+        var lastAppliedPDFDocumentCount: Int?
 
         init(
             model: MacPortalBrowserModel,
@@ -123,6 +135,7 @@ struct MacPortalWebView: NSViewRepresentable {
             window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', { detail: { percent: \(preferences.zoomPercent) } }));
             window.__nfMacNotifyNavigation && window.__nfMacNotifyNavigation(0);
             """)
+            deliverPDFState(to: webView)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -149,6 +162,11 @@ struct MacPortalWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            if isAttachmentNavigationURL(url) {
+                presentAttachmentPreview(url, from: webView)
+                decisionHandler(.cancel)
+                return
+            }
             if let scheme = url.scheme, !["http", "https", "about", "blob", "data"].contains(scheme) {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
@@ -164,7 +182,8 @@ struct MacPortalWebView: NSViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
             if let url = navigationAction.request.url {
-                if MacPortalConfig.isPortalURL(url) { webView.load(URLRequest(url: url)) }
+                if isAttachmentNavigationURL(url) { presentAttachmentPreview(url, from: webView) }
+                else if MacPortalConfig.isPortalURL(url) { webView.load(URLRequest(url: url)) }
                 else { NSWorkspace.shared.open(url) }
             }
             return nil
@@ -189,6 +208,13 @@ struct MacPortalWebView: NSViewRepresentable {
                 model.onGoogleLogin?()
             case "NFPortalIOSLogout":
                 model.onLogout?()
+            case "NFPortalIOSPDFLocalStorage":
+                if let enabled = boolValue(from: message.body) {
+                    preferences.pdfLocalStorageEnabled = enabled
+                    deliverPDFState(to: model.webView)
+                }
+            case "NFPortalIOSPDFDocuments":
+                model.onOpenPDFDocuments?()
             case "NFPortalMacPageZoom":
                 if let value = message.body as? NSNumber {
                     preferences.zoomPercent = value.intValue
@@ -214,6 +240,73 @@ struct MacPortalWebView: NSViewRepresentable {
                 break
             }
         }
+
+        func deliverPDFState(to webView: WKWebView?) {
+            guard let webView else { return }
+            let enabled = preferences.pdfLocalStorageEnabled ? "true" : "false"
+            let count = max(0, model.localPDFDocumentCount)
+            lastAppliedPDFLocalStorageEnabled = preferences.pdfLocalStorageEnabled
+            lastAppliedPDFDocumentCount = count
+            webView.evaluateJavaScript("""
+            (function() {
+                var enabled = \(enabled);
+                var count = \(count);
+                window.__NF_PORTAL_PDF_LOCAL_STORAGE_ENABLED__ = enabled;
+                window.__NF_PORTAL_LOCAL_PDF_DOCUMENT_COUNT__ = count;
+                try {
+                    localStorage.setItem('nfPortalPDFLocalStorageEnabled', String(enabled));
+                    localStorage.setItem('nfPortalLocalPDFDocumentCount', String(count));
+                } catch (_) {}
+                window.dispatchEvent(new CustomEvent('nfPortalPDFLocalStorageState', {
+                    detail: { platform: 'mac', enabled: enabled }
+                }));
+                window.dispatchEvent(new CustomEvent('nfPortalLocalPDFDocumentState', {
+                    detail: { platform: 'mac', count: count }
+                }));
+            })();
+            """)
+        }
+
+        private func boolValue(from body: Any) -> Bool? {
+            if let value = body as? Bool { return value }
+            if let value = body as? NSNumber { return value.boolValue }
+            if let value = body as? String {
+                if ["true", "1", "on"].contains(value.lowercased()) { return true }
+                if ["false", "0", "off"].contains(value.lowercased()) { return false }
+            }
+            if let record = body as? [String: Any] {
+                return record["enabled"].flatMap(boolValue(from:))
+            }
+            return nil
+        }
+
+        private func isAttachmentNavigationURL(_ url: URL) -> Bool {
+            if url.path.hasPrefix("/api/artifacts/files") { return true }
+            if url.pathExtension.lowercased() == "pdf" { return true }
+            if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: {
+                $0.name.lowercased() == "download"
+            }) == true { return true }
+            return false
+        }
+
+        private func presentAttachmentPreview(_ url: URL, from webView: WKWebView) {
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+                guard let self else { return }
+                let host = url.host?.lowercased()
+                let matching = cookies.filter { cookie in
+                    guard let host else { return false }
+                    let domain = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                    return host == domain || host.hasSuffix(".\(domain)")
+                }
+                let cookieHeader = matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
+                Task { @MainActor in
+                    self.model.onPreviewPDFAttachment?(MacPDFRemoteRequest(
+                        url: url,
+                        cookieHeader: cookieHeader.isEmpty ? nil : cookieHeader
+                    ))
+                }
+            }
+        }
     }
 
     private static let bootstrapScript = #"""
@@ -221,6 +314,13 @@ struct MacPortalWebView: NSViewRepresentable {
         document.documentElement.lang = 'ko-KR';
         document.documentElement.style.setProperty('-webkit-locale', '"ko-KR"');
         document.documentElement.setAttribute('data-nf-desktop-host', 'true');
+        window.NFPortalIOS = window.NFPortalIOS || {};
+        window.NFPortalIOS.setPDFLocalStorageEnabled = function(enabled) {
+            window.webkit.messageHandlers.NFPortalIOSPDFLocalStorage.postMessage({ enabled: !!enabled });
+        };
+        window.NFPortalIOS.openPDFDocuments = function() {
+            window.webkit.messageHandlers.NFPortalIOSPDFDocuments.postMessage('open');
+        };
 
         function installDesktopHostStyle() {
             if (document.getElementById('__nfMacDesktopHostStyle')) return;
