@@ -22,7 +22,7 @@ enum MacAppVersion {
     }
 
     static var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "23"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "28"
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
@@ -154,10 +154,10 @@ final class MacPortalBrowserModel: ObservableObject {
 
     func startURL() -> URL { initialURL }
 
-    func cloneState(from source: MacPortalBrowserModel) {
+    func cloneState(from source: MacPortalBrowserModel, sidebarHidden: Bool? = nil) {
         pages = source.pages
         breadcrumbs = source.breadcrumbs
-        sidebarHidden = source.sidebarHidden
+        self.sidebarHidden = sidebarHidden ?? source.sidebarHidden
         initialURL = source.webView?.url ?? source.currentPage?.url ?? MacPortalConfig.dashboardURL
         activePageID = initialURL.absoluteString
         persistPages()
@@ -208,6 +208,13 @@ final class MacPortalBrowserModel: ObservableObject {
 
     func open(_ breadcrumb: MacPortalBreadcrumb) {
         guard let url = breadcrumb.url else { return }
+        navigate(to: url)
+    }
+
+    func navigate(to url: URL) {
+        guard url.scheme == "https" || url.scheme == "http" else { return }
+        initialURL = url
+        activePageID = url.absoluteString
         webView?.load(URLRequest(url: url))
     }
 

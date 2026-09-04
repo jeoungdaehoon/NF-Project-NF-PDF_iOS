@@ -24,8 +24,8 @@ struct MacPortalRootView: View {
         .preferredColorScheme(preferences.appearance.colorScheme)
         .background(MacWindowConfigurator())
         .task {
-            try? await Task.sleep(for: .milliseconds(850))
-            withAnimation(.easeInOut(duration: 0.3)) { showingIntro = false }
+            try? await Task.sleep(for: .seconds(2))
+            withAnimation(.easeInOut(duration: 0.72)) { showingIntro = false }
         }
         .onOpenURL(perform: authentication.handle)
         .alert("안내", isPresented: Binding(
@@ -41,24 +41,26 @@ struct MacPortalRootView: View {
 
 private struct MacIntroView: View {
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
-            VStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22)
-                        .fill(Color.blue.opacity(0.16))
-                        .frame(width: 92, height: 92)
+        ZStack {
+            MacLoginPalette.background.ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                MacNoteFreeMark()
+                    .frame(width: 86, height: 86)
+
+                HStack(spacing: 6) {
                     Text("NF")
-                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                    Text("Portal")
                 }
-                Text("NF Project Portal")
-                    .font(.system(size: 30, weight: .bold))
+                .font(.system(size: 34, weight: .bold))
+                .foregroundStyle(MacLoginPalette.introTitle)
+
+                Text("PROJECT OPERATIONS")
+                    .font(.system(size: 12, weight: .semibold))
+                    .tracking(3)
+                    .foregroundStyle(MacLoginPalette.muted)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            Text(MacAppVersion.displayText)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .padding(18)
         }
     }
 }
@@ -223,32 +225,48 @@ private enum MacLoginPalette {
     static let borderLight = Color(red: 0.561, green: 0.718, blue: 1.0)
     static let borderDeep = Color(red: 0.122, green: 0.333, blue: 0.820)
     static let borderBlue = Color(red: 0.275, green: 0.404, blue: 0.925)
+    static let introTitle = Color(red: 0.930, green: 0.930, blue: 0.930)
+    static let mint = Color(red: 0.231, green: 0.965, blue: 0.722)
 }
 
 private struct MacNoteFreeMark: View {
     var body: some View {
-        Canvas { context, size in
-            let scale = min(size.width, size.height) / 32
-            var mark = Path()
-            mark.move(to: CGPoint(x: 5 * scale, y: 27 * scale))
-            mark.addLine(to: CGPoint(x: 5 * scale, y: 5 * scale))
-            mark.addLine(to: CGPoint(x: 25 * scale, y: 27 * scale))
-            mark.addLine(to: CGPoint(x: 25 * scale, y: 5 * scale))
-            context.stroke(
-                mark,
-                with: .linearGradient(
-                    Gradient(colors: [.white, Color(white: 0.74), .white]),
-                    startPoint: .zero,
-                    endPoint: CGPoint(x: size.width, y: size.height)
-                ),
-                style: StrokeStyle(lineWidth: 2.2 * scale, lineCap: .square, lineJoin: .miter)
-            )
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
 
-            let accentRect = CGRect(x: 25.2 * scale, y: 25.2 * scale, width: 2.2 * scale, height: 2.2 * scale)
-            context.fill(Path(ellipseIn: accentRect), with: .color(MacLoginPalette.borderBlue))
+            ZStack {
+                Capsule()
+                    .fill(MacLoginPalette.introTitle)
+                    .frame(width: width * 0.08, height: height * 0.72)
+                    .position(x: width * 0.20, y: height * 0.50)
+                Capsule()
+                    .fill(MacLoginPalette.introTitle)
+                    .frame(width: width * 0.08, height: height * 0.84)
+                    .rotationEffect(.degrees(-30))
+                    .position(x: width * 0.42, y: height * 0.50)
+                Capsule()
+                    .fill(MacLoginPalette.introTitle)
+                    .frame(width: width * 0.08, height: height * 0.72)
+                    .position(x: width * 0.62, y: height * 0.50)
+                Capsule()
+                    .fill(MacLoginPalette.introTitle)
+                    .frame(width: width * 0.34, height: height * 0.08)
+                    .position(x: width * 0.75, y: height * 0.16)
+                Capsule()
+                    .fill(MacLoginPalette.mint)
+                    .frame(width: width * 0.25, height: height * 0.08)
+                    .position(x: width * 0.72, y: height * 0.50)
+            }
         }
+        .aspectRatio(1, contentMode: .fit)
         .accessibilityLabel("NoteFree")
     }
+}
+
+private enum MacPortalPaneSelection {
+    case primary
+    case secondary
 }
 
 private struct MacPortalWorkspace: View {
@@ -257,33 +275,34 @@ private struct MacPortalWorkspace: View {
     @StateObject private var primary = MacPortalBrowserModel(identifier: "primary")
     @StateObject private var secondary = MacPortalBrowserModel(identifier: "secondary")
     @State private var isSplit = false
+    @State private var activePane: MacPortalPaneSelection = .primary
 
     var body: some View {
-        Group {
+        HSplitView {
+            MacPortalPane(
+                model: primary,
+                reservesTrafficLights: true,
+                isSplit: isSplit,
+                sharedSidebarHidden: primary.sidebarHidden,
+                onToggleSidebar: toggleSharedSidebar,
+                onToggleSplit: toggleSplit,
+                onActivate: { activePane = .primary },
+                onSidebarNavigate: navigateFromSharedSidebar
+            )
+            .frame(minWidth: 480)
+
             if isSplit {
-                HSplitView {
-                    MacPortalPane(
-                        model: primary,
-                        reservesTrafficLights: true,
-                        isSplit: true,
-                        onToggleSplit: toggleSplit
-                    )
-                    .frame(minWidth: 480)
-                    MacPortalPane(
-                        model: secondary,
-                        reservesTrafficLights: false,
-                        isSplit: true,
-                        onToggleSplit: toggleSplit
-                    )
-                    .frame(minWidth: 480)
-                }
-            } else {
                 MacPortalPane(
-                    model: primary,
-                    reservesTrafficLights: true,
-                    isSplit: false,
-                    onToggleSplit: toggleSplit
+                    model: secondary,
+                    reservesTrafficLights: false,
+                    isSplit: true,
+                    sharedSidebarHidden: primary.sidebarHidden,
+                    onToggleSidebar: toggleSharedSidebar,
+                    onToggleSplit: toggleSplit,
+                    onActivate: { activePane = .secondary },
+                    onSidebarNavigate: navigateFromSharedSidebar
                 )
+                .frame(minWidth: 480)
             }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -299,8 +318,24 @@ private struct MacPortalWorkspace: View {
     }
 
     private func toggleSplit() {
-        if !isSplit { secondary.cloneState(from: primary) }
-        withAnimation(.easeInOut(duration: 0.18)) { isSplit.toggle() }
+        if isSplit {
+            activePane = .primary
+            isSplit = false
+            return
+        }
+
+        secondary.cloneState(from: primary, sidebarHidden: true)
+        activePane = .primary
+        isSplit = true
+    }
+
+    private func toggleSharedSidebar() {
+        primary.toggleSidebar()
+    }
+
+    private func navigateFromSharedSidebar(to url: URL) {
+        let target = isSplit && activePane == .secondary ? secondary : primary
+        target.navigate(to: url)
     }
 }
 
@@ -309,7 +344,11 @@ private struct MacPortalPane: View {
     @ObservedObject var model: MacPortalBrowserModel
     let reservesTrafficLights: Bool
     let isSplit: Bool
+    let sharedSidebarHidden: Bool
+    let onToggleSidebar: () -> Void
     let onToggleSplit: () -> Void
+    let onActivate: () -> Void
+    let onSidebarNavigate: (URL) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -318,15 +357,26 @@ private struct MacPortalPane: View {
                 preferences: preferences,
                 reservesTrafficLights: reservesTrafficLights,
                 isSplit: isSplit,
-                onToggleSplit: onToggleSplit
+                sidebarHidden: sharedSidebarHidden,
+                onToggleSidebar: onToggleSidebar,
+                onToggleSplit: onToggleSplit,
+                onActivate: onActivate
             )
             if model.sidebarHidden {
-                MacBreadcrumbBar(model: model)
+                MacBreadcrumbBar(model: model, onActivate: onActivate)
             }
-            MacPortalWebView(model: model, preferences: preferences)
+            MacPortalWebView(
+                model: model,
+                preferences: preferences,
+                onFocus: onActivate,
+                onSidebarNavigate: onSidebarNavigate
+            )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(model.themeBackground)
+        // NSSplitView applies the title-bar safe area to each arranged pane.
+        // Ignore it per pane so both toolbars stay beside the traffic lights.
+        .ignoresSafeArea(.container, edges: .top)
     }
 }
 
@@ -335,21 +385,41 @@ private struct MacPortalToolbar: View {
     @ObservedObject var preferences: MacPortalPreferences
     let reservesTrafficLights: Bool
     let isSplit: Bool
+    let sidebarHidden: Bool
+    let onToggleSidebar: () -> Void
     let onToggleSplit: () -> Void
+    let onActivate: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(action: model.toggleSidebar) {
-                Image(systemName: model.sidebarHidden ? "line.3.horizontal" : "sidebar.left")
+            Button {
+                onActivate()
+                onToggleSidebar()
+            } label: {
+                Image(systemName: sidebarHidden ? "line.3.horizontal" : "sidebar.left")
                     .frame(width: 20, height: 20)
             }
-            .help(model.sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
-            Divider().frame(height: 20)
-            Button(action: model.goBack) { Image(systemName: "chevron.left") }
+            .help(sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
+            Rectangle()
+                .fill(separatorColor)
+                .frame(width: 1, height: 20)
+            Button {
+                onActivate()
+                model.goBack()
+            } label: {
+                Image(systemName: "chevron.left")
+            }
                 .disabled(!model.canGoBack).help("뒤로 가기")
-            Button(action: model.goForward) { Image(systemName: "chevron.right") }
+            Button {
+                onActivate()
+                model.goForward()
+            } label: {
+                Image(systemName: "chevron.right")
+            }
                 .disabled(!model.canGoForward).help("앞으로 가기")
-            Divider().frame(height: 20)
+            Rectangle()
+                .fill(separatorColor)
+                .frame(width: 1, height: 20)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 5) {
                     ForEach(model.pages) { page in
@@ -357,18 +427,26 @@ private struct MacPortalToolbar: View {
                             page: page,
                             isSelected: page.id == model.activePageID,
                             canClose: model.pages.count > 1,
-                            onSelect: { model.open(page) },
+                            onSelect: {
+                                onActivate()
+                                model.open(page)
+                            },
                             onClose: { model.close(page) }
                         )
                     }
                 }
             }
             Spacer(minLength: 4)
-            Button(action: onToggleSplit) {
+            Button {
+                onActivate()
+                onToggleSplit()
+            } label: {
                 Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
             }
             .help(isSplit ? "2분할 닫기" : "현재 페이지를 좌우로 2분할")
-            Divider().frame(height: 20)
+            Rectangle()
+                .fill(separatorColor)
+                .frame(width: 1, height: 20)
             Menu {
                 ForEach(Array(stride(from: 80, through: 200, by: 5)), id: \.self) { percent in
                     Button(percent == preferences.zoomPercent ? "✓ \(percent)%" : "\(percent)%") {
@@ -392,7 +470,15 @@ private struct MacPortalToolbar: View {
         .padding(.trailing, 10)
         .frame(height: 43)
         .background(model.themeBackground)
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(separatorColor)
+                .frame(height: 1)
+        }
+    }
+
+    private var separatorColor: Color {
+        model.themeForeground.opacity(0.16)
     }
 }
 
@@ -435,13 +521,17 @@ private struct MacPortalTabButton: View {
 
 private struct MacBreadcrumbBar: View {
     @ObservedObject var model: MacPortalBrowserModel
+    let onActivate: () -> Void
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(Array(model.breadcrumbs.enumerated()), id: \.offset) { index, item in
                     if index > 0 { Image(systemName: "chevron.right").font(.caption2) }
-                    Button(item.title) { model.open(item) }
+                    Button(item.title) {
+                        onActivate()
+                        model.open(item)
+                    }
                         .buttonStyle(.plain)
                         .disabled(item.url == nil)
                 }
@@ -452,7 +542,11 @@ private struct MacBreadcrumbBar: View {
         .foregroundStyle(model.themeForeground)
         .frame(height: 34)
         .background(model.themeBackground)
-        .overlay(alignment: .bottom) { Divider() }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(model.themeForeground.opacity(0.16))
+                .frame(height: 1)
+        }
     }
 }
 

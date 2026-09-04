@@ -5,8 +5,17 @@ import WebKit
 struct MacPortalWebView: NSViewRepresentable {
     @ObservedObject var model: MacPortalBrowserModel
     @ObservedObject var preferences: MacPortalPreferences
+    let onFocus: () -> Void
+    let onSidebarNavigate: (URL) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(model: model, preferences: preferences) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            model: model,
+            preferences: preferences,
+            onFocus: onFocus,
+            onSidebarNavigate: onSidebarNavigate
+        )
+    }
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
@@ -19,6 +28,8 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalIOSGoogleLogin")
         controller.add(context.coordinator, name: "NFPortalIOSLogout")
         controller.add(context.coordinator, name: "NFPortalMacPageZoom")
+        controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
+        controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -48,6 +59,8 @@ struct MacPortalWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.model = model
         context.coordinator.preferences = preferences
+        context.coordinator.onFocus = onFocus
+        context.coordinator.onSidebarNavigate = onSidebarNavigate
         if model.webView !== webView { model.connect(webView) }
         if context.coordinator.lastAppliedZoomPercent != preferences.zoomPercent {
             webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
@@ -67,7 +80,14 @@ struct MacPortalWebView: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         let controller = webView.configuration.userContentController
-        ["NFPortalMacNavigation", "NFPortalIOSGoogleLogin", "NFPortalIOSLogout", "NFPortalMacPageZoom"]
+        [
+            "NFPortalMacNavigation",
+            "NFPortalIOSGoogleLogin",
+            "NFPortalIOSLogout",
+            "NFPortalMacPageZoom",
+            "NFPortalMacPaneFocus",
+            "NFPortalMacSidebarNavigation",
+        ]
             .forEach(controller.removeScriptMessageHandler(forName:))
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -76,12 +96,21 @@ struct MacPortalWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var model: MacPortalBrowserModel
         var preferences: MacPortalPreferences
+        var onFocus: () -> Void
+        var onSidebarNavigate: (URL) -> Void
         var lastAppliedZoomPercent: Int?
         var lastAppliedAppearance: MacPortalAppearance?
 
-        init(model: MacPortalBrowserModel, preferences: MacPortalPreferences) {
+        init(
+            model: MacPortalBrowserModel,
+            preferences: MacPortalPreferences,
+            onFocus: @escaping () -> Void,
+            onSidebarNavigate: @escaping (URL) -> Void
+        ) {
             self.model = model
             self.preferences = preferences
+            self.onFocus = onFocus
+            self.onSidebarNavigate = onSidebarNavigate
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -96,6 +125,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             model.refreshNavigationState()
+            model.applySidebarVisibility()
         }
 
         func webView(
@@ -163,6 +193,13 @@ struct MacPortalWebView: NSViewRepresentable {
                 } else if let record = message.body as? [String: Any], let value = record["percent"] as? NSNumber {
                     preferences.zoomPercent = value.intValue
                 }
+            case "NFPortalMacPaneFocus":
+                onFocus()
+            case "NFPortalMacSidebarNavigation":
+                guard let record = message.body as? [String: Any],
+                      let rawURL = record["url"] as? String,
+                      let url = URL(string: rawURL) else { return }
+                onSidebarNavigate(url)
             default:
                 break
             }
@@ -277,8 +314,27 @@ struct MacPortalWebView: NSViewRepresentable {
         });
         addEventListener('popstate', function() { window.__nfMacNotifyNavigation(40); });
         addEventListener('pageshow', function() { window.__nfMacNotifyNavigation(0); });
+        document.addEventListener('pointerdown', function(event) {
+            var target = event.target;
+            if (!target || !target.closest || target.closest('#portal-navigation')) return;
+            window.webkit.messageHandlers.NFPortalMacPaneFocus.postMessage('focus');
+        }, true);
         document.addEventListener('click', function(event) {
-            if (event.target && event.target.closest && event.target.closest('a[href]')) {
+            var target = event.target;
+            var link = target && target.closest && target.closest('a[href]');
+            var navigation = target && target.closest && target.closest('#portal-navigation');
+            if (link && navigation) {
+                try {
+                    var url = new URL(link.href, location.href);
+                    if (url.origin === location.origin) {
+                        event.preventDefault();
+                        event.stopImmediatePropagation();
+                        window.webkit.messageHandlers.NFPortalMacSidebarNavigation.postMessage({ url: url.href });
+                        return;
+                    }
+                } catch (_) {}
+            }
+            if (link) {
                 window.__nfMacNotifyNavigation(160);
                 setTimeout(function() { window.__nfMacNotifyNavigation(0); }, 450);
             }
