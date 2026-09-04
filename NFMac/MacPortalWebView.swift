@@ -30,6 +30,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacPageZoom")
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
+        controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -87,6 +88,7 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacPageZoom",
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
+            "NFPortalMacSidebarHover",
         ]
             .forEach(controller.removeScriptMessageHandler(forName:))
         webView.navigationDelegate = nil
@@ -200,6 +202,14 @@ struct MacPortalWebView: NSViewRepresentable {
                       let rawURL = record["url"] as? String,
                       let url = URL(string: rawURL) else { return }
                 onSidebarNavigate(url)
+            case "NFPortalMacSidebarHover":
+                if let record = message.body as? [String: Any] {
+                    let hovering = (record["hovering"] as? NSNumber)?.boolValue ?? false
+                    let width = (record["width"] as? NSNumber).map { CGFloat(truncating: $0) }
+                    model.setWebSidebarHover(hovering, width: width)
+                } else if let hovering = message.body as? Bool {
+                    model.setWebSidebarHover(hovering)
+                }
             default:
                 break
             }
@@ -210,6 +220,21 @@ struct MacPortalWebView: NSViewRepresentable {
     (function() {
         document.documentElement.lang = 'ko-KR';
         document.documentElement.style.setProperty('-webkit-locale', '"ko-KR"');
+        document.documentElement.setAttribute('data-nf-desktop-host', 'true');
+
+        function installDesktopHostStyle() {
+            if (document.getElementById('__nfMacDesktopHostStyle')) return;
+            var style = document.createElement('style');
+            style.id = '__nfMacDesktopHostStyle';
+            style.textContent = `
+                html[data-nf-desktop-host="true"] .portal-titlebar button[aria-controls="portal-navigation"],
+                html[data-nf-desktop-host="true"] .portal-titlebar button[aria-label="탭바 열기"] {
+                    display: none !important;
+                }
+            `;
+            (document.head || document.documentElement).appendChild(style);
+        }
+        installDesktopHostStyle();
 
         function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
         function currentTitle() {
@@ -251,6 +276,25 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         window.__nfMacSidebarHidden = false;
+        window.__nfMacSetSidebarPreviewing = function(previewing) {
+            var requestToken = (window.__nfMacSidebarPreviewToken || 0) + 1;
+            window.__nfMacSidebarPreviewToken = requestToken;
+            function apply() {
+                if (requestToken !== window.__nfMacSidebarPreviewToken) return;
+                var content = document.getElementById('portal-content');
+                if (!content) return;
+                if (previewing) {
+                    content.dataset.nfMacSidebarPreview = 'true';
+                    content.style.setProperty('padding-top', '34px', 'important');
+                    content.style.setProperty('box-sizing', 'border-box', 'important');
+                } else {
+                    delete content.dataset.nfMacSidebarPreview;
+                    content.style.removeProperty('padding-top');
+                    content.style.removeProperty('box-sizing');
+                }
+            }
+            [0, 80, 250].forEach(function(delay) { setTimeout(apply, delay); });
+        };
         window.__nfMacSetSidebarHidden = function(hidden) {
             window.__nfMacSidebarHidden = !!hidden;
             var requestToken = (window.__nfMacSidebarToken || 0) + 1;
@@ -276,7 +320,7 @@ struct MacPortalWebView: NSViewRepresentable {
                     if (getComputedStyle(navigation).display === 'none') navigation.style.setProperty('display', 'flex', 'important');
                 }
                 window.dispatchEvent(new CustomEvent('nfPortalDesktopSidebarToggle', {
-                    detail: { collapsed: !!hidden, platform: 'macOS' }
+                    detail: { collapsed: !!hidden, platform: 'mac' }
                 }));
             }
             [0, 80, 250, 700].forEach(function(delay) { setTimeout(apply, delay); });
@@ -318,6 +362,19 @@ struct MacPortalWebView: NSViewRepresentable {
             var target = event.target;
             if (!target || !target.closest || target.closest('#portal-navigation')) return;
             window.webkit.messageHandlers.NFPortalMacPaneFocus.postMessage('focus');
+        }, true);
+        document.addEventListener('pointerover', function(event) {
+            var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
+            if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
+            window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
+                hovering: true,
+                width: navigation.getBoundingClientRect().width
+            });
+        }, true);
+        document.addEventListener('pointerout', function(event) {
+            var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
+            if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
+            window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({ hovering: false });
         }, true);
         document.addEventListener('click', function(event) {
             var target = event.target;

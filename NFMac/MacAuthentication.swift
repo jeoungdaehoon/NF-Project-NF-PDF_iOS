@@ -150,6 +150,13 @@ final class MacAuthenticationModel: NSObject, ObservableObject, ASWebAuthenticat
         isAuthenticated = false
     }
 
+    func requireLogin() {
+        session?.cancel()
+        isProcessing = false
+        defaults.removeObject(forKey: Self.sessionKey)
+        isAuthenticated = false
+    }
+
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
     }

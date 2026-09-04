@@ -93,7 +93,7 @@ private struct MacLoginView: View {
                     .foregroundStyle(MacLoginPalette.title)
                     .padding(.top, 12)
 
-                Text("Gmail 또는 Google Workspace 계정으로 가입할 수 있습니다. 계정별 데이터는 분리되며 상호 동의한 회원만 서로의 프로젝트를 볼 수 있습니다.")
+                Text("Apple, Gmail 또는 Google Workspace 계정으로 가입할 수 있습니다. 계정별 데이터는 분리되며 상호 동의한 회원만 서로의 프로젝트를 볼 수 있습니다.")
                     .font(.system(size: 14, weight: .regular))
                     .lineSpacing(6)
                     .foregroundStyle(MacLoginPalette.body)
@@ -315,6 +315,7 @@ private struct MacPortalWorkspace: View {
     private func configureCallbacks(for model: MacPortalBrowserModel) {
         model.onGoogleLogin = authentication.startGoogleLogin
         model.onLogout = authentication.logout
+        model.onAuthenticationRequired = authentication.requireLogin
     }
 
     private func toggleSplit() {
@@ -363,20 +364,41 @@ private struct MacPortalPane: View {
                 onActivate: onActivate
             )
             if model.sidebarHidden {
-                MacBreadcrumbBar(model: model, onActivate: onActivate)
+                GeometryReader { geometry in
+                    let breadcrumbHeight: CGFloat = 34
+                    let sidebarInset = model.isSidebarHoverVisible ? model.sidebarHoverWidth : 0
+                    let webViewHeight = max(geometry.size.height - breadcrumbHeight, 0)
+
+                    ZStack(alignment: .topLeading) {
+                        portalWebView
+                            .frame(width: geometry.size.width, height: webViewHeight)
+                            .offset(y: model.isSidebarHoverVisible ? 0 : breadcrumbHeight)
+
+                        MacBreadcrumbBar(model: model, onActivate: onActivate)
+                            .frame(width: max(geometry.size.width - sidebarInset, 0))
+                            .offset(x: sidebarInset)
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                    .clipped()
+                }
+            } else {
+                portalWebView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            MacPortalWebView(
-                model: model,
-                preferences: preferences,
-                onFocus: onActivate,
-                onSidebarNavigate: onSidebarNavigate
-            )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(model.themeBackground)
         // NSSplitView applies the title-bar safe area to each arranged pane.
         // Ignore it per pane so both toolbars stay beside the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
+    }
+
+    private var portalWebView: some View {
+        MacPortalWebView(
+            model: model,
+            preferences: preferences,
+            onFocus: onActivate,
+            onSidebarNavigate: onSidebarNavigate
+        )
     }
 }
 
@@ -400,6 +422,7 @@ private struct MacPortalToolbar: View {
                     .frame(width: 20, height: 20)
             }
             .help(sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
+            .onHover { model.setToolbarSidebarHover($0) }
             Rectangle()
                 .fill(separatorColor)
                 .frame(width: 1, height: 20)
@@ -542,11 +565,6 @@ private struct MacBreadcrumbBar: View {
         .foregroundStyle(model.themeForeground)
         .frame(height: 34)
         .background(model.themeBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(model.themeForeground.opacity(0.16))
-                .frame(height: 1)
-        }
     }
 }
 

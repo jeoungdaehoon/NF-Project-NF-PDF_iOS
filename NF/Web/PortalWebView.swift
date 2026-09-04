@@ -248,6 +248,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
 #if targetEnvironment(macCatalyst)
         userContentController.add(context.coordinator, name: Coordinator.macPageZoomBridgeName)
         userContentController.add(context.coordinator, name: Coordinator.macNavigationStateBridgeName)
+        userContentController.add(context.coordinator, name: Coordinator.macSidebarHoverBridgeName)
         userContentController.addUserScript(
             WKUserScript(
                 source: Coordinator.macNavigationObserverScript,
@@ -353,6 +354,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
 #if targetEnvironment(macCatalyst)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macPageZoomBridgeName)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macNavigationStateBridgeName)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.macSidebarHoverBridgeName)
 #endif
     }
 }
@@ -384,11 +386,44 @@ extension PortalWebViewContent {
         static let macPageZoomBridgeName = "NFPortalMacPageZoom"
         /// Portal SPA 경로 변경을 Mac 상단 탭과 경로 바로 전달하는 Bridge 이름입니다.
         static let macNavigationStateBridgeName = "NFPortalMacNavigationState"
+        /// 웹 전체 메뉴 hover 상태를 Mac 상단 탭바로 전달하는 Bridge 이름입니다.
+        static let macSidebarHoverBridgeName = "NFPortalMacSidebarHover"
         /// 전체 문서 이동과 SPA History API 이동을 동일하게 감지하는 Mac 전용 UserScript입니다.
         static let macNavigationObserverScript = """
         (function() {
             if (window.__nfPortalMacNavigationObserverInstalled) return;
             window.__nfPortalMacNavigationObserverInstalled = true;
+
+            document.documentElement.setAttribute('data-nf-desktop-host', 'true');
+            var hostStyle = document.createElement('style');
+            hostStyle.id = '__nfPortalMacDesktopHostStyle';
+            hostStyle.textContent = `
+                html[data-nf-desktop-host="true"] .portal-titlebar button[aria-controls="portal-navigation"],
+                html[data-nf-desktop-host="true"] .portal-titlebar button[aria-label="탭바 열기"] {
+                    display: none !important;
+                }
+            `;
+            (document.head || document.documentElement).appendChild(hostStyle);
+
+            window.__nfPortalMacSetSidebarPreviewing = function(previewing) {
+                var requestToken = (window.__nfPortalMacSidebarPreviewToken || 0) + 1;
+                window.__nfPortalMacSidebarPreviewToken = requestToken;
+                function apply() {
+                    if (requestToken !== window.__nfPortalMacSidebarPreviewToken) return;
+                    var content = document.getElementById('portal-content');
+                    if (!content) return;
+                    if (previewing) {
+                        content.dataset.nfMacSidebarPreview = 'true';
+                        content.style.setProperty('padding-top', '34px', 'important');
+                        content.style.setProperty('box-sizing', 'border-box', 'important');
+                    } else {
+                        delete content.dataset.nfMacSidebarPreview;
+                        content.style.removeProperty('padding-top');
+                        content.style.removeProperty('box-sizing');
+                    }
+                }
+                [0, 80, 250].forEach(function(delay) { setTimeout(apply, delay); });
+            };
 
             var lastSignature = '';
             var notificationTimer = null;
@@ -445,6 +480,19 @@ extension PortalWebViewContent {
                 if (!link) return;
                 notifyNavigationChanged(150);
                 setTimeout(function() { notifyNavigationChanged(0); }, 500);
+            }, true);
+            document.addEventListener('pointerover', function(event) {
+                var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
+                if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
+                window.webkit.messageHandlers.\(macSidebarHoverBridgeName).postMessage({
+                    hovering: true,
+                    width: navigation.getBoundingClientRect().width
+                });
+            }, true);
+            document.addEventListener('pointerout', function(event) {
+                var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
+                if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
+                window.webkit.messageHandlers.\(macSidebarHoverBridgeName).postMessage({ hovering: false });
             }, true);
 
             var documentRootObserver = null;
@@ -1053,6 +1101,17 @@ extension PortalWebViewContent {
             parent.desktopChrome?.recordCurrentPage(in: webView, url: url, title: title)
             return
         }
+        /// 웹 전체 메뉴 안으로 포인터가 이동한 동안 hover 메뉴를 열린 상태로 유지합니다.
+        if message.name == Self.macSidebarHoverBridgeName {
+            if let body = message.body as? [String: Any] {
+                let hovering = (body["hovering"] as? NSNumber)?.boolValue ?? false
+                let width = (body["width"] as? NSNumber).map { CGFloat(truncating: $0) }
+                parent.desktopChrome?.setWebNavigationMenuHover(hovering, width: width)
+            } else if let hovering = message.body as? Bool {
+                parent.desktopChrome?.setWebNavigationMenuHover(hovering)
+            }
+            return
+        }
 #endif
         }
 
@@ -1477,6 +1536,8 @@ private final class PortalDesktopChromeModel: ObservableObject {
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
     @Published private(set) var isNavigationMenuHidden = false
+    @Published private(set) var isNavigationMenuHoverVisible = false
+    @Published private(set) var navigationMenuHoverWidth: CGFloat = 276
     @Published private(set) var zoomPercent: Int
     @Published private(set) var breadcrumbs: [Breadcrumb] = []
 
@@ -1487,6 +1548,9 @@ private final class PortalDesktopChromeModel: ObservableObject {
     private static let defaultZoomPercent = 120
     private static let minimumZoomPercent = 80
     private static let maximumZoomPercent = 160
+    private var isToolbarNavigationMenuHovered = false
+    private var isWebNavigationMenuHovered = false
+    private var navigationMenuHoverCloseTask: Task<Void, Never>?
 
     /// WebKit이 문서 레이아웃 단계에서 적용할 Mac 전용 화면 배율입니다.
     var zoomScale: CGFloat { CGFloat(zoomPercent) / 100 }
@@ -1538,7 +1602,8 @@ private final class PortalDesktopChromeModel: ObservableObject {
         connect(webView)
         applyDesktopReadability(to: webView)
         if isNavigationMenuHidden {
-            applyNavigationMenuVisibility(true, in: webView)
+            let shouldHide = !isToolbarNavigationMenuHovered && !isWebNavigationMenuHovered
+            applyNavigationMenuVisibility(shouldHide, in: webView)
         }
 
         guard let url = overrideURL ?? webView.url, url.scheme == "http" || url.scheme == "https" else { return }
@@ -1586,6 +1651,11 @@ private final class PortalDesktopChromeModel: ObservableObject {
 
     func toggleNavigationMenu() {
         guard let webView else { return }
+        navigationMenuHoverCloseTask?.cancel()
+        isToolbarNavigationMenuHovered = false
+        isWebNavigationMenuHovered = false
+        isNavigationMenuHoverVisible = false
+        applyNavigationMenuPreviewLayout(false)
         let shouldHide = !isNavigationMenuHidden
         applyNavigationMenuVisibility(shouldHide, in: webView) { [weak self, weak webView] didApply in
             guard didApply else { return }
@@ -1594,6 +1664,50 @@ private final class PortalDesktopChromeModel: ObservableObject {
                 self?.syncCurrentBreadcrumbs(from: webView)
             }
         }
+    }
+
+    func setToolbarNavigationMenuHover(_ hovering: Bool) {
+        isToolbarNavigationMenuHovered = hovering
+        updateNavigationMenuHoverVisibility()
+    }
+
+    func setWebNavigationMenuHover(_ hovering: Bool, width: CGFloat? = nil) {
+        if let width, width.isFinite, width > 0 {
+            navigationMenuHoverWidth = min(max(width, 180), 420)
+        }
+        isWebNavigationMenuHovered = hovering
+        updateNavigationMenuHoverVisibility()
+    }
+
+    private func updateNavigationMenuHoverVisibility() {
+        navigationMenuHoverCloseTask?.cancel()
+        guard isNavigationMenuHidden, let webView else { return }
+
+        if isToolbarNavigationMenuHovered || isWebNavigationMenuHovered {
+            isNavigationMenuHoverVisible = true
+            applyNavigationMenuPreviewLayout(true)
+            applyNavigationMenuVisibility(false, in: webView)
+            return
+        }
+
+        navigationMenuHoverCloseTask = Task { @MainActor [weak self, weak webView] in
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  let webView,
+                  self.isNavigationMenuHidden,
+                  !self.isToolbarNavigationMenuHovered,
+                  !self.isWebNavigationMenuHovered else { return }
+            self.isNavigationMenuHoverVisible = false
+            self.applyNavigationMenuPreviewLayout(false)
+            self.applyNavigationMenuVisibility(true, in: webView)
+        }
+    }
+
+    private func applyNavigationMenuPreviewLayout(_ previewing: Bool) {
+        guard let webView else { return }
+        let enabled = previewing ? "true" : "false"
+        webView.evaluateJavaScript("window.__nfPortalMacSetSidebarPreviewing && window.__nfPortalMacSetSidebarPreviewing(\(enabled));")
     }
 
     /** 단일 네이티브 숨김 상태를 현재 웹 문서의 사이드바 레이아웃에 적용합니다. */
@@ -1993,10 +2107,27 @@ private struct PortalDesktopPane<Content: View>: View {
                 onToggleSplitView: onToggleSplitView
             )
             if showsBreadcrumbs {
-                PortalDesktopBreadcrumbBar(model: model, theme: theme)
+                GeometryReader { geometry in
+                    let breadcrumbHeight: CGFloat = 34
+                    let sidebarInset = model.isNavigationMenuHoverVisible ? model.navigationMenuHoverWidth : 0
+                    let webViewHeight = max(geometry.size.height - breadcrumbHeight, 0)
+
+                    ZStack(alignment: .topLeading) {
+                        content
+                            .frame(width: geometry.size.width, height: webViewHeight)
+                            .offset(y: model.isNavigationMenuHoverVisible ? 0 : breadcrumbHeight)
+
+                        PortalDesktopBreadcrumbBar(model: model, theme: theme)
+                            .frame(width: max(geometry.size.width - sidebarInset, 0))
+                            .offset(x: sidebarInset)
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                    .clipped()
+                }
+            } else {
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -2018,6 +2149,7 @@ private struct PortalDesktopToolbar: View {
             }
             .accessibilityLabel(model.isNavigationMenuHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
             .help(model.isNavigationMenuHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
+            .onHover { model.setToolbarNavigationMenuHover($0) }
 
             Divider().frame(height: 22)
 

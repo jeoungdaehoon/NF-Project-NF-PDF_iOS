@@ -14,6 +14,11 @@ enum MacPortalConfig {
     static let callbackScheme = "com.nf.portal"
 
     static func isPortalURL(_ url: URL) -> Bool { url.host == host }
+
+    static func isLoginURL(_ url: URL) -> Bool {
+        guard isPortalURL(url) else { return false }
+        return url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "login"
+    }
 }
 
 enum MacAppVersion {
@@ -116,6 +121,8 @@ final class MacPortalBrowserModel: ObservableObject {
     @Published private(set) var breadcrumbs: [MacPortalBreadcrumb] = []
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
+    @Published private(set) var isSidebarHoverVisible = false
+    @Published private(set) var sidebarHoverWidth: CGFloat = 276
     @Published var sidebarHidden = false {
         didSet { defaults.set(sidebarHidden, forKey: sidebarKey) }
     }
@@ -125,9 +132,13 @@ final class MacPortalBrowserModel: ObservableObject {
     weak var webView: WKWebView?
     var onGoogleLogin: (() -> Void)?
     var onLogout: (() -> Void)?
+    var onAuthenticationRequired: (() -> Void)?
     let identifier: String
     private let defaults: UserDefaults
     private var initialURL: URL
+    private var isToolbarSidebarHovered = false
+    private var isWebSidebarHovered = false
+    private var sidebarHoverCloseTask: Task<Void, Never>?
 
     private var pagesKey: String { "nf.mac.portal.pages.\(identifier).v2" }
     private var sidebarKey: String { "nf.mac.portal.sidebarHidden.\(identifier).v2" }
@@ -139,10 +150,15 @@ final class MacPortalBrowserModel: ObservableObject {
         sidebarHidden = defaults.bool(forKey: "nf.mac.portal.sidebarHidden.\(identifier).v2")
         if let data = defaults.data(forKey: "nf.mac.portal.pages.\(identifier).v2"),
            let stored = try? JSONDecoder().decode([MacPortalPage].self, from: data) {
-            pages = Array(stored.sorted { $0.accessedAt > $1.accessedAt }.prefix(14))
+            let authenticatedPages = stored.filter { !MacPortalConfig.isLoginURL($0.url) }
+            pages = Array(authenticatedPages.sorted { $0.accessedAt > $1.accessedAt }.prefix(14))
             if let first = pages.first {
                 self.initialURL = first.url
                 activePageID = first.id
+            }
+            if authenticatedPages.count != stored.count,
+               let sanitizedData = try? JSONEncoder().encode(pages) {
+                defaults.set(sanitizedData, forKey: "nf.mac.portal.pages.\(identifier).v2")
             }
         }
     }
@@ -167,6 +183,10 @@ final class MacPortalBrowserModel: ObservableObject {
 
     func record(url: URL, title: String?, breadcrumbRecords: [[String: Any]] = []) {
         guard url.scheme == "https" || url.scheme == "http" else { return }
+        guard !MacPortalConfig.isLoginURL(url) else {
+            onAuthenticationRequired?()
+            return
+        }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = cleanTitle?.isEmpty == false ? cleanTitle! : fallbackTitle(for: url)
         let page = MacPortalPage(url: url, title: resolvedTitle, accessedAt: Date().timeIntervalSince1970)
@@ -222,8 +242,26 @@ final class MacPortalBrowserModel: ObservableObject {
     func goForward() { webView?.goForward() }
 
     func toggleSidebar() {
+        sidebarHoverCloseTask?.cancel()
+        isToolbarSidebarHovered = false
+        isWebSidebarHovered = false
+        isSidebarHoverVisible = false
+        applySidebarPreviewLayout(false)
         sidebarHidden.toggle()
         applySidebarVisibility()
+    }
+
+    func setToolbarSidebarHover(_ hovering: Bool) {
+        isToolbarSidebarHovered = hovering
+        updateSidebarHoverVisibility()
+    }
+
+    func setWebSidebarHover(_ hovering: Bool, width: CGFloat? = nil) {
+        if let width, width.isFinite, width > 0 {
+            sidebarHoverWidth = min(max(width, 180), 420)
+        }
+        isWebSidebarHovered = hovering
+        updateSidebarHoverVisibility()
     }
 
     func refreshNavigationState() {
@@ -233,10 +271,41 @@ final class MacPortalBrowserModel: ObservableObject {
         if canGoForward != nextCanGoForward { canGoForward = nextCanGoForward }
     }
 
-    func applySidebarVisibility() {
+    func applySidebarVisibility(hidden override: Bool? = nil) {
         guard let webView else { return }
-        let hidden = sidebarHidden ? "true" : "false"
+        let shouldHide = override ?? (sidebarHidden && !isToolbarSidebarHovered && !isWebSidebarHovered)
+        let hidden = shouldHide ? "true" : "false"
         webView.evaluateJavaScript("window.__nfMacSetSidebarHidden && window.__nfMacSetSidebarHidden(\(hidden));")
+    }
+
+    private func updateSidebarHoverVisibility() {
+        sidebarHoverCloseTask?.cancel()
+        guard sidebarHidden else { return }
+
+        if isToolbarSidebarHovered || isWebSidebarHovered {
+            isSidebarHoverVisible = true
+            applySidebarPreviewLayout(true)
+            applySidebarVisibility(hidden: false)
+            return
+        }
+
+        sidebarHoverCloseTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            guard !Task.isCancelled,
+                  let self,
+                  self.sidebarHidden,
+                  !self.isToolbarSidebarHovered,
+                  !self.isWebSidebarHovered else { return }
+            self.isSidebarHoverVisible = false
+            self.applySidebarPreviewLayout(false)
+            self.applySidebarVisibility(hidden: true)
+        }
+    }
+
+    private func applySidebarPreviewLayout(_ previewing: Bool) {
+        guard let webView else { return }
+        let enabled = previewing ? "true" : "false"
+        webView.evaluateJavaScript("window.__nfMacSetSidebarPreviewing && window.__nfMacSetSidebarPreviewing(\(enabled));")
     }
 
     func updateTheme(background: String?, foreground: String?) {
