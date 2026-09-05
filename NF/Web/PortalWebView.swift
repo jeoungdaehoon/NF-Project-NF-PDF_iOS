@@ -405,24 +405,24 @@ extension PortalWebViewContent {
             `;
             (document.head || document.documentElement).appendChild(hostStyle);
 
-            window.__nfPortalMacSetSidebarPreviewing = function(previewing) {
-                var requestToken = (window.__nfPortalMacSidebarPreviewToken || 0) + 1;
-                window.__nfPortalMacSidebarPreviewToken = requestToken;
+            window.__nfPortalMacSetSidebarContentInset = function(reserved) {
+                var requestToken = (window.__nfPortalMacSidebarContentInsetToken || 0) + 1;
+                window.__nfPortalMacSidebarContentInsetToken = requestToken;
                 function apply() {
-                    if (requestToken !== window.__nfPortalMacSidebarPreviewToken) return;
+                    if (requestToken !== window.__nfPortalMacSidebarContentInsetToken) return;
                     var content = document.getElementById('portal-content');
                     if (!content) return;
-                    if (previewing) {
-                        content.dataset.nfMacSidebarPreview = 'true';
+                    if (reserved) {
+                        content.dataset.nfMacSidebarContentInset = 'true';
                         content.style.setProperty('padding-top', '34px', 'important');
                         content.style.setProperty('box-sizing', 'border-box', 'important');
                     } else {
-                        delete content.dataset.nfMacSidebarPreview;
+                        delete content.dataset.nfMacSidebarContentInset;
                         content.style.removeProperty('padding-top');
                         content.style.removeProperty('box-sizing');
                     }
                 }
-                [0, 80, 250].forEach(function(delay) { setTimeout(apply, delay); });
+                [0, 80, 250, 700].forEach(function(delay) { setTimeout(apply, delay); });
             };
 
             var lastSignature = '';
@@ -1602,6 +1602,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
         connect(webView)
         applyDesktopReadability(to: webView)
         if isNavigationMenuHidden {
+            applyNavigationMenuContentInset(true)
             let shouldHide = !isToolbarNavigationMenuHovered && !isWebNavigationMenuHovered
             applyNavigationMenuVisibility(shouldHide, in: webView)
         }
@@ -1655,8 +1656,8 @@ private final class PortalDesktopChromeModel: ObservableObject {
         isToolbarNavigationMenuHovered = false
         isWebNavigationMenuHovered = false
         isNavigationMenuHoverVisible = false
-        applyNavigationMenuPreviewLayout(false)
         let shouldHide = !isNavigationMenuHidden
+        applyNavigationMenuContentInset(shouldHide)
         applyNavigationMenuVisibility(shouldHide, in: webView) { [weak self, weak webView] didApply in
             guard didApply else { return }
             self?.isNavigationMenuHidden = shouldHide
@@ -1685,7 +1686,6 @@ private final class PortalDesktopChromeModel: ObservableObject {
 
         if isToolbarNavigationMenuHovered || isWebNavigationMenuHovered {
             isNavigationMenuHoverVisible = true
-            applyNavigationMenuPreviewLayout(true)
             applyNavigationMenuVisibility(false, in: webView)
             return
         }
@@ -1699,15 +1699,14 @@ private final class PortalDesktopChromeModel: ObservableObject {
                   !self.isToolbarNavigationMenuHovered,
                   !self.isWebNavigationMenuHovered else { return }
             self.isNavigationMenuHoverVisible = false
-            self.applyNavigationMenuPreviewLayout(false)
             self.applyNavigationMenuVisibility(true, in: webView)
         }
     }
 
-    private func applyNavigationMenuPreviewLayout(_ previewing: Bool) {
+    private func applyNavigationMenuContentInset(_ reserved: Bool) {
         guard let webView else { return }
-        let enabled = previewing ? "true" : "false"
-        webView.evaluateJavaScript("window.__nfPortalMacSetSidebarPreviewing && window.__nfPortalMacSetSidebarPreviewing(\(enabled));")
+        let enabled = reserved ? "true" : "false"
+        webView.evaluateJavaScript("window.__nfPortalMacSetSidebarContentInset && window.__nfPortalMacSetSidebarContentInset(\(enabled));")
     }
 
     /** 단일 네이티브 숨김 상태를 현재 웹 문서의 사이드바 레이아웃에 적용합니다. */
@@ -2108,14 +2107,11 @@ private struct PortalDesktopPane<Content: View>: View {
             )
             if showsBreadcrumbs {
                 GeometryReader { geometry in
-                    let breadcrumbHeight: CGFloat = 34
                     let sidebarInset = model.isNavigationMenuHoverVisible ? model.navigationMenuHoverWidth : 0
-                    let webViewHeight = max(geometry.size.height - breadcrumbHeight, 0)
 
                     ZStack(alignment: .topLeading) {
                         content
-                            .frame(width: geometry.size.width, height: webViewHeight)
-                            .offset(y: model.isNavigationMenuHoverVisible ? 0 : breadcrumbHeight)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
 
                         PortalDesktopBreadcrumbBar(model: model, theme: theme)
                             .frame(width: max(geometry.size.width - sidebarInset, 0))

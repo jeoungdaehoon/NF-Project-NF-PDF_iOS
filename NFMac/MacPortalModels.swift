@@ -260,7 +260,6 @@ final class MacPortalBrowserModel: ObservableObject {
         isToolbarSidebarHovered = false
         isWebSidebarHovered = false
         isSidebarHoverVisible = false
-        applySidebarPreviewLayout(false)
         sidebarHidden.toggle()
         applySidebarVisibility()
     }
@@ -287,6 +286,9 @@ final class MacPortalBrowserModel: ObservableObject {
 
     func applySidebarVisibility(hidden override: Bool? = nil) {
         guard let webView else { return }
+        // 상단 경로 영역은 hover 여부와 무관하게 같은 공간을 사용해야 WKWebView의
+        // backing layer가 재배치되지 않습니다.
+        applySidebarContentInset(sidebarHidden)
         let shouldHide = override ?? (sidebarHidden && !isToolbarSidebarHovered && !isWebSidebarHovered)
         let hidden = shouldHide ? "true" : "false"
         webView.evaluateJavaScript("window.__nfMacSetSidebarHidden && window.__nfMacSetSidebarHidden(\(hidden));")
@@ -298,7 +300,6 @@ final class MacPortalBrowserModel: ObservableObject {
 
         if isToolbarSidebarHovered || isWebSidebarHovered {
             isSidebarHoverVisible = true
-            applySidebarPreviewLayout(true)
             applySidebarVisibility(hidden: false)
             return
         }
@@ -311,15 +312,14 @@ final class MacPortalBrowserModel: ObservableObject {
                   !self.isToolbarSidebarHovered,
                   !self.isWebSidebarHovered else { return }
             self.isSidebarHoverVisible = false
-            self.applySidebarPreviewLayout(false)
             self.applySidebarVisibility(hidden: true)
         }
     }
 
-    private func applySidebarPreviewLayout(_ previewing: Bool) {
+    private func applySidebarContentInset(_ reserved: Bool) {
         guard let webView else { return }
-        let enabled = previewing ? "true" : "false"
-        webView.evaluateJavaScript("window.__nfMacSetSidebarPreviewing && window.__nfMacSetSidebarPreviewing(\(enabled));")
+        let enabled = reserved ? "true" : "false"
+        webView.evaluateJavaScript("window.__nfMacSetSidebarContentInset && window.__nfMacSetSidebarContentInset(\(enabled));")
     }
 
     func updateTheme(background: String?, foreground: String?) {

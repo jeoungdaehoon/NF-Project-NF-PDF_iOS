@@ -389,14 +389,11 @@ private struct MacPortalPane: View {
             )
             if model.sidebarHidden {
                 GeometryReader { geometry in
-                    let breadcrumbHeight: CGFloat = 34
                     let sidebarInset = model.isSidebarHoverVisible ? model.sidebarHoverWidth : 0
-                    let webViewHeight = max(geometry.size.height - breadcrumbHeight, 0)
 
                     ZStack(alignment: .topLeading) {
                         portalWebView
-                            .frame(width: geometry.size.width, height: webViewHeight)
-                            .offset(y: model.isSidebarHoverVisible ? 0 : breadcrumbHeight)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
 
                         MacBreadcrumbBar(model: model, onActivate: onActivate)
                             .frame(width: max(geometry.size.width - sidebarInset, 0))

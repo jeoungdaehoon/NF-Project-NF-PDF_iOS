@@ -376,24 +376,24 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         window.__nfMacSidebarHidden = false;
-        window.__nfMacSetSidebarPreviewing = function(previewing) {
-            var requestToken = (window.__nfMacSidebarPreviewToken || 0) + 1;
-            window.__nfMacSidebarPreviewToken = requestToken;
+        window.__nfMacSetSidebarContentInset = function(reserved) {
+            var requestToken = (window.__nfMacSidebarContentInsetToken || 0) + 1;
+            window.__nfMacSidebarContentInsetToken = requestToken;
             function apply() {
-                if (requestToken !== window.__nfMacSidebarPreviewToken) return;
+                if (requestToken !== window.__nfMacSidebarContentInsetToken) return;
                 var content = document.getElementById('portal-content');
                 if (!content) return;
-                if (previewing) {
-                    content.dataset.nfMacSidebarPreview = 'true';
+                if (reserved) {
+                    content.dataset.nfMacSidebarContentInset = 'true';
                     content.style.setProperty('padding-top', '34px', 'important');
                     content.style.setProperty('box-sizing', 'border-box', 'important');
                 } else {
-                    delete content.dataset.nfMacSidebarPreview;
+                    delete content.dataset.nfMacSidebarContentInset;
                     content.style.removeProperty('padding-top');
                     content.style.removeProperty('box-sizing');
                 }
             }
-            [0, 80, 250].forEach(function(delay) { setTimeout(apply, delay); });
+            [0, 80, 250, 700].forEach(function(delay) { setTimeout(apply, delay); });
         };
         window.__nfMacSetSidebarHidden = function(hidden) {
             window.__nfMacSidebarHidden = !!hidden;
