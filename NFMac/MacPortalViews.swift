@@ -283,11 +283,6 @@ private struct MacPortalWorkspace: View {
         HSplitView {
             MacPortalPane(
                 model: primary,
-                reservesTrafficLights: true,
-                isSplit: isSplit,
-                sharedSidebarHidden: primary.sidebarHidden,
-                onToggleSidebar: toggleSharedSidebar,
-                onToggleSplit: toggleSplit,
                 onActivate: { activePane = .primary },
                 onSidebarNavigate: navigateFromSharedSidebar
             )
@@ -296,11 +291,6 @@ private struct MacPortalWorkspace: View {
             if isSplit {
                 MacPortalPane(
                     model: secondary,
-                    reservesTrafficLights: false,
-                    isSplit: true,
-                    sharedSidebarHidden: primary.sidebarHidden,
-                    onToggleSidebar: toggleSharedSidebar,
-                    onToggleSplit: toggleSplit,
                     onActivate: { activePane = .secondary },
                     onSidebarNavigate: navigateFromSharedSidebar
                 )
@@ -308,6 +298,40 @@ private struct MacPortalWorkspace: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background {
+            MacTitlebarAccessory {
+                HStack(spacing: 0) {
+                    MacPortalToolbar(
+                        model: primary,
+                        preferences: preferences,
+                        isSplit: isSplit,
+                        sidebarHidden: primary.sidebarHidden,
+                        showsSidebarButton: true,
+                        showsTrailingControls: !isSplit,
+                        onToggleSidebar: toggleSharedSidebar,
+                        onToggleSplit: toggleSplit,
+                        onActivate: { activePane = .primary }
+                    )
+                    .frame(maxWidth: .infinity)
+
+                    if isSplit {
+                        MacPortalToolbar(
+                            model: secondary,
+                            preferences: preferences,
+                            isSplit: true,
+                            sidebarHidden: primary.sidebarHidden,
+                            showsSidebarButton: false,
+                            showsTrailingControls: true,
+                            onToggleSidebar: toggleSharedSidebar,
+                            onToggleSplit: toggleSplit,
+                            onActivate: { activePane = .secondary }
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .frame(width: 0, height: 0)
+        }
         .onAppear {
             configureCallbacks(for: primary)
             configureCallbacks(for: secondary)
@@ -367,26 +391,16 @@ private struct MacPortalWorkspace: View {
 private struct MacPortalPane: View {
     @EnvironmentObject private var preferences: MacPortalPreferences
     @ObservedObject var model: MacPortalBrowserModel
-    let reservesTrafficLights: Bool
-    let isSplit: Bool
-    let sharedSidebarHidden: Bool
-    let onToggleSidebar: () -> Void
-    let onToggleSplit: () -> Void
     let onActivate: () -> Void
     let onSidebarNavigate: (URL) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            MacPortalToolbar(
-                model: model,
-                preferences: preferences,
-                reservesTrafficLights: reservesTrafficLights,
-                isSplit: isSplit,
-                sidebarHidden: sharedSidebarHidden,
-                onToggleSidebar: onToggleSidebar,
-                onToggleSplit: onToggleSplit,
-                onActivate: onActivate
-            )
+            // The interactive toolbar is hosted by a native title-bar accessory.
+            // Keep its exact layout height here so the web view never shifts.
+            Color.clear
+                .frame(height: 32)
+                .allowsHitTesting(false)
             if model.sidebarHidden {
                 GeometryReader { geometry in
                     let sidebarInset = model.isSidebarHoverVisible ? model.sidebarHoverWidth : 0
@@ -396,8 +410,9 @@ private struct MacPortalPane: View {
                             .frame(width: geometry.size.width, height: geometry.size.height)
 
                         MacBreadcrumbBar(model: model, onActivate: onActivate)
-                            .frame(width: max(geometry.size.width - sidebarInset, 0))
+                            .frame(width: geometry.size.width)
                             .offset(x: sidebarInset)
+                            .animation(.easeInOut(duration: 0.3), value: model.isSidebarHoverVisible)
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
                     .clipped()
@@ -426,27 +441,30 @@ private struct MacPortalPane: View {
 private struct MacPortalToolbar: View {
     @ObservedObject var model: MacPortalBrowserModel
     @ObservedObject var preferences: MacPortalPreferences
-    let reservesTrafficLights: Bool
     let isSplit: Bool
     let sidebarHidden: Bool
+    let showsSidebarButton: Bool
+    let showsTrailingControls: Bool
     let onToggleSidebar: () -> Void
     let onToggleSplit: () -> Void
     let onActivate: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            Button {
-                onActivate()
-                onToggleSidebar()
-            } label: {
-                Image(systemName: sidebarHidden ? "line.3.horizontal" : "sidebar.left")
-                    .frame(width: 20, height: 20)
+            if showsSidebarButton {
+                Button {
+                    onActivate()
+                    onToggleSidebar()
+                } label: {
+                    Image(systemName: sidebarHidden ? "line.3.horizontal" : "sidebar.left")
+                        .frame(width: 20, height: 20)
+                }
+                .help(sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
+                .onHover { model.setToolbarSidebarHover($0) }
+                Rectangle()
+                    .fill(separatorColor)
+                    .frame(width: 1, height: 20)
             }
-            .help(sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
-            .onHover { model.setToolbarSidebarHover($0) }
-            Rectangle()
-                .fill(separatorColor)
-                .frame(width: 1, height: 20)
             Button {
                 onActivate()
                 model.goBack()
@@ -461,6 +479,20 @@ private struct MacPortalToolbar: View {
                 Image(systemName: "chevron.right")
             }
                 .disabled(!model.canGoForward).help("앞으로 가기")
+            Button {
+                onActivate()
+                model.reloadCurrentPage()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("현재 페이지 새로고침")
+            Button {
+                onActivate()
+                model.goHome()
+            } label: {
+                Image(systemName: "house")
+            }
+            .help("홈")
             Rectangle()
                 .fill(separatorColor)
                 .frame(width: 1, height: 20)
@@ -481,38 +513,40 @@ private struct MacPortalToolbar: View {
                 }
             }
             Spacer(minLength: 4)
-            Button {
-                onActivate()
-                onToggleSplit()
-            } label: {
-                Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
-            }
-            .help(isSplit ? "2분할 닫기" : "현재 페이지를 좌우로 2분할")
-            Rectangle()
-                .fill(separatorColor)
-                .frame(width: 1, height: 20)
-            Menu {
-                ForEach(Array(stride(from: 80, through: 200, by: 5)), id: \.self) { percent in
-                    Button(percent == preferences.zoomPercent ? "✓ \(percent)%" : "\(percent)%") {
-                        preferences.zoomPercent = percent
-                    }
+            if showsTrailingControls {
+                Button {
+                    onActivate()
+                    onToggleSplit()
+                } label: {
+                    Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
                 }
-            } label: {
-                Label("\(preferences.zoomPercent)%", systemImage: "textformat.size")
-                    // borderless Menu가 상위 foregroundStyle 대신 시스템 색을 선택하는
-                    // 경우에도 웹에서 전달된 현재 테마의 문구색을 유지합니다.
-                    .foregroundStyle(model.themeForeground)
+                .help(isSplit ? "2분할 닫기" : "현재 페이지를 좌우로 2분할")
+                Rectangle()
+                    .fill(separatorColor)
+                    .frame(width: 1, height: 20)
+                Menu {
+                    ForEach(Array(stride(from: 80, through: 200, by: 5)), id: \.self) { percent in
+                        Button(percent == preferences.zoomPercent ? "✓ \(percent)%" : "\(percent)%") {
+                            preferences.zoomPercent = percent
+                        }
+                    }
+                } label: {
+                    Label("\(preferences.zoomPercent)%", systemImage: "textformat.size")
+                        // borderless Menu가 상위 foregroundStyle 대신 시스템 색을 선택하는
+                        // 경우에도 웹에서 전달된 현재 테마의 문구색을 유지합니다.
+                        .foregroundStyle(model.themeForeground)
+                }
+                .tint(model.themeForeground)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .tint(model.themeForeground)
-            .menuStyle(.borderlessButton)
-            .fixedSize()
         }
         .buttonStyle(.borderless)
         .font(.system(size: 13, weight: .medium))
         .foregroundStyle(model.themeForeground)
-        .padding(.leading, reservesTrafficLights ? 86 : 10)
+        .padding(.leading, 10)
         .padding(.trailing, 10)
-        .frame(height: 43)
+        .frame(height: 32)
         .background(model.themeBackground)
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -538,6 +572,7 @@ private struct MacPortalTabButton: View {
         HStack(spacing: 2) {
             Button(action: onSelect) {
                 Text(page.title)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .padding(.leading, 10)
                     .padding(.vertical, 5)
@@ -651,6 +686,109 @@ private struct MacWindowConfigurator: NSViewRepresentable {
             window.minSize = NSSize(width: 980, height: 680)
             window.collectionBehavior.insert(.fullScreenPrimary)
             window.isMovableByWindowBackground = false
+        }
+    }
+}
+
+private struct MacTitlebarAccessory: NSViewRepresentable {
+    let rootView: AnyView
+
+    init<Content: View>(@ViewBuilder content: () -> Content) {
+        rootView = AnyView(content())
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(rootView: rootView)
+    }
+
+    func makeNSView(context: Context) -> WindowAnchorView {
+        let view = WindowAnchorView()
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.install(in: window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: WindowAnchorView, context: Context) {
+        context.coordinator.update(rootView: rootView)
+        context.coordinator.install(in: nsView.window)
+    }
+
+    static func dismantleNSView(_ nsView: WindowAnchorView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator {
+        private let hostingController: NSHostingController<AnyView>
+        private let accessoryController = NSTitlebarAccessoryViewController()
+        private weak var installedWindow: NSWindow?
+        private var resizeObserver: NSObjectProtocol?
+
+        init(rootView: AnyView) {
+            hostingController = NSHostingController(rootView: rootView)
+            hostingController.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 32)
+            hostingController.view.autoresizingMask = [.width]
+            accessoryController.view = hostingController.view
+            accessoryController.layoutAttribute = .left
+        }
+
+        func update(rootView: AnyView) {
+            hostingController.rootView = rootView
+            resizeToWindow()
+        }
+
+        func install(in window: NSWindow?) {
+            guard let window else { return }
+            if installedWindow !== window {
+                uninstall()
+                installedWindow = window
+                window.addTitlebarAccessoryViewController(accessoryController)
+                resizeObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResizeNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.resizeToWindow()
+                }
+            }
+            resizeToWindow()
+        }
+
+        func uninstall() {
+            if let resizeObserver {
+                NotificationCenter.default.removeObserver(resizeObserver)
+                self.resizeObserver = nil
+            }
+            guard let installedWindow,
+                  let index = installedWindow.titlebarAccessoryViewControllers.firstIndex(where: { $0 === accessoryController })
+            else {
+                self.installedWindow = nil
+                return
+            }
+            installedWindow.removeTitlebarAccessoryViewController(at: index)
+            self.installedWindow = nil
+        }
+
+        private func resizeToWindow() {
+            guard let window = installedWindow else { return }
+            let leadingInset: CGFloat
+            if let zoomButton = window.standardWindowButton(.zoomButton) {
+                leadingInset = zoomButton.convert(zoomButton.bounds, to: nil).maxX + 8
+            } else {
+                leadingInset = 0
+            }
+            hostingController.view.setFrameSize(
+                NSSize(width: max(320, window.frame.width - leadingInset), height: 32)
+            )
+        }
+    }
+
+    final class WindowAnchorView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindowChange?(window)
         }
     }
 }

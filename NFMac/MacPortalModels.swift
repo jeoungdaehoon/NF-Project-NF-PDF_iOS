@@ -255,6 +255,19 @@ final class MacPortalBrowserModel: ObservableObject {
     func goBack() { webView?.goBack() }
     func goForward() { webView?.goForward() }
 
+    func reloadCurrentPage() {
+        guard let webView else { return }
+        if webView.url == nil {
+            webView.load(URLRequest(url: initialURL))
+        } else {
+            webView.reload()
+        }
+    }
+
+    func goHome() {
+        navigate(to: MacPortalConfig.dashboardURL)
+    }
+
     func toggleSidebar() {
         sidebarHoverCloseTask?.cancel()
         isToolbarSidebarHovered = false
@@ -289,9 +302,12 @@ final class MacPortalBrowserModel: ObservableObject {
         // 상단 경로 영역은 hover 여부와 무관하게 같은 공간을 사용해야 WKWebView의
         // backing layer가 재배치되지 않습니다.
         applySidebarContentInset(sidebarHidden)
-        let shouldHide = override ?? (sidebarHidden && !isToolbarSidebarHovered && !isWebSidebarHovered)
+        let shouldHide = override ?? sidebarHidden
         let hidden = shouldHide ? "true" : "false"
         webView.evaluateJavaScript("window.__nfMacSetSidebarHidden && window.__nfMacSetSidebarHidden(\(hidden));")
+        applySidebarPreviewVisibility(
+            shouldHide && (isToolbarSidebarHovered || isWebSidebarHovered)
+        )
     }
 
     private func updateSidebarHoverVisibility() {
@@ -300,7 +316,7 @@ final class MacPortalBrowserModel: ObservableObject {
 
         if isToolbarSidebarHovered || isWebSidebarHovered {
             isSidebarHoverVisible = true
-            applySidebarVisibility(hidden: false)
+            applySidebarPreviewVisibility(true)
             return
         }
 
@@ -312,8 +328,17 @@ final class MacPortalBrowserModel: ObservableObject {
                   !self.isToolbarSidebarHovered,
                   !self.isWebSidebarHovered else { return }
             self.isSidebarHoverVisible = false
-            self.applySidebarVisibility(hidden: true)
+            self.applySidebarPreviewVisibility(false)
         }
+    }
+
+    private func applySidebarPreviewVisibility(_ visible: Bool) {
+        guard let webView else { return }
+        let isVisible = visible ? "true" : "false"
+        let width = String(format: "%.2f", Double(sidebarHoverWidth))
+        webView.evaluateJavaScript(
+            "window.__nfMacSetSidebarPreviewVisible && window.__nfMacSetSidebarPreviewVisible(\(isVisible), \(width));"
+        )
     }
 
     private func applySidebarContentInset(_ reserved: Bool) {

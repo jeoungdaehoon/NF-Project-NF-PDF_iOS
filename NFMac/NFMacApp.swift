@@ -10,7 +10,6 @@ struct NFMacApp: App {
                 .environmentObject(preferences)
         }
         .defaultSize(width: 1680, height: 1050)
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
             CommandMenu("웹 콘텐츠") {
