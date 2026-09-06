@@ -349,6 +349,7 @@ struct MacPortalWebView: NSViewRepresentable {
                     top: 0 !important;
                     width: 276px !important;
                     height: 100dvh !important;
+                    padding-left: 0 !important;
                     align-self: start !important;
                     visibility: visible !important;
                     opacity: 1 !important;
