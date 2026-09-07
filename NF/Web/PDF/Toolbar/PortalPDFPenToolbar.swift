@@ -303,34 +303,6 @@ extension PortalPDFPreviewView {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(editingPenColor.title) 펜 두께 \(String(format: "%.1f", editingPenLineWidth))")
 
-            if selectedTool == .pen {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text("라인 보정")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 4)
-                        Text("\(Int((editingPenStrokeSmoothingStrength * 100).rounded()))%")
-                            .font(.caption2.monospacedDigit().weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    Slider(
-                        value: $editingPenStrokeSmoothingStrength,
-                        in: 0...2,
-                        step: 0.05
-                    )
-                    .tint(editingPenColorValue)
-                    .onChange(of: editingPenStrokeSmoothingStrength) { _, _ in
-                        updatePenColorEditingImmediately()
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(
-                    "라인 보정 \(Int((editingPenStrokeSmoothingStrength * 100).rounded()))퍼센트"
-                )
-            }
-
             if selectedTool == .highlighter {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("끝모양")
@@ -493,12 +465,6 @@ extension PortalPDFPreviewView {
         return penPressureStrength(for: selectedPenColor)
     }
 
-    /// 현재 선택 컬러에 저장된 스트로크 끝 삐침 완화 강도를 실제 펜 입력에 적용합니다.
-    var activePenStrokeSmoothingStrength: CGFloat {
-        guard selectedTool == .pen else { return 0 }
-        return penStrokeSmoothingStrength(for: selectedPenColor)
-    }
-
     /// 팔레트 원에 표시할 사용자 지정 색상을 반환합니다.
     func displayColor(for penColor: PortalPDFPenColor) -> Color {
         selectedTool == .highlighter
@@ -521,11 +487,6 @@ extension PortalPDFPreviewView {
     /// 컬러별 압력 반응 강도를 0~2 범위로 반환합니다.
     func penPressureStrength(for penColor: PortalPDFPenColor) -> CGFloat {
         min(2, max(0, customizedPenPressureStrengths[penColor.id] ?? 1.0))
-    }
-
-    /// 컬러별 스트로크 끝 삐침 완화 강도를 0~2 범위로 반환합니다.
-    func penStrokeSmoothingStrength(for penColor: PortalPDFPenColor) -> CGFloat {
-        min(2, max(0, customizedPenStrokeSmoothingStrengths[penColor.id] ?? 0.5))
     }
 
     /// 저장된 팬슬 타입을 안전하게 열거형으로 변환합니다.
@@ -577,7 +538,6 @@ extension PortalPDFPreviewView {
             ? highlighterLineWidth(for: penColor)
             : penLineWidth(for: penColor)
         editingPenPressureStrength = penPressureStrength(for: penColor)
-        editingPenStrokeSmoothingStrength = penStrokeSmoothingStrength(for: penColor)
     }
 
     /// 컬러 팝업 또는 두께 슬라이더 조작 즉시 현재 편집 컬러에 값을 반영합니다.
@@ -592,10 +552,6 @@ extension PortalPDFPreviewView {
             customizedPenPressureStrengths[editingPenColor.id] = min(
                 2,
                 max(0, editingPenPressureStrength)
-            )
-            customizedPenStrokeSmoothingStrengths[editingPenColor.id] = min(
-                2,
-                max(0, editingPenStrokeSmoothingStrength)
             )
         }
         selectedPenColor = editingPenColor
@@ -637,11 +593,6 @@ extension PortalPDFPreviewView {
                 ($0.id, min(2, max(0, CGFloat($0.pressureStrength ?? 1.0))))
             }
         )
-        customizedPenStrokeSmoothingStrengths = Dictionary(
-            uniqueKeysWithValues: records.prefix(30).map {
-                ($0.id, min(2, max(0, CGFloat($0.strokeSmoothingStrength ?? 0.5))))
-            }
-        )
 
         let restoredSelectedColor = restoredColors.first ?? PortalPDFPenColor.defaults[0]
         selectedPenColor = restoredSelectedColor
@@ -679,8 +630,7 @@ extension PortalPDFPreviewView {
                 penColor: penColor,
                 color: basePenColor(for: penColor),
                 lineWidth: customizedPenLineWidths[penColor.id] ?? 2.4,
-                pressureStrength: customizedPenPressureStrengths[penColor.id] ?? 1.0,
-                strokeSmoothingStrength: customizedPenStrokeSmoothingStrengths[penColor.id] ?? 0.5
+                pressureStrength: customizedPenPressureStrengths[penColor.id] ?? 1.0
             )
         }
         PortalPDFPenPaletteStore.save(records)

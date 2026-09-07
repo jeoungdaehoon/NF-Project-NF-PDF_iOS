@@ -15,33 +15,21 @@ import QuickLook
 import SwiftUI
 import UIKit
 
-/// 보정 강도에 따라 원본 직선 경로 또는 FileManager 방식의 보정 곡선을 생성합니다.
-enum PortalPDFStandardLinePathBuilder {
-    static func path(points: [CGPoint], correctionStrength: CGFloat) -> UIBezierPath? {
+/// FileManager PencilView와 같은 3점 Cubic 연결로 입력 좌표를 변경 없이 경로화합니다.
+enum PortalPDFPencilPathBuilder {
+    static func path(points: [CGPoint]) -> UIBezierPath? {
         guard let firstPoint = points.first else { return nil }
-        let normalizedStrength = min(2, max(0, correctionStrength))
-        let renderedPoints = normalizedStrength > 0
-            ? points.terminalFlickStabilized(strength: normalizedStrength)
-            : points
-        guard let renderedFirstPoint = renderedPoints.first else { return nil }
-
         let path = UIBezierPath()
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         path.flatness = 0.6
-        path.move(to: normalizedStrength > 0 ? renderedFirstPoint : firstPoint)
-        guard renderedPoints.count > 1 else { return path }
-
-        // 0%에서는 시작·끝을 포함한 모든 입력 좌표를 이동하거나 곡선화하지 않습니다.
-        if normalizedStrength == 0 {
-            renderedPoints.dropFirst().forEach { path.addLine(to: $0) }
-            return path
-        }
+        path.move(to: firstPoint)
+        guard points.count > 1 else { return path }
 
         var curvePoints = [CGPoint](repeating: .zero, count: 4)
-        curvePoints[0] = renderedFirstPoint
+        curvePoints[0] = firstPoint
         var curveIndex = 0
-        for point in renderedPoints.dropFirst() {
+        for point in points.dropFirst() {
             curveIndex += 1
             curvePoints[curveIndex] = point
             guard curveIndex == 3 else { continue }
@@ -227,8 +215,6 @@ struct PortalPDFKitView: UIViewRepresentable {
     let penType: PortalPDFPenType
     /// 압력 타입에서 센서 압력에 따른 굵기 변화량입니다. 1.0은 기본 반응입니다.
     let penPressureStrength: CGFloat
-    /// 펜을 떼는 순간 발생하는 끝 삐침을 완화할 강도입니다.
-    let penStrokeSmoothingStrength: CGFloat
     /// 형광펜 시작·끝 부분의 표시 방식입니다.
     let highlighterCap: PortalPDFHighlighterCap
     /// 지우개가 적용되는 화면 기준 지름입니다.
@@ -408,7 +394,6 @@ struct PortalPDFKitView: UIViewRepresentable {
             penLineWidth: penLineWidth,
             penType: penType,
             penPressureStrength: penPressureStrength,
-            penStrokeSmoothingStrength: penStrokeSmoothingStrength,
             highlighterCap: highlighterCap,
             shapeType: shapeType,
             shapeLineColor: UIColor(shapeLineColor),
@@ -430,7 +415,6 @@ struct PortalPDFKitView: UIViewRepresentable {
             lineWidth: penLineWidth,
             penType: penType,
             pressureStrength: penPressureStrength,
-            strokeSmoothingStrength: penStrokeSmoothingStrength,
             highlighterCap: highlighterCap,
             in: pdfView
         )
@@ -529,7 +513,6 @@ extension PortalPDFKitView: Equatable {
             lhs.penLineWidth == rhs.penLineWidth &&
             lhs.penType == rhs.penType &&
             lhs.penPressureStrength == rhs.penPressureStrength &&
-            lhs.penStrokeSmoothingStrength == rhs.penStrokeSmoothingStrength &&
             lhs.highlighterCap == rhs.highlighterCap &&
             lhs.eraserSize == rhs.eraserSize &&
             lhs.isEraserPreviewVisible == rhs.isEraserPreviewVisible &&
@@ -1192,6 +1175,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             .map(\.position) ?? []
     }
 
+    /// 테스트에서 올가미 회전·크기 변경이 선택 객체의 실제 화면 행렬에 적용됐는지 확인합니다.
+    func renderedLayerTransforms(for objectID: UUID) -> [CGAffineTransform] {
+        pageContentLayer.sublayers?
+            .filter { $0.portalPDFObjectID == objectID }
+            .map { $0.affineTransform() } ?? []
+    }
+
     /// 테스트에서 실제 Core Animation 스택이 편집 객체 입력 순서를 따르는지 확인합니다.
     var renderedContentLayerKindsInBackToFrontOrder: [String] {
         (pageContentLayer.sublayers ?? [])
@@ -1245,6 +1235,59 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         self.pdfView = pdfView
         self.pageEditData = pageEditData
         reloadInkPaths()
+    }
+
+    /// 지우개 전용 갱신: 변경된 필기만 교체하고 나머지 레이어와 래스터 캐시는 보존합니다.
+    func updateErasedPageEditData(_ updatedPage: PortalPDFPageEditDocument.Page?, changedObjectIDs: Set<UUID>? = nil) {
+        guard let previousPage = pageEditData,
+              let pageToOverlay = basePageToOverlayTransform,
+              strokes.count == inkLayers.count else {
+            updatePageEditData(updatedPage)
+            return
+        }
+        let updatedObjects = updatedPage?.objects ?? []
+        let previousInk = Dictionary(uniqueKeysWithValues: previousPage.objects
+            .filter { $0.kind == .ink || $0.kind == .pressureInk }.map { ($0.id, $0) })
+        let updatedInk = Dictionary(uniqueKeysWithValues: updatedObjects
+            .filter { $0.kind == .ink || $0.kind == .pressureInk }.map { ($0.id, $0) })
+        let changedIDs = changedObjectIDs ?? Set(previousInk.keys).union(updatedInk.keys).filter { id in
+            previousInk[id]?.kind != updatedInk[id]?.kind || previousInk[id]?.ink != updatedInk[id]?.ink
+        }
+        let displayIndices = Dictionary(uniqueKeysWithValues: updatedObjects.map { ($0.id, $0.displayIndex) })
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        var retainedStrokes: [Stroke] = []
+        var retainedLayers: [RasterStrokeLayer] = []
+        for (stroke, layer) in zip(strokes, inkLayers) {
+            if changedIDs.contains(stroke.objectID) {
+                layer.removeFromSuperlayer()
+            } else {
+                retainedStrokes.append(stroke)
+                retainedLayers.append(layer)
+            }
+        }
+        var replacementStrokes: [Stroke] = []
+        renderPageEditObjects(
+            updatedObjects.filter { changedIDs.contains($0.id) },
+            pageToOverlay: pageToOverlay,
+            pageUnitScale: max(0.0001, hypot(pageToOverlay.a, pageToOverlay.b)),
+            updatedStrokes: &replacementStrokes,
+            cachedPressurePaths: Dictionary(uniqueKeysWithValues: (page?.annotations ?? []).compactMap {
+                guard let pressure = $0 as? PortalPDFPressureInkAnnotation,
+                      changedIDs.contains(pressure.portalPageEditObjectID) else { return nil }
+                return (pressure.portalPageEditObjectID, pressure.strokePaths)
+            })
+        )
+        strokes = retainedStrokes + replacementStrokes
+        inkLayers = retainedLayers + replacementStrokes.map { makeStrokeLayer($0) }
+        // 주석 삭제로 입력 순서 번호가 당겨져도 이미지·텍스트와의 앞뒤 순서는 유지합니다.
+        pageContentLayer.sublayers?.forEach { layer in
+            if let id = layer.portalPDFObjectID, let index = displayIndices[id] {
+                layer.zPosition = CGFloat(index)
+            }
+        }
+        pageEditData = updatedPage
+        CATransaction.commit()
     }
 
     func updatePageEditData(
@@ -1529,6 +1572,52 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 x: layer.position.x + overlayDelta.x,
                 y: layer.position.y + overlayDelta.y
             )
+        }
+        CATransaction.commit()
+    }
+
+    /// FileManager의 `lassoItemView`처럼 선택된 객체 레이어 전체를 하나의 그룹으로 회전·확대합니다.
+    func transformLassoAnnotationPresentations(
+        _ annotations: [PDFAnnotation],
+        scale: CGFloat,
+        rotation: CGFloat,
+        around pageCenter: CGPoint
+    ) {
+        guard let pageToOverlay = basePageToOverlayTransform else { return }
+        let objectIDs = Set(annotations.map(\.portalPageEditObjectID))
+        guard !objectIDs.isEmpty else { return }
+
+        let overlayCenter = pageCenter.applying(pageToOverlay)
+        let pageToOverlayLinear = CGAffineTransform(
+            a: pageToOverlay.a,
+            b: pageToOverlay.b,
+            c: pageToOverlay.c,
+            d: pageToOverlay.d,
+            tx: 0,
+            ty: 0
+        )
+        guard abs(pageToOverlayLinear.a * pageToOverlayLinear.d
+            - pageToOverlayLinear.b * pageToOverlayLinear.c) > 0.000_001 else { return }
+        let pageTransform = CGAffineTransform(rotationAngle: rotation)
+            .scaledBy(x: scale, y: scale)
+        let overlayTransform = pageToOverlayLinear.inverted()
+            .concatenating(pageTransform)
+            .concatenating(pageToOverlayLinear)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pageContentLayer.sublayers?.forEach { layer in
+            guard let objectID = layer.portalPDFObjectID,
+                  objectIDs.contains(objectID) else { return }
+            let offset = CGPoint(
+                x: layer.position.x - overlayCenter.x,
+                y: layer.position.y - overlayCenter.y
+            ).applying(overlayTransform)
+            layer.position = CGPoint(
+                x: overlayCenter.x + offset.x,
+                y: overlayCenter.y + offset.y
+            )
+            layer.setAffineTransform(layer.affineTransform().concatenating(overlayTransform))
         }
         CATransaction.commit()
     }
@@ -1829,7 +1918,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         _ objects: [PortalPDFPageEditDocument.Object],
         pageToOverlay: CGAffineTransform,
         pageUnitScale: CGFloat,
-        updatedStrokes: inout [Stroke]
+        updatedStrokes: inout [Stroke],
+        cachedPressurePaths: [UUID: [UIBezierPath]] = [:]
     ) {
         for object in objects {
             switch object.kind {
@@ -1859,12 +1949,13 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             case .pressureInk:
                 guard let ink = object.ink,
                       let color = UIColor.portalColor(rgba: ink.colorRGBA) else { continue }
-                for fragment in ink.pressureFragments {
-                    let points = fragment.points.map(\.cgPoint)
-                    let pressures = fragment.pressures.map { CGFloat($0) }
-                    guard let pagePath = PortalPDFPressureInkAnnotation.makeStrokePath(
-                        points: points,
-                        pressures: pressures,
+                for (fragmentIndex, fragment) in ink.pressureFragments.enumerated() {
+                    let cachedPaths = cachedPressurePaths[object.id]
+                    guard let pagePath = cachedPaths.flatMap({ paths in
+                        paths.count == ink.pressureFragments.count ? paths[fragmentIndex] : nil
+                    }) ?? PortalPDFPressureInkAnnotation.makeStrokePath(
+                        points: fragment.points.map(\.cgPoint),
+                        pressures: fragment.pressures.map { CGFloat($0) },
                         baseLineWidth: CGFloat(ink.lineWidth)
                     ) else { continue }
                     var transform = pageToOverlay
@@ -2605,7 +2696,6 @@ extension PortalPDFKitView {
             let penLineWidth: CGFloat
             let penType: PortalPDFPenType
             let penPressureStrength: CGFloat
-            let penStrokeSmoothingStrength: CGFloat
             let highlighterCap: PortalPDFHighlighterCap
             let shapeType: PortalPDFShapeType
             let shapeLineColorComponents: [CGFloat]
@@ -2629,8 +2719,6 @@ extension PortalPDFKitView {
         var penType: PortalPDFPenType = .fixed
         /// 압력 타입에서 센서 압력에 따른 굵기 변화량입니다.
         var penPressureStrength: CGFloat = 1.0
-        /// 펜 스트로크의 끝 삐침을 완화할 현재 강도입니다.
-        var penStrokeSmoothingStrength: CGFloat = 0.5
         /// 형광펜 시작·끝 부분의 표시 방식입니다.
         var highlighterCap: PortalPDFHighlighterCap = .round
         /// 지우개가 적용되는 화면 기준 지름입니다.
@@ -3699,7 +3787,6 @@ extension PortalPDFKitView {
             penLineWidth: CGFloat,
             penType: PortalPDFPenType,
             penPressureStrength: CGFloat,
-            penStrokeSmoothingStrength: CGFloat,
             highlighterCap: PortalPDFHighlighterCap,
             shapeType: PortalPDFShapeType,
             shapeLineColor: UIColor,
@@ -3719,7 +3806,6 @@ extension PortalPDFKitView {
                 penLineWidth: penLineWidth,
                 penType: penType,
                 penPressureStrength: penPressureStrength,
-                penStrokeSmoothingStrength: penStrokeSmoothingStrength,
                 highlighterCap: highlighterCap,
                 shapeType: shapeType,
                 shapeLineColorComponents: shapeLineColor.cgColor.components ?? [],
@@ -4738,7 +4824,6 @@ extension PortalPDFKitView {
             lineWidth: CGFloat,
             penType: PortalPDFPenType,
             pressureStrength: CGFloat,
-            strokeSmoothingStrength: CGFloat,
             highlighterCap: PortalPDFHighlighterCap,
             in pdfView: PDFView
         ) {
@@ -4746,7 +4831,6 @@ extension PortalPDFKitView {
             penLineWidth = max(0.3, lineWidth)
             self.penType = penType
             penPressureStrength = min(2, max(0, pressureStrength))
-            penStrokeSmoothingStrength = min(2, max(0, strokeSmoothingStrength))
             self.highlighterCap = highlighterCap
             activePenOverlayLayer?.strokeColor = color.cgColor
             activePenOverlayLayer?.lineWidth = penLineWidth * currentPDFScaleFactor
@@ -6475,7 +6559,7 @@ extension PortalPDFKitView {
                    !selectedLassoAnnotations.isEmpty {
                     let center = CGPoint(x: selectedLassoBounds.midX, y: selectedLassoBounds.midY)
                     activeLassoTransformState = (
-                        distance: max(hypot(point.x - center.x, point.y - center.y), 1),
+                        distance: max(hypot(point.x - center.x, point.y - center.y), 1 / currentPDFScaleFactor),
                         angle: atan2(point.y - center.y, point.x - center.x)
                     )
                     isMovingLassoSelection = false
@@ -6500,10 +6584,10 @@ extension PortalPDFKitView {
                 if let transformState = activeLassoTransformState,
                    let selectedLassoBounds {
                     let center = CGPoint(x: selectedLassoBounds.midX, y: selectedLassoBounds.midY)
-                    let distance = max(hypot(point.x - center.x, point.y - center.y), 1)
+                    let distance = max(hypot(point.x - center.x, point.y - center.y), 1 / currentPDFScaleFactor)
                     let angle = atan2(point.y - center.y, point.x - center.x)
                     transformLassoSelection(
-                        scale: distance / max(transformState.distance, 1),
+                        scale: distance / max(transformState.distance, 1 / currentPDFScaleFactor),
                         rotation: normalizedAngle(angle - transformState.angle),
                         on: page
                     )
@@ -6652,19 +6736,24 @@ extension PortalPDFKitView {
 
         /// 선택된 주석 전체를 선택 영역 중심 기준으로 확대·축소하고 회전합니다.
         func transformLassoSelection(scale proposedScale: CGFloat, rotation: CGFloat, on page: PDFPage) {
-            guard let selectedLassoBounds, !selectedLassoAnnotations.isEmpty else { return }
+            guard let selectedLassoBounds, !selectedLassoAnnotations.isEmpty,
+                  proposedScale.isFinite, proposedScale > 0, rotation.isFinite else { return }
             let pageBounds = page.bounds(for: .cropBox)
-            let minimumScale = max(
+            // 24pt는 PDF 좌표가 아니라 화면 조작 크기입니다. 이미 작은 선택 영역을
+            // 강제로 키우거나, 이미 큰 영역을 회전만 했는데 줄이지 않도록 1을 포함합니다.
+            let minimumPageSize = 24 / max(currentPDFScaleFactor, 0.0001)
+            let minimumScale = min(1, max(
                 0.2,
-                max(24 / max(selectedLassoBounds.width, 1), 24 / max(selectedLassoBounds.height, 1))
-            )
-            let maximumScale = min(
+                max(minimumPageSize / max(selectedLassoBounds.width, 0.0001),
+                    minimumPageSize / max(selectedLassoBounds.height, 0.0001))
+            ))
+            let maximumScale = max(1, min(
                 5,
                 min(
                     pageBounds.width / max(selectedLassoBounds.width, 1),
                     pageBounds.height / max(selectedLassoBounds.height, 1)
                 )
-            )
+            ))
             let scale = min(max(proposedScale, minimumScale), maximumScale)
             let center = CGPoint(x: selectedLassoBounds.midX, y: selectedLassoBounds.midY)
             let cosine = cos(rotation)
@@ -6698,27 +6787,47 @@ extension PortalPDFKitView {
                 } else if let shapeAnnotation = annotation as? PortalPDFShapeAnnotation {
                     shapeAnnotation.editingBounds = transformedRect(shapeAnnotation.editingBounds)
                     shapeAnnotation.rotationAngle += rotation
+                } else if let textAnnotation = annotation as? PortalPDFTextAnnotation {
+                    textAnnotation.editingBounds = transformedRect(textAnnotation.editingBounds)
+                    textAnnotation.fontSize = max(1, textAnnotation.fontSize * scale)
                 } else if let paths = annotation.paths, !paths.isEmpty {
-                    var transform = CGAffineTransform.identity
-                    transform = transform.translatedBy(x: center.x, y: center.y)
-                    transform = transform.rotated(by: rotation)
-                    transform = transform.scaledBy(x: scale, y: scale)
-                    transform = transform.translatedBy(x: -center.x, y: -center.y)
-                    let transformedPaths = paths.compactMap { path -> UIBezierPath? in
-                        var pathTransform = transform
-                        guard let transformedPath = path.cgPath.copy(using: &pathTransform) else { return nil }
+                    let pageTransform = CGAffineTransform(translationX: center.x, y: center.y)
+                        .rotated(by: rotation)
+                        .scaledBy(x: scale, y: scale)
+                        .translatedBy(x: -center.x, y: -center.y)
+                    let transformedPagePaths = paths.compactMap { path -> UIBezierPath? in
+                        var localToPage = CGAffineTransform(
+                            translationX: annotation.bounds.minX,
+                            y: annotation.bounds.minY
+                        ).concatenating(pageTransform)
+                        guard let transformedPath = path.cgPath.copy(using: &localToPage) else { return nil }
                         return UIBezierPath(cgPath: transformedPath)
                     }
-                    paths.forEach { annotation.remove($0) }
-                    transformedPaths.forEach { annotation.add($0) }
-                    if let pathBounds = transformedPaths.map(\.bounds).unionRect {
-                        let padding = max(annotation.border?.lineWidth ?? 1, 2)
-                        annotation.bounds = pathBounds.insetBy(dx: -padding, dy: -padding)
+                    if let pathBounds = transformedPagePaths.map(\.bounds).unionRect {
+                        let scaledLineWidth = (annotation.border?.lineWidth ?? 1) * scale
+                        let padding = max(scaledLineWidth, 2)
+                        let newBounds = pathBounds.insetBy(dx: -padding, dy: -padding)
+                        let localPaths = transformedPagePaths.map {
+                            $0.translatedBy(dx: -newBounds.minX, dy: -newBounds.minY)
+                        }
+                        paths.forEach { annotation.remove($0) }
+                        localPaths.forEach { annotation.add($0) }
+                        annotation.bounds = newBounds
+                        let border = PDFBorder()
+                        border.lineWidth = scaledLineWidth
+                        annotation.border = border
                     }
                 } else {
                     annotation.bounds = transformedRect(annotation.bounds)
                 }
             }
+            (pageOverlayViews[ObjectIdentifier(page)] as? PortalPDFInkOverlayView)?
+                .transformLassoAnnotationPresentations(
+                    selectedLassoAnnotations,
+                    scale: scale,
+                    rotation: rotation,
+                    around: center
+                )
             selectedLassoOutlinePoints = selectedLassoOutlinePoints.map(transformedPoint)
 
             self.selectedLassoBounds = CGRect(
@@ -7066,9 +7175,15 @@ extension PortalPDFKitView {
                     performPendingPencilDoubleTapIfNeeded()
                     return
                 }
-                appendPenSamples(viewPoints, pressures: viewPressures, to: page, in: pdfView)
+                appendPenSamples(
+                    viewPoints,
+                    pressures: viewPressures,
+                    to: page,
+                    in: pdfView,
+                    preservesTerminalSample: true
+                )
                 if penType != .pressure {
-                    rebuildStandardPenPathsForLineCorrection()
+                    rebuildStandardPenPaths()
                 }
                 let pointCountBeforeDot = activePenPagePoints.count
                 ensureVisibleDotIfNeeded(pagePath: pagePath)
@@ -7827,14 +7942,19 @@ extension PortalPDFKitView {
             _ viewPoints: S,
             pressures: P,
             to page: PDFPage,
-            in pdfView: PDFView
+            in pdfView: PDFView,
+            preservesTerminalSample: Bool = false
         ) where S.Element == CGPoint, P.Element == CGFloat {
             let pairedSamples = Array(zip(viewPoints, pressures))
             // FileManager의 기본 Round Pencil은 이벤트당 마지막 실제 위치 하나를 사용하고
             // 3점마다 곡선 조각을 추가합니다. 압력 펜만 coalesced 좌표 전체를 유지합니다.
             let samples = penType == .pressure ? pairedSamples : Array(pairedSamples.suffix(1))
             var didExtendVisiblePath = false
-            for (viewPoint, pressure) in samples {
+            for (sampleIndex, sample) in samples.enumerated() {
+                let (viewPoint, pressure) = sample
+                let isTerminalSample = penType == .pressure
+                    && preservesTerminalSample
+                    && sampleIndex == samples.count - 1
                 // 페이지 사이 여백이나 다른 페이지로 넘어간 좌표는 현재 획에 섞지 않습니다.
                 guard pdfView.page(for: viewPoint, nearest: false) === page else { continue }
                 if let lastViewPoint = activePenLastViewPoint {
@@ -7842,27 +7962,16 @@ extension PortalPDFKitView {
                     let deltaY = viewPoint.y - lastViewPoint.y
                     // 너무 가까운 중복점만 제거합니다. 임계값이 크면 원이나 작은 글자의 곡선 샘플이
                     // 빠져 직선 조각처럼 보이므로 0.25pt보다 작은 입력만 제외합니다.
-                    guard deltaX * deltaX + deltaY * deltaY >= 0.0625 else { continue }
+                    guard deltaX * deltaX + deltaY * deltaY >= 0.0625 || isTerminalSample else { continue }
                 }
                 let pagePoint = pdfView.convert(viewPoint, to: page)
                 let normalizedPressure = adjustedPenPressure(pressure)
-                // 센서 압력의 프레임 간 미세 진동을 저역 통과 필터로 완화합니다.
-                // 저장과 실시간 Overlay가 같은 값을 사용하므로 손을 뗀 뒤 굵기가 달라지지 않습니다.
-                let filteredPressure: CGFloat
-                if let previousPressure = activePenPressures.last {
-                    filteredPressure = previousPressure * 0.62 + normalizedPressure * 0.38
-                } else {
-                    filteredPressure = normalizedPressure
-                }
                 activePenPagePoints.append(pagePoint)
                 activePenViewPoints.append(viewPoint)
-                activePenPressures.append(filteredPressure)
+                // 마지막 입력까지 이전 압력값에 끌려가지 않도록 실제 조정 압력을 보관합니다.
+                // 센서 미세 진동 완화는 경로 생성 단계에서 내부 샘플에만 적용합니다.
+                activePenPressures.append(normalizedPressure)
                 if penType == .pressure {
-                    activePenPath?.addLine(to: pagePoint)
-                    activePenOverlayPath?.addLine(to: viewPoint)
-                    didExtendVisiblePath = true
-                } else if penStrokeSmoothingStrength <= 0 {
-                    // 라인 보정 0%는 실시간 표시부터 원본 입력점을 직선으로 그대로 연결합니다.
                     activePenPath?.addLine(to: pagePoint)
                     activePenOverlayPath?.addLine(to: viewPoint)
                     didExtendVisiblePath = true
@@ -7917,24 +8026,19 @@ extension PortalPDFKitView {
             return true
         }
 
-        /// 0%는 원본 직선, 그보다 큰 값은 보정된 FileManager cubic 경로로 최종 화면과 저장 경로를 맞춥니다.
-        func rebuildStandardPenPathsForLineCorrection() {
+        /// 보정 좌표를 만들지 않고 FileManager PencilView의 Cubic 경로로 화면과 저장 결과를 맞춥니다.
+        func rebuildStandardPenPaths() {
             guard let activePenPath,
                   let activePenOverlayPath else { return }
-            guard let correctedPagePath = PortalPDFStandardLinePathBuilder.path(
-                points: activePenPagePoints,
-                correctionStrength: penStrokeSmoothingStrength
-            ), let correctedViewPath = PortalPDFStandardLinePathBuilder.path(
-                points: activePenViewPoints,
-                correctionStrength: penStrokeSmoothingStrength
-            ) else {
+            guard let pagePath = PortalPDFPencilPathBuilder.path(points: activePenPagePoints),
+                  let viewPath = PortalPDFPencilPathBuilder.path(points: activePenViewPoints) else {
                 return
             }
 
             activePenPath.removeAllPoints()
-            activePenPath.append(correctedPagePath)
+            activePenPath.append(pagePath)
             activePenOverlayPath.removeAllPoints()
-            activePenOverlayPath.append(correctedViewPath)
+            activePenOverlayPath.append(viewPath)
         }
 
         /// 이동이 거의 없는 짧은 한글 획도 둥근 점으로 표시되도록 최소 길이를 추가합니다.
@@ -8102,8 +8206,20 @@ extension PortalPDFKitView {
             var dirtyViewRects: [CGRect] = []
             for identifier in pageOrder {
                 guard let page = pages[identifier], let points = pointsByPage[identifier] else { continue }
-                let pageDidMutate = eraseAnnotations(on: page, along: points, baseRadius: eraserRadius)
+                var changedIDs = Set<UUID>()
+                let pageDidMutate = eraseAnnotations(on: page, along: points, baseRadius: eraserRadius) {
+                    changedIDs.insert($0)
+                }
                 didMutate = pageDidMutate || didMutate
+                if pageDidMutate {
+                    guard let document = pdfView.document else { continue }
+                    let pageIndex = document.index(for: page)
+                    pageEditDocument.updateErasedObjects(at: pageIndex, from: document, changedIDs: changedIDs)
+                    PortalPDFPageEditDocument.suppressManagedAnnotations(on: page)
+                    (pageOverlayViews[identifier] as? PortalPDFInkOverlayView)?.updateErasedPageEditData(
+                        pageEditDocument.page(at: pageIndex), changedObjectIDs: changedIDs
+                    )
+                }
                 if pageDidMutate,
                    let pointBounds = points.boundingRect {
                     let dirtyPageRect = pointBounds.insetBy(
@@ -8115,9 +8231,6 @@ extension PortalPDFKitView {
             }
             guard didMutate else { return }
             activeEraserDidMutate = true
-            pageOrder.compactMap { pages[$0] }.forEach { page in
-                refreshPersistentAnnotationOverlay(on: page)
-            }
             refreshPDFViewDuringEraser(in: pdfView, dirtyViewRects: dirtyViewRects)
         }
 
@@ -8139,7 +8252,8 @@ extension PortalPDFKitView {
         func eraseAnnotations(
             on page: PDFPage,
             along points: [CGPoint],
-            baseRadius: CGFloat
+            baseRadius: CGFloat,
+            onChanged: (UUID) -> Void = { _ in }
         ) -> Bool {
             guard !points.isEmpty else { return false }
             let annotationSnapshot = Array(page.annotations.reversed())
@@ -8155,12 +8269,14 @@ extension PortalPDFKitView {
                     annotation.bounds.insetBy(dx: -hitExpansion, dy: -hitExpansion).contains($0)
                 }
                 guard !hitPoints.isEmpty else { continue }
-                didErase = eraseStandardInkAnnotation(
+                let changed = eraseStandardInkAnnotation(
                     annotation,
                     on: page,
                     points: hitPoints,
                     baseRadius: baseRadius
-                ) || didErase
+                )
+                if changed { onChanged(annotation.portalPageEditObjectID) }
+                didErase = changed || didErase
             }
 
             // 압력선도 한 프레임의 모든 지우개 좌표를 메모리에서 먼저 반영합니다.
@@ -8174,12 +8290,14 @@ extension PortalPDFKitView {
                     annotation.bounds.insetBy(dx: -expansion, dy: -expansion).contains(point)
                 }
                 guard !hitPoints.isEmpty else { continue }
-                didErase = erasePressureInkAnnotation(
+                let changed = erasePressureInkAnnotation(
                     annotation,
                     on: page,
                     points: hitPoints,
                     baseRadius: baseRadius
-                ) || didErase
+                )
+                if changed { onChanged(annotation.portalPageEditObjectID) }
+                didErase = changed || didErase
             }
             return didErase
         }
@@ -8234,6 +8352,7 @@ extension PortalPDFKitView {
                 baseLineWidth: baseLineWidth,
                 color: color
             ) {
+                groupedAnnotation.setValue(annotation.portalStableEditID.uuidString, forAnnotationKey: .name)
                 page.addAnnotation(groupedAnnotation)
             }
             return true
@@ -8726,8 +8845,7 @@ extension PortalPDFKitView {
                 overlayLayer.shadowOpacity = 0
                 overlayLayer.shadowRadius = 0
             }
-            // FileManager처럼 입력 중에는 누적 경로를 그대로 표시합니다. 전체 경로 스무딩은
-            // 획 종료 시 한 번만 수행해 긴 획에서 프레임마다 O(n) 재계산하지 않습니다.
+            // FileManager처럼 입력 중에는 새 3점 Cubic 조각만 누적해 표시합니다.
             overlayLayer.path = activePenOverlayPath.cgPath
             CATransaction.commit()
         }
@@ -8739,26 +8857,10 @@ extension PortalPDFKitView {
                   activePenViewPoints.count == activePenPressures.count else { return }
 
             let overlayLayer = activePressureOverlayLayer ?? makePressurePenOverlayLayer()
-            // 긴 압력선도 화면 표시 샘플 수를 제한해 프레임 계산량을 일정하게 유지합니다.
-            // 원본 전 좌표는 그대로 보관하며 획 종료 시 한 번만 전체 정밀 경로로 저장합니다.
-            let displaySampleLimit = 240
-            let sampleIndices: [Int]
-            if activePenViewPoints.count <= displaySampleLimit {
-                sampleIndices = Array(activePenViewPoints.indices)
-            } else {
-                let step = Double(activePenViewPoints.count - 1) / Double(displaySampleLimit - 1)
-                sampleIndices = (0..<displaySampleLimit).map { index in
-                    min(activePenViewPoints.count - 1, Int((Double(index) * step).rounded()))
-                }
-            }
-            let displayPoints = sampleIndices.map { activePenViewPoints[$0] }
-            let displayPressures = sampleIndices.map { activePenPressures[$0] }
-            let stabilizedViewPoints = penStrokeSmoothingStrength > 0
-                ? displayPoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
-                : displayPoints
+            // 완료 경로와 동일한 입력을 사용해 손을 뗄 때 세부 형상이 달라지지 않게 합니다.
             let path = PortalPDFPressureInkAnnotation.makeStrokePath(
-                points: stabilizedViewPoints,
-                pressures: displayPressures,
+                points: activePenViewPoints,
+                pressures: activePenPressures,
                 baseLineWidth: penLineWidth * currentPDFScaleFactor
             )
 
@@ -8981,18 +9083,12 @@ extension PortalPDFKitView {
 
         /// 압력값 변화가 반영된 자유선을 하나의 연속 Annotation으로 저장합니다.
         func addPressureInkAnnotations(to page: PDFPage) -> PDFAnnotation? {
-            let stabilizedViewPoints = penStrokeSmoothingStrength > 0
-                ? activePenViewPoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
-                : activePenViewPoints
-            let stabilizedPagePoints = penStrokeSmoothingStrength > 0
-                ? activePenPagePoints.terminalFlickStabilized(strength: penStrokeSmoothingStrength)
-                : activePenPagePoints
             guard activePenPagePoints.count > 1,
                   activePenPagePoints.count == activePenPressures.count,
                   activePenViewPoints.count == activePenPressures.count,
                   let pdfView,
                   let viewPath = PortalPDFPressureInkAnnotation.makeStrokePath(
-                    points: stabilizedViewPoints,
+                    points: activePenViewPoints,
                     pressures: activePenPressures,
                     baseLineWidth: penLineWidth * currentPDFScaleFactor
                   ) else { return nil }
@@ -9002,7 +9098,7 @@ extension PortalPDFKitView {
             let renderedPagePath = UIBezierPath(cgPath: viewPath.cgPath)
             renderedPagePath.apply(viewToPageTransform(for: page, in: pdfView))
             let annotation = PortalPDFPressureInkAnnotation(
-                points: stabilizedPagePoints,
+                points: activePenPagePoints,
                 pressures: activePenPressures,
                 baseLineWidth: penLineWidth,
                 color: penColor,
@@ -9042,11 +9138,7 @@ extension PortalPDFKitView {
             lineWidth: CGFloat? = nil,
             isPathSmoothed: Bool = false
         ) -> PDFAnnotation? {
-            let smoothedPath = isPathSmoothed
-                ? path
-                : path.smoothedForPDFInk(
-                    strokeSmoothingStrength: selectedTool == .pen ? penStrokeSmoothingStrength : 0
-                )
+            let smoothedPath = isPathSmoothed ? path : path.smoothedForPDFInk()
             let lineCapStyle = selectedTool == .highlighter ? highlighterCap.lineCapStyle : CGLineCap.round
             smoothedPath.lineCapStyle = lineCapStyle
             smoothedPath.lineJoinStyle = .round

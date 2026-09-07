@@ -30,25 +30,6 @@ extension PortalPDFPreviewView {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if isMarkupToolbarVertical {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 8) {
-                        ForEach(PortalPDFShapeType.allCases) { shapeType in
-                            shapeTypeButton(shapeType)
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(PortalPDFShapeType.allCases) { shapeType in
-                            shapeTypeButton(shapeType)
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-            }
         }
         .padding(10)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
@@ -112,24 +93,6 @@ extension PortalPDFPreviewView {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("텍스트 박스 주석 추가")
-    }
-
-    /// 박스 상세 편집창에서 도형 종류를 선택하는 공통 버튼입니다.
-    func shapeTypeButton(_ shapeType: PortalPDFShapeType) -> some View {
-        Button {
-            selectedShapeType = shapeType
-            pendingShapeAnnotation = PortalPDFPendingShape(shapeType: shapeType)
-            // 도형 종류를 선택하면 화면 중앙에 즉시 추가하고 바로 편집할 수 있게 합니다.
-            isShapeOptionPresented = false
-        } label: {
-            Image(systemName: shapeType.systemImageName)
-                .font(.system(size: 24, weight: .semibold))
-                .frame(width: 48, height: 48)
-                .foregroundStyle(selectedShapeType == shapeType ? Color.black : Color.white.opacity(0.86))
-                .background(selectedShapeType == shapeType ? Color.white : Color.white.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .accessibilityLabel("\(shapeType.title) 도형 선택")
     }
 
     /// 팬슬 컬러 값 변경과 동일한 방식으로 박스 선·배경 컬러를 변경합니다.

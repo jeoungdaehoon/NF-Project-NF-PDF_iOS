@@ -132,7 +132,7 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(overlay.renderedTextResizeHandleCount == 8)
     }
 
-    @Test func lassoSelectsAndMovesInkImageShapeAndTextAsOneLiveGroup() throws {
+    @Test func lassoMovesScalesAndRotatesInkImageShapeAndTextAsOneLiveGroup() throws {
         let pdfDocument = try #require(PDFDocument(data: makeOnePagePDFData()))
         let page = try #require(pdfDocument.page(at: 0))
 
@@ -212,12 +212,78 @@ struct PortalPDFPageEditPersistenceTests {
             #expect(zip(before, after).allSatisfy { $0.0 != $0.1 })
         }
 
+        let transformsBefore = Dictionary(uniqueKeysWithValues: selectedIDs.map {
+            ($0, overlay.renderedLayerTransforms(for: $0))
+        })
+        let originalImageRotation = image.rotationAngle
+        let originalShapeRotation = shape.rotationAngle
+        coordinator.transformLassoSelection(scale: 1.15, rotation: .pi / 12, on: page)
+
+        #expect(image.rotationAngle != originalImageRotation)
+        #expect(shape.rotationAngle != originalShapeRotation)
+        for objectID in selectedIDs {
+            let before = try #require(transformsBefore[objectID])
+            let after = overlay.renderedLayerTransforms(for: objectID)
+            #expect(!before.isEmpty)
+            #expect(after.count == before.count)
+            #expect(zip(before, after).allSatisfy { $0.0 != $0.1 })
+        }
+
         coordinator.refreshPersistentAnnotationOverlay(on: page)
         coordinator.clearLassoSelection()
         let persistedText = try #require(
             coordinator.pageEditDocument.page(at: 0)?.objects.first(where: { $0.kind == .text })?.text
         )
         #expect(persistedText.bounds == text.editingBounds)
+    }
+
+    @Test func lassoScalingAt1000PercentDoesNotJumpAndRestoresStrokeWidths() throws {
+        for zoom: CGFloat in [1, 10] {
+            let document = try #require(PDFDocument(data: makeOnePagePDFData()))
+            let page = try #require(document.page(at: 0))
+            let pressure = try #require(PortalPDFPressureInkAnnotation.groupedAnnotation(
+                fragments: [.init(points: [CGPoint(x: 102, y: 102), CGPoint(x: 104, y: 104)],
+                                  pressures: [0.7, 0.7])],
+                baseLineWidth: 2, color: .black
+            ))
+            page.addAnnotation(pressure)
+            let ink = PDFAnnotation(bounds: CGRect(x: 100, y: 100, width: 10, height: 10), forType: .ink, withProperties: nil)
+            let path = UIBezierPath()
+            path.move(to: CGPoint(x: 2, y: 2))
+            path.addLine(to: CGPoint(x: 4, y: 4))
+            ink.add(path)
+            let border = PDFBorder()
+            border.lineWidth = 2
+            ink.border = border
+            page.addAnnotation(ink)
+            let view = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+            view.document = document
+            view.minScaleFactor = 0.1
+            view.maxScaleFactor = 10
+            view.scaleFactor = zoom
+            let coordinator = PortalPDFKitView.Coordinator()
+            coordinator.pdfView = view
+            coordinator.selectedLassoAnnotations = [pressure, ink]
+            let initialBounds = CGRect(x: 100, y: 100, width: 60 / zoom, height: 60 / zoom)
+            coordinator.selectedLassoBounds = initialBounds
+            coordinator.transformLassoSelection(scale: 0.5, rotation: 0, on: page)
+            #expect(abs(try #require(coordinator.selectedLassoBounds).height - initialBounds.height * 0.5) < 0.0001)
+            #expect(ink.border?.lineWidth == 1)
+            #expect(PortalPDFPressureInkAnnotation.storedBaseLineWidth(in: pressure) == 1)
+            coordinator.transformLassoSelection(scale: 2, rotation: 0, on: page)
+            #expect(abs(try #require(coordinator.selectedLassoBounds).height - initialBounds.height) < 0.0001)
+            #expect(ink.border?.lineWidth == 2)
+            #expect(PortalPDFPressureInkAnnotation.storedBaseLineWidth(in: pressure) == 2)
+            let captured = try #require(PortalPDFPageEditDocument.capture(from: document).page(at: 0))
+            #expect(captured.objects.compactMap(\.ink).allSatisfy { $0.lineWidth == 2 })
+            // An already sub-minimum selection must not grow on shrinking or rotation.
+            coordinator.selectedLassoBounds = CGRect(x: 100, y: 100, width: 12 / zoom, height: 12 / zoom)
+            let smallBounds = coordinator.selectedLassoBounds
+            coordinator.transformLassoSelection(scale: 0.9, rotation: 0, on: page)
+            #expect(coordinator.selectedLassoBounds == smallBounds)
+            coordinator.transformLassoSelection(scale: 1, rotation: .pi / 8, on: page)
+            #expect(coordinator.selectedLassoBounds?.size == smallBounds?.size)
+        }
     }
 
     @Test func pageEditsRoundTripOutsideThePDFAndRestoreInteractionProxies() throws {
@@ -383,6 +449,72 @@ struct PortalPDFPageEditPersistenceTests {
         #expect(overlay.completedStrokeRasterImageCount == 1)
         #expect(hiddenWhileRasterizing)
         #expect(overlay.hiddenCompletedStrokeLayerCount == 0)
+    }
+
+    @Test func eraserUpdatesOnlyChangedStrokeLayers() throws {
+        let document = try #require(PDFDocument(data: makeOnePagePDFData()))
+        let page = try #require(document.page(at: 0))
+        let pressure = try #require(PortalPDFPressureInkAnnotation.groupedAnnotation(
+            fragments: [.init(points: [CGPoint(x: 20, y: 200), CGPoint(x: 200, y: 200)],
+                              pressures: [0.7, 0.7])],
+            baseLineWidth: 4, color: .black
+        ))
+        page.addAnnotation(pressure)
+        for index in 0..<120 { addInk(to: page, index: index) }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 10, height: 10)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 10, height: 10))
+        }
+        page.addAnnotation(PortalPDFImageAnnotation(
+            image: image, bounds: CGRect(x: 300, y: 300, width: 40, height: 40)
+        ))
+        var edits = PortalPDFPageEditDocument.capture(from: document)
+        let pdfView = PDFView(frame: CGRect(x: 0, y: 0, width: 612, height: 792))
+        pdfView.document = document
+        pdfView.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: pdfView.bounds)
+        overlay.configure(page: page, pdfView: pdfView, pageEditData: edits.page(at: 0))
+        let generation = overlay.pageEditRenderGeneration
+        func contentLayers() -> [CALayer] {
+            (overlay.layer.sublayers ?? []).flatMap { $0.sublayers ?? [] }
+                .filter { $0.name?.hasPrefix("nf.") == true }
+        }
+        let originalLayers = contentLayers()
+        let pressureName = "nf.ink.\(pressure.portalPageEditObjectID.uuidString)"
+        let untouched = originalLayers.filter { $0.name != pressureName }
+        #expect(untouched.count == 121)
+        let originalPressureLayer = try #require(originalLayers.first { $0.name == pressureName })
+
+        guard case .updated = pressure.eraseStrokeFragments(
+            around: [CGPoint(x: 110, y: 200)], eraserRadius: 10
+        ) else { Issue.record("Expected a split pressure stroke"); return }
+        let changedIDs: Set<UUID> = [pressure.portalPageEditObjectID]
+        edits.updateErasedObjects(at: 0, from: document, changedIDs: changedIDs)
+        let fullyCaptured = try #require(PortalPDFPageEditDocument.capture(from: document).page(at: 0))
+        let incrementallyCaptured = try #require(edits.page(at: 0))
+        #expect(incrementallyCaptured.objects.map(\.id) == fullyCaptured.objects.map(\.id))
+        #expect(incrementallyCaptured.objects.map(\.ink) == fullyCaptured.objects.map(\.ink))
+        overlay.updateErasedPageEditData(edits.page(at: 0), changedObjectIDs: changedIDs)
+        #expect(overlay.renderedInkStrokeCount == 122)
+        #expect(originalPressureLayer.superlayer == nil)
+        #expect(untouched.allSatisfy { original in contentLayers().contains { $0 === original } })
+        #expect(overlay.pageEditRenderGeneration == generation)
+        // Full deletion renumbers z positions without dropping unaffected raster caches.
+        page.removeAnnotation(pressure)
+        edits.updateErasedObjects(at: 0, from: document, changedIDs: changedIDs)
+        #expect(edits.page(at: 0)?.objects.first?.displayIndex == 0)
+        overlay.updateErasedPageEditData(edits.page(at: 0), changedObjectIDs: changedIDs)
+        #expect(overlay.renderedInkStrokeCount == 120)
+        #expect(untouched.allSatisfy { original in contentLayers().contains { $0 === original } })
+        #expect(contentLayers().allSatisfy { $0.name != pressureName })
+        #expect(overlay.renderedContentLayerKindsInBackToFrontOrder == Array(repeating: "ink", count: 120) + ["image"])
+        #expect(overlay.pageEditRenderGeneration == generation)
+        // Removing the final ink objects must leave no stale visible strokes.
+        page.annotations.filter { $0.isPortalInkAnnotation }.forEach { page.removeAnnotation($0) }
+        edits.updatePage(at: 0, from: document)
+        overlay.updateErasedPageEditData(edits.page(at: 0))
+        #expect(overlay.renderedInkStrokeCount == 0)
+        #expect(overlay.renderedImageCount == 1)
     }
 
     @Test func overlayBoundsChangesTransformContainersWithoutRebuildingObjects() throws {

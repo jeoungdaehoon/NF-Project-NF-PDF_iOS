@@ -160,8 +160,6 @@ struct PortalPDFPreviewView: View {
     @State var customizedPenLineWidths: [String: CGFloat] = [:]
     /// 컬러별 압력 반응 강도입니다. 1.0은 기존 압력 반응, 0은 고정 굵기, 2.0은 강화된 반응입니다.
     @State var customizedPenPressureStrengths: [String: CGFloat] = [:]
-    /// 컬러별 스트로크 끝 삐침 완화 강도입니다. 100%를 초과하면 최대 200%까지 추가 완화합니다.
-    @State var customizedPenStrokeSmoothingStrengths: [String: CGFloat] = [:]
     /// 형광펜에서만 사용하는 컬러별 색상과 두께입니다. 펜슬 설정과 분리해 적용합니다.
     @State var customizedHighlighterColors: [String: Color] = [:]
     @State var customizedHighlighterLineWidths: [String: CGFloat] = [:]
@@ -175,8 +173,6 @@ struct PortalPDFPreviewView: View {
     @State var editingPenLineWidth: CGFloat = 2.4
     /// 컬러 편집 중 조절하는 임시 압력 반응 강도입니다.
     @State var editingPenPressureStrength: CGFloat = 1.0
-    /// 컬러 편집 중 조절하는 임시 스트로크 끝 삐침 완화 강도입니다.
-    @State var editingPenStrokeSmoothingStrength: CGFloat = 0.5
     /// PDF 펜 주석에 적용할 현재 PDF Page 좌표계 기준 굵기입니다.
     @State var selectedPenLineWidth: CGFloat = 2.4
     /// 펜 계열 도구가 활성화된 동안 컬러 팔레트를 항상 표시할지 여부입니다.
@@ -1642,7 +1638,6 @@ struct PortalPDFPreviewView: View {
                     penLineWidth: activePenLineWidth,
                     penType: activePenType,
                     penPressureStrength: activePenPressureStrength,
-                    penStrokeSmoothingStrength: activePenStrokeSmoothingStrength,
                     highlighterCap: selectedHighlighterCap,
                     eraserSize: eraserSize,
                     isEraserPreviewVisible: !isPDFPresentationModeEnabled && isEraserOptionPresented && selectedTool == .eraser,

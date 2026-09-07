@@ -265,14 +265,15 @@ extension PortalPDFPreviewView {
     /// 현재 PDF 첨부 파일에 저장된 하단 편집 박스 상태를 복원합니다.
     func restoreMarkupToolbarState() {
         guard let record = PortalPDFMarkupToolbarStore.load(for: item.url) else { return }
-        selectedTool = record.selectedTool
+        // 박스 추가 도구가 제거된 뒤 저장된 이전 선택 상태는 보기 모드로 복원합니다.
+        selectedTool = record.selectedTool == .box ? .view : record.selectedTool
         isMarkupToolbarVertical = record.isVertical
         markupToolbarOffset = record.offset
         markupToolbarSize = record.size
         isPenOptionPresented = record.selectedTool.isInkTool && isPenPaletteAlwaysVisible
             ? true
             : record.isPenOptionPresented
-        isShapeOptionPresented = record.isShapeOptionPresented
+        isShapeOptionPresented = false
         if let shapeLineColor = record.shapeLineColor {
             selectedShapeLineColor = shapeLineColor.color
         }
@@ -304,7 +305,6 @@ extension PortalPDFPreviewView {
             customizedPenColors = [:]
             customizedPenLineWidths = [:]
             customizedPenPressureStrengths = [:]
-            customizedPenStrokeSmoothingStrengths = [:]
             customizedHighlighterColors = [:]
             customizedHighlighterLineWidths = [:]
             didLoadPenPalette = true
@@ -312,7 +312,6 @@ extension PortalPDFPreviewView {
             editingPenColorValue = .blue
             editingPenLineWidth = 2.4
             editingPenPressureStrength = 1.0
-            editingPenStrokeSmoothingStrength = 0.5
             selectedPenLineWidth = 2.4
             isPenPaletteAlwaysVisible = false
             isPDFPresentationModeEnabled = false

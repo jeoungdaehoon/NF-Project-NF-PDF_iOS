@@ -186,173 +186,22 @@ struct NFTests {
         #expect(userDefaults.bool(forKey: "nf.portal.onboarding.completed"))
     }
 
-    @Test func strokeSmoothingStabilizesMultiplePointsAtBothEnds() {
-        let points = [
-            CGPoint(x: 0, y: 16),
-            CGPoint(x: 0, y: 8),
-            CGPoint(x: 0, y: 0),
-            CGPoint(x: 10, y: 0),
-            CGPoint(x: 20, y: 0),
-            CGPoint(x: 30, y: 0),
-            CGPoint(x: 40, y: 0),
-            CGPoint(x: 50, y: 0),
-            CGPoint(x: 50, y: 8),
-            CGPoint(x: 50, y: 16),
-        ]
-
-        let stabilized = points.terminalFlickStabilized(strength: 1)
-
-        #expect(abs(stabilized[0].y) < abs(points[0].y) * 0.35)
-        #expect(abs(stabilized[1].y) < abs(points[1].y) * 0.75)
-        #expect(abs(stabilized[8].y) < abs(points[8].y) * 0.75)
-        #expect(abs(stabilized[9].y) < abs(points[9].y) * 0.35)
-        #expect(stabilized[4] == points[4])
-        #expect(stabilized[5] == points[5])
-    }
-
-    @Test func strokeSmoothingStrengthControlsCorrectionAmount() {
-        let points = [
-            CGPoint(x: 0, y: 0),
-            CGPoint(x: 10, y: 0),
-            CGPoint(x: 20, y: 0),
-            CGPoint(x: 30, y: 0),
-            CGPoint(x: 40, y: 0),
-            CGPoint(x: 50, y: 0),
-            CGPoint(x: 50, y: 7),
-            CGPoint(x: 50, y: 14),
-        ]
-
-        let disabled = points.terminalFlickStabilized(strength: 0)
-        let medium = points.terminalFlickStabilized(strength: 0.5)
-        let strong = points.terminalFlickStabilized(strength: 1)
-
-        #expect(disabled == points)
-        #expect(abs(strong.last?.y ?? 0) < abs(medium.last?.y ?? 0))
-        #expect(abs(medium.last?.y ?? 0) < abs(points.last?.y ?? 0))
-    }
-
-    @Test func zeroLineCorrectionKeepsRawStartEndAndStraightSegments() throws {
+    @Test func pencilPathKeepsRawStartAndEndWithoutLineCorrection() throws {
         let points = [
             CGPoint(x: 3, y: 7),
             CGPoint(x: 14, y: 8),
             CGPoint(x: 25, y: 4),
             CGPoint(x: 36, y: 12),
         ]
-        let path = try #require(PortalPDFStandardLinePathBuilder.path(
-            points: points,
-            correctionStrength: 0
-        ))
+        let path = try #require(PortalPDFPencilPathBuilder.path(points: points))
         var elementTypes: [CGPathElementType] = []
         path.cgPath.applyWithBlock { elementPointer in
             elementTypes.append(elementPointer.pointee.type)
         }
 
-        #expect(path.cgPath.collectedPoints == points)
-        #expect(elementTypes == [.moveToPoint, .addLineToPoint, .addLineToPoint, .addLineToPoint])
         #expect(path.cgPath.collectedPoints.first == points.first)
         #expect(path.cgPath.collectedPoints.last == points.last)
-    }
-
-    @Test func strokeSmoothingSoftensStraightStrokeEndpointsWithoutMovingItsCenter() {
-        let points = (0..<12).map { CGPoint(x: CGFloat($0) * 8, y: 4) }
-
-        let stabilized = points.terminalFlickStabilized(strength: 1)
-
-        #expect(stabilized.first?.x ?? 0 > points.first?.x ?? 0)
-        #expect(stabilized.last?.x ?? 0 < points.last?.x ?? 0)
-        #expect(stabilized[5] == points[5])
-        #expect(stabilized.allSatisfy { abs($0.y - 4) < 0.001 })
-    }
-
-    @Test func strokeSmoothingAffectsShortHandwritingAtFullStrength() {
-        let points = [
-            CGPoint(x: 0, y: 0),
-            CGPoint(x: 8, y: 4),
-            CGPoint(x: 16, y: 2),
-            CGPoint(x: 24, y: 10),
-            CGPoint(x: 30, y: 18),
-        ]
-
-        let disabled = points.terminalFlickStabilized(strength: 0)
-        let medium = points.terminalFlickStabilized(strength: 0.5)
-        let strong = points.terminalFlickStabilized(strength: 1)
-
-        #expect(disabled == points)
-        let mediumStartMovement = hypot(
-            medium.first!.x - points.first!.x,
-            medium.first!.y - points.first!.y
-        )
-        let strongStartMovement = hypot(
-            strong.first!.x - points.first!.x,
-            strong.first!.y - points.first!.y
-        )
-        let mediumEndMovement = hypot(
-            medium.last!.x - points.last!.x,
-            medium.last!.y - points.last!.y
-        )
-        let strongEndMovement = hypot(
-            strong.last!.x - points.last!.x,
-            strong.last!.y - points.last!.y
-        )
-        #expect(strongStartMovement > mediumStartMovement)
-        #expect(strongEndMovement > mediumEndMovement)
-        #expect(strong[2] == points[2])
-    }
-
-    @Test func fullStrokeSmoothingNearlyRemovesTerminalOvershoot() {
-        let points = (0..<12).map { CGPoint(x: CGFloat($0) * 8, y: 4) }
-
-        let medium = points.terminalFlickStabilized(strength: 0.5)
-        let high = points.terminalFlickStabilized(strength: 0.8)
-        let full = points.terminalFlickStabilized(strength: 1)
-
-        let endAnchor = points[8]
-        let originalTailLength = hypot(
-            points.last!.x - endAnchor.x,
-            points.last!.y - endAnchor.y
-        )
-        let fullTailLength = hypot(
-            full.last!.x - endAnchor.x,
-            full.last!.y - endAnchor.y
-        )
-        let mediumMovement = hypot(
-            medium.last!.x - points.last!.x,
-            medium.last!.y - points.last!.y
-        )
-        let highMovement = hypot(
-            high.last!.x - points.last!.x,
-            high.last!.y - points.last!.y
-        )
-        let fullMovement = hypot(
-            full.last!.x - points.last!.x,
-            full.last!.y - points.last!.y
-        )
-
-        #expect(fullTailLength / originalTailLength < 0.08)
-        #expect(mediumMovement < highMovement)
-        #expect(highMovement < fullMovement)
-        #expect(full[5] == points[5])
-    }
-
-    @Test func strokeSmoothingOverdriveContinuesIncreasingThroughTwoHundredPercent() {
-        let points = (0..<24).map { CGPoint(x: CGFloat($0) * 8, y: 4) }
-
-        let full = points.terminalFlickStabilized(strength: 1)
-        let oneHundredFifty = points.terminalFlickStabilized(strength: 1.5)
-        let twoHundred = points.terminalFlickStabilized(strength: 2)
-        let aboveMaximum = points.terminalFlickStabilized(strength: 3)
-
-        let fullMovement = abs(full.last!.x - points.last!.x)
-        let oneHundredFiftyMovement = abs(oneHundredFifty.last!.x - points.last!.x)
-        let twoHundredMovement = abs(twoHundred.last!.x - points.last!.x)
-
-        #expect(fullMovement < oneHundredFiftyMovement)
-        #expect(oneHundredFiftyMovement < twoHundredMovement)
-        #expect(aboveMaximum == twoHundred)
-        #expect(twoHundred[11] == points[11])
-        #expect(twoHundred[12] == points[12])
-        #expect(twoHundred.prefix(8).allSatisfy { $0 == points[8] })
-        #expect(twoHundred.suffix(8).allSatisfy { $0 == points[15] })
+        #expect(elementTypes.contains(.addCurveToPoint))
     }
 
     @Test func pressureStrokeKeepsCenterlineFilledThroughTightTurns() throws {
@@ -367,16 +216,15 @@ struct NFTests {
             CGPoint(x: 34, y: 38),
         ]
         let pressures: [CGFloat] = [0.18, 0.9, 0.24, 0.82, 0.2, 0.88, 0.3, 0.76]
-        let smoothedPoints = points.weightedMovingAverage(radius: 2)
         let path = try #require(PortalPDFPressureInkAnnotation.makeStrokePath(
             points: points,
             pressures: pressures,
             baseLineWidth: 8
         ))
 
-        for index in 0..<(smoothedPoints.count - 1) {
-            let start = smoothedPoints[index]
-            let end = smoothedPoints[index + 1]
+        for index in 0..<(points.count - 1) {
+            let start = points[index]
+            let end = points[index + 1]
             for step in 0...12 {
                 let progress = CGFloat(step) / 12
                 let centerPoint = CGPoint(
@@ -386,6 +234,86 @@ struct NFTests {
                 #expect(path.cgPath.contains(centerPoint, using: .winding, transform: .identity))
             }
         }
+    }
+
+    @Test func pressureCenterlineReducesJitterWithoutMovingEndpoints() {
+        let points = (0..<100).map { CGPoint(x: CGFloat($0), y: $0.isMultiple(of: 2) ? 0.2 : -0.2) }
+        let smoothed = PortalPDFVariableWidthStroke.smoothedCenterline(points: points, baseLineWidth: 4)
+        #expect(smoothed.first == points.first)
+        #expect(smoothed.last == points.last)
+        let rawJitter = points[3..<97].reduce(CGFloat.zero) { $0 + abs($1.y) }
+        let renderedJitter = smoothed[3..<97].reduce(CGFloat.zero) { $0 + abs($1.y) }
+        #expect(renderedJitter < rawJitter * 0.25)
+        for index in points.indices {
+            #expect(hypot(smoothed[index].x - points[index].x, smoothed[index].y - points[index].y) <= 4 * 0.18 + 0.0001)
+        }
+        let scaled = PortalPDFVariableWidthStroke.smoothedCenterline(
+            points: points.map { CGPoint(x: $0.x * 10, y: $0.y * 10) }, baseLineWidth: 40
+        )
+        for index in points.indices {
+            #expect(abs(scaled[index].y - smoothed[index].y * 10) < 0.0001)
+        }
+    }
+
+    @Test func pressureStrokeUsesSmoothTangentConnections() throws {
+        // Unequal radii used to leave a scalloped gap between perpendicular
+        // connectors and circular joins. Check both sides and both directions.
+        for angle in [CGFloat(0), .pi / 3, .pi / 2] {
+            let transform = CGAffineTransform(rotationAngle: angle)
+            for pressures: [CGFloat] in [[0, 1], [1, 0]] {
+                let path = try #require(PortalPDFPressureInkAnnotation.makeStrokePath(
+                    points: [CGPoint.zero, CGPoint(x: 20, y: 0)].map { $0.applying(transform) },
+                    pressures: pressures,
+                    baseLineWidth: 10
+                ))
+                for side: CGFloat in [-1, 1] {
+                    #expect(path.contains(CGPoint(x: 10, y: side * 6.4).applying(transform)))
+                    #expect(!path.contains(CGPoint(x: 10, y: side * 7).applying(transform)))
+                }
+            }
+        }
+    }
+
+    @Test func pressureStrokeHandlesContainedAndCoincidentSamples() throws {
+        for end in [CGPoint.zero, CGPoint(x: 1, y: 0)] {
+            let path = try #require(PortalPDFPressureInkAnnotation.makeStrokePath(
+                points: [.zero, end], pressures: [0, 1], baseLineWidth: 10
+            ))
+            #expect(path.bounds == CGRect(x: end.x - 10, y: -10, width: 20, height: 20))
+            #expect(path.contains(.zero))
+        }
+    }
+
+    @Test func pressureStrokePreservesRawTerminalCoordinatesAndWidths() throws {
+        let points = [
+            CGPoint(x: 4, y: 7),
+            CGPoint(x: 18, y: 42),
+            CGPoint(x: 36, y: 3),
+            CGPoint(x: 54, y: 38),
+            CGPoint(x: 72, y: 9),
+        ]
+        let pressures: [CGFloat] = [0.12, 0.92, 0.24, 0.86, 0.18]
+        let baseLineWidth: CGFloat = 9
+        let path = try #require(PortalPDFPressureInkAnnotation.makeStrokePath(
+            points: points,
+            pressures: pressures,
+            baseLineWidth: baseLineWidth
+        ))
+        let widths = PortalPDFVariableWidthStroke.continuousLineWidths(
+            pressures: pressures.weightedMovingAverage(radius: 4),
+            baseLineWidth: baseLineWidth
+        )
+
+        #expect(path.cgPath.contains(points.first!, using: .winding, transform: .identity))
+        #expect(path.cgPath.contains(points.last!, using: .winding, transform: .identity))
+        #expect(widths.first == PortalPDFVariableWidthStroke.lineWidth(
+            for: pressures.first!,
+            baseLineWidth: baseLineWidth
+        ))
+        #expect(widths.last == PortalPDFVariableWidthStroke.lineWidth(
+            for: pressures.last!,
+            baseLineWidth: baseLineWidth
+        ))
     }
 
     private func onePagePDFData() -> Data {

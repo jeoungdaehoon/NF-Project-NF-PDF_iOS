@@ -22,25 +22,15 @@ enum PortalPDFVariableWidthStroke {
     ) -> UIBezierPath? {
         guard !points.isEmpty, points.count == pressures.count else { return nil }
 
-        var filteredPoints: [CGPoint] = []
-        var filteredPressures: [CGFloat] = []
-        for (point, pressure) in zip(points, pressures) {
-            if let previousPoint = filteredPoints.last,
-               hypot(point.x - previousPoint.x, point.y - previousPoint.y) < 0.08 {
-                filteredPoints[filteredPoints.count - 1] = point
-                filteredPressures[filteredPressures.count - 1] = pressure
-            } else {
-                filteredPoints.append(point)
-                filteredPressures.append(pressure)
-            }
-        }
-        guard let firstPoint = filteredPoints.first else { return nil }
+        guard let firstPoint = points.first else { return nil }
 
-        let smoothedPoints = filteredPoints.weightedMovingAverage(radius: 2)
-        // 압력 평균 구간을 조금 줄여 강약 변화가 실제 선 굵기에 더 빠르게 반영되게 합니다.
-        let smoothedPressures = filteredPressures.weightedMovingAverage(radius: 4)
+        // 원본은 편집용으로 보존하고, 표시 좌표의 미세 진동만 획 폭 이내에서 완화합니다.
+        // 시작과 끝은 이동하지 않으며 별도의 taper나 끝점 끌어당김을 적용하지 않습니다.
+        let renderedPoints = smoothedCenterline(points: points, baseLineWidth: baseLineWidth)
+        // 좌표와 분리해 센서 압력의 미세 진동만 완화합니다. 평균 함수는 첫·마지막 값을 보존합니다.
+        let smoothedPressures = pressures.weightedMovingAverage(radius: 4)
         let widths = continuousLineWidths(pressures: smoothedPressures, baseLineWidth: baseLineWidth)
-        guard smoothedPoints.count > 1 else {
+        guard renderedPoints.count > 1 else {
             let diameter = widths.first ?? max(0.3, baseLineWidth)
             return UIBezierPath(
                 ovalIn: CGRect(
@@ -54,46 +44,72 @@ enum PortalPDFVariableWidthStroke {
 
         // 좌우 외곽선을 하나의 큰 다각형으로 닫으면 작은 한글 곡선이나 되돌아오는 획에서
         // 외곽선이 서로 교차해 내부가 흰색으로 뚫릴 수 있습니다. 각 입력점을 원형 접점으로,
-        // 인접 구간을 독립된 사다리꼴로 채워 중심 연결선이 어떤 방향에서도 끊기지 않게 합니다.
+        // 인접 원의 공통 외접선으로 연결해 굵기가 달라져도 접점에 요철이 생기지 않게 합니다.
         let path = UIBezierPath()
         path.usesEvenOddFillRule = false
-        for index in smoothedPoints.indices {
-            let point = smoothedPoints[index]
+        for index in renderedPoints.indices {
+            let point = renderedPoints[index]
             let radius = widths[index] / 2
             appendRoundJoin(center: point, radius: radius, to: path)
 
-            guard index < smoothedPoints.count - 1 else { continue }
-            let nextPoint = smoothedPoints[index + 1]
+            guard index < renderedPoints.count - 1 else { continue }
+            let nextPoint = renderedPoints[index + 1]
             let dx = nextPoint.x - point.x
             let dy = nextPoint.y - point.y
             let length = hypot(dx, dy)
-            guard length > 0.001 else { continue }
-
-            let normalX = -dy / length
-            let normalY = dx / length
             let nextRadius = widths[index + 1] / 2
+            // 한 원이 다른 원 안에 포함되면 큰 원만으로 연결 구간이 채워집니다.
+            guard length > abs(nextRadius - radius) else { continue }
+
+            let directionX = dx / length
+            let directionY = dy / length
+            let radiusSlope = (nextRadius - radius) / length
+            let normalScale = sqrt(max(0, 1 - radiusSlope * radiusSlope))
+            // 중심선에 수직인 점을 잇는 대신 양쪽 원에 실제로 접하는 점을 잇습니다.
+            let leftX = -directionX * radiusSlope - directionY * normalScale
+            let leftY = -directionY * radiusSlope + directionX * normalScale
+            let rightX = -directionX * radiusSlope + directionY * normalScale
+            let rightY = -directionY * radiusSlope - directionX * normalScale
             let connector = UIBezierPath()
             // 원형 접점과 동일한 양의 winding 방향으로 연결 면을 만듭니다.
             connector.move(to: CGPoint(
-                x: point.x + normalX * radius,
-                y: point.y + normalY * radius
+                x: point.x + leftX * radius,
+                y: point.y + leftY * radius
             ))
             connector.addLine(to: CGPoint(
-                x: point.x - normalX * radius,
-                y: point.y - normalY * radius
+                x: point.x + rightX * radius,
+                y: point.y + rightY * radius
             ))
             connector.addLine(to: CGPoint(
-                x: nextPoint.x - normalX * nextRadius,
-                y: nextPoint.y - normalY * nextRadius
+                x: nextPoint.x + rightX * nextRadius,
+                y: nextPoint.y + rightY * nextRadius
             ))
             connector.addLine(to: CGPoint(
-                x: nextPoint.x + normalX * nextRadius,
-                y: nextPoint.y + normalY * nextRadius
+                x: nextPoint.x + leftX * nextRadius,
+                y: nextPoint.y + leftY * nextRadius
             ))
             connector.close()
             path.append(connector)
         }
         return path
+    }
+
+    static func smoothedCenterline(points: [CGPoint], baseLineWidth: CGFloat) -> [CGPoint] {
+        guard points.count > 2 else { return points }
+        let averaged = points.weightedMovingAverage(radius: 2)
+        // 큰 방향 전환은 유지하고 확대 시 보이는 센서 좌표의 작은 흔들림만 줄입니다.
+        let maximumDisplacement = max(0.3, baseLineWidth) * 0.18
+        var result = points
+        for index in 1..<(points.count - 1) {
+            let dx = averaged[index].x - points[index].x
+            let dy = averaged[index].y - points[index].y
+            let distance = hypot(dx, dy)
+            guard distance > 0 else { continue }
+            let fraction = min(1, maximumDisplacement / distance)
+            result[index] = CGPoint(x: points[index].x + dx * fraction,
+                                    y: points[index].y + dy * fraction)
+        }
+        return result
     }
 
     static func lineWidth(for pressure: CGFloat, baseLineWidth: CGFloat) -> CGFloat {
@@ -109,17 +125,21 @@ enum PortalPDFVariableWidthStroke {
         guard !pressures.isEmpty else { return [] }
         let targets = pressures.map { lineWidth(for: $0, baseLineWidth: baseLineWidth) }
         let maximumStep = max(0.05, baseLineWidth * 0.075)
+        guard targets.count > 2 else { return targets }
         var widths = targets
+        let lastIndex = widths.index(before: widths.endIndex)
 
-        // 압력 센서가 한 프레임에서 크게 바뀌어도 인접 좌표의 굵기는 조금씩만 변하게 합니다.
-        for index in 1..<widths.count {
+        // 내부 구간만 연속적으로 만들고 실제 시작·끝 압력에 해당하는 폭은 변경하지 않습니다.
+        for index in 1..<lastIndex {
             widths[index] = widths[index - 1] + min(max(targets[index] - widths[index - 1], -maximumStep), maximumStep)
         }
-        if widths.count > 1 {
-            for index in stride(from: widths.count - 2, through: 0, by: -1) {
+        if lastIndex > 1 {
+            for index in stride(from: lastIndex - 1, through: 1, by: -1) {
                 widths[index] = widths[index + 1] + min(max(widths[index] - widths[index + 1], -maximumStep), maximumStep)
             }
         }
+        widths[widths.startIndex] = targets[targets.startIndex]
+        widths[lastIndex] = targets[lastIndex]
         return widths
     }
 
@@ -204,7 +224,7 @@ final class PortalPDFPressureInkAnnotation: PDFAnnotation {
     }
 
     fileprivate private(set) var strokeFragments: [StrokeFragment]
-    fileprivate let baseLineWidth: CGFloat
+    fileprivate var baseLineWidth: CGFloat
     let strokeColor: UIColor
     var strokePaths: [UIBezierPath]
     private var strokePathBounds: [CGRect]
@@ -223,9 +243,9 @@ final class PortalPDFPressureInkAnnotation: PDFAnnotation {
         renderedPath: UIBezierPath? = nil
     ) {
         self.strokeFragments = [StrokeFragment(points: points, pressures: pressures)]
-        // 실시간 Overlay도 아래 경로 생성기에서 좌표·압력을 한 번 보정합니다.
-        // 생성자에서 미리 다시 보정하면 펜을 떼는 순간 저장선만 이중 보정되어
-        // 사용자가 보고 있던 곡선과 위치·굵기가 달라지므로 원본 샘플을 그대로 전달합니다.
+        // 실시간 Overlay와 저장선이 같은 원본 좌표와 압력 경로 생성기를 사용합니다.
+        // 생성자에서 경로를 다시 만들면 펜을 떼는 순간 사용자가 보던 위치·굵기와
+        // 달라질 수 있으므로 이미 렌더링한 경로가 있으면 그대로 사용합니다.
         let path = renderedPath ?? Self.makeStrokePath(
             points: points,
             pressures: pressures,
@@ -543,6 +563,7 @@ final class PortalPDFPressureInkAnnotation: PDFAnnotation {
 
     /// 올가미 그룹 변형 시 압력 획 좌표와 저장 메타데이터를 함께 변형합니다.
     func transformStroke(scale: CGFloat, rotation: CGFloat, around center: CGPoint) {
+        guard scale.isFinite, scale > 0, rotation.isFinite else { return }
         let cosine = cos(rotation)
         let sine = sin(rotation)
         let transformedFragments = strokeFragments.map { fragment in
@@ -558,6 +579,8 @@ final class PortalPDFPressureInkAnnotation: PDFAnnotation {
                 pressures: fragment.pressures
             )
         }
+        // 실시간 레이어의 확대·축소와 확정/저장된 획 두께를 일치시킵니다.
+        baseLineWidth *= scale
         _ = replaceStrokeFragments(transformedFragments)
     }
 

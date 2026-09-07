@@ -40,8 +40,6 @@ enum PortalPDFPenPaletteStore {
         let lineWidth: Double
         /// 컬러에 연결된 압력 반응 강도입니다. 이전 저장 데이터는 1.0으로 복원합니다.
         let pressureStrength: Double?
-        /// 컬러에 연결된 스트로크 끝 삐침 완화 강도입니다. 0~2 범위이며 이전 저장 데이터는 0.5로 복원합니다.
-        let strokeSmoothingStrength: Double?
 
         /**
          현재 화면 컬러를 UserDefaults 저장 모델로 변환합니다.
@@ -54,8 +52,7 @@ enum PortalPDFPenPaletteStore {
             penColor: PortalPDFPenColor,
             color: Color,
             lineWidth: CGFloat,
-            pressureStrength: CGFloat = 1.0,
-            strokeSmoothingStrength: CGFloat = 0.5
+            pressureStrength: CGFloat = 1.0
         ) {
             let uiColor = UIColor(color)
             var red: CGFloat = 0
@@ -73,7 +70,6 @@ enum PortalPDFPenPaletteStore {
                 self.alpha = 1
                 self.lineWidth = Double(lineWidth)
                 self.pressureStrength = Double(pressureStrength)
-                self.strokeSmoothingStrength = Double(strokeSmoothingStrength)
                 return
             }
 
@@ -85,7 +81,6 @@ enum PortalPDFPenPaletteStore {
             self.alpha = Double(alpha)
             self.lineWidth = Double(lineWidth)
             self.pressureStrength = Double(pressureStrength)
-            self.strokeSmoothingStrength = Double(strokeSmoothingStrength)
         }
 
         /// 저장된 RGBA 구성 요소를 다시 화면과 PDF에 사용할 펜 컬러 모델로 변환합니다.

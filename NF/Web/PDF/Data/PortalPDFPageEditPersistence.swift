@@ -38,7 +38,7 @@ struct PortalPDFPageEditDocument: Codable {
 
         let id: UUID
         let kind: Kind
-        let displayIndex: Int
+        var displayIndex: Int
         var ink: Ink?
         var image: PortalPDFImageAnnotation.Metadata?
         var shape: PortalPDFShapeAnnotation.Metadata?
@@ -169,6 +169,26 @@ struct PortalPDFPageEditDocument: Codable {
             pages.append(Page(pageIndex: pageIndex, objects: objects))
             pages.sort { $0.pageIndex < $1.pageIndex }
         }
+        updatedAt = Date()
+    }
+
+    /// 지우개가 변경한 객체만 변환하고 다른 객체의 좌표 배열·이미지 데이터를 재사용합니다.
+    mutating func updateErasedObjects(at pageIndex: Int, from document: PDFDocument, changedIDs: Set<UUID>) {
+        guard let page = document.page(at: pageIndex) else { return }
+        guard let index = pages.firstIndex(where: { $0.pageIndex == pageIndex }) else {
+            updatePage(at: pageIndex, from: document)
+            return
+        }
+        let previous = Dictionary(uniqueKeysWithValues: pages[index].objects.map { ($0.id, $0) })
+        pages[index].objects = page.annotations.enumerated().compactMap { displayIndex, annotation in
+            let id = annotation.portalPageEditObjectID
+            if !changedIDs.contains(id), var retained = previous[id] {
+                retained.displayIndex = displayIndex
+                return retained
+            }
+            return Self.object(from: annotation, displayIndex: displayIndex)
+        }
+        if pages[index].objects.isEmpty { pages.remove(at: index) }
         updatedAt = Date()
     }
 

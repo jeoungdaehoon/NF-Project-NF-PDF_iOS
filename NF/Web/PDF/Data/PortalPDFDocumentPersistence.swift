@@ -503,16 +503,14 @@ extension CGSize {
 
 extension UIBezierPath {
     /// PDF Ink Annotation을 입력점 안정화와 연속 3차 곡선으로 재구성해 한 획처럼 부드럽게 표시합니다.
-    func smoothedForPDFInk(strokeSmoothingStrength: CGFloat = 0) -> UIBezierPath {
+    func smoothedForPDFInk() -> UIBezierPath {
         let smoothedPath = UIBezierPath()
         smoothedPath.lineCapStyle = .round
         smoothedPath.lineJoinStyle = .round
         smoothedPath.flatness = 0.4
         // 주변 입력점을 함께 반영한 안정화 좌표를 사용해 손떨림으로 생기는 짧은
         // 방향 변화를 먼저 제거한 뒤 하나의 연속 곡선으로 재구성합니다.
-        let points = cgPath.collectedPoints
-            .terminalFlickStabilized(strength: strokeSmoothingStrength)
-            .weightedMovingAverage(radius: 3)
+        let points = cgPath.collectedPoints.weightedMovingAverage(radius: 3)
         guard let firstPoint = points.first else { return self }
         smoothedPath.move(to: firstPoint)
         guard points.count > 2 else {
@@ -583,171 +581,6 @@ extension Array where Element == CGPoint {
         }
     }
 
-    /// 획 시작과 끝의 짧은 입력점 묶음이 내부 진행 방향에서 벗어난 경우 삐침을 선택적으로 완화합니다.
-    func terminalFlickStabilized(strength: CGFloat) -> [CGPoint] {
-        let normalizedStrength = Swift.min(2, Swift.max(0, strength))
-        guard normalizedStrength > 0, count >= 3 else { return self }
-
-        // 긴 획은 진행 방향에서 갑자기 벗어난 끝 꼬리를 먼저 접선 방향으로 되돌립니다.
-        // 짧은 한글 획도 강도 차이가 보이도록 그 다음 시작·끝 입력을 안쪽에 점진적으로
-        // 정착시킵니다. 이 단계는 방향 이탈 여부와 무관하게 작동하므로 100%에서 실제
-        // 삐침 길이가 분명히 줄어듭니다.
-        let stabilizedEnd = count >= 6
-            ? stabilizingTerminalFlick(strength: normalizedStrength)
-            : self
-        let stabilizedStart = Array(stabilizedEnd.reversed())
-        let directionallyStabilized = count >= 6
-            ? Array(stabilizedStart.stabilizingTerminalFlick(strength: normalizedStrength).reversed())
-            : Array(stabilizedStart.reversed())
-
-        let settledEnd = directionallyStabilized.settlingTerminalSamples(strength: normalizedStrength)
-        let settledStart = Array(settledEnd.reversed())
-            .settlingTerminalSamples(strength: normalizedStrength)
-        return Array(settledStart.reversed())
-    }
-
-    /// 마지막 입력점 묶음을 안쪽 기준점에 점진적으로 당겨 펜을 떼며 생기는 짧은 꼬리를 줄입니다.
-    private func settlingTerminalSamples(strength: CGFloat) -> [CGPoint] {
-        guard count >= 3 else { return self }
-
-        // 낮은 값에서는 필기 원형을 유지하되 70% 이후부터 보정량을 빠르게 높입니다.
-        // 100% 초과분은 최대 보정률과 적용되는 끝 구간 길이를 비례해서 추가합니다.
-        let baseStrength = Swift.min(1, strength)
-        let overdriveStrength = Swift.min(1, Swift.max(0, strength - 1))
-        let effectiveStrength = pow(baseStrength, 1.15)
-        let highStrengthProgress = Swift.min(1, Swift.max(0, (baseStrength - 0.65) / 0.35))
-        let highStrengthBoost = highStrengthProgress
-            * highStrengthProgress
-            * (3 - 2 * highStrengthProgress)
-        let isMaximumRemoval = strength >= 1.999
-        let maximumCorrection = isMaximumRemoval
-            ? CGFloat(1)
-            : 0.58 + 0.36 * highStrengthBoost + 0.055 * overdriveStrength
-        let baseTerminalPointCount = Swift.min(6, Swift.max(1, count / 6 + 1))
-        let extraTerminalPointCount = Int((overdriveStrength * 3).rounded())
-        let maximumNonOverlappingCount = Swift.max(1, (count - 1) / 2)
-        let terminalPointCount = Swift.min(
-            maximumNonOverlappingCount,
-            baseTerminalPointCount + extraTerminalPointCount
-        )
-        let anchorIndex = count - terminalPointCount - 1
-        guard anchorIndex >= 0 else { return self }
-
-        let anchor = self[anchorIndex]
-        var result = self
-        for index in (anchorIndex + 1)..<count {
-            let point = self[index]
-            // 끝 구간 전체를 같은 비율로 압축해야 좌표가 다시 뒤로 꺾이지 않습니다.
-            // 200%에서는 해당 구간을 기준점에 완전히 정착시켜 잔여 삐침을 없앱니다.
-            let localCorrection = Swift.min(
-                maximumCorrection,
-                effectiveStrength * maximumCorrection
-            )
-            result[index] = CGPoint(
-                x: point.x + (anchor.x - point.x) * localCorrection,
-                y: point.y + (anchor.y - point.y) * localCorrection
-            )
-        }
-        return result
-    }
-
-    /// 배열 마지막의 최대 네 점을 안정된 내부 접선 쪽으로 점진적으로 당깁니다.
-    private func stabilizingTerminalFlick(strength: CGFloat) -> [CGPoint] {
-        guard count >= 6 else { return self }
-
-        let terminalPointCount = Swift.min(4, Swift.max(2, count / 5 + 1))
-        let anchorIndex = count - terminalPointCount - 1
-        guard anchorIndex >= 2 else { return self }
-
-        // 마지막 꼬리의 영향을 받지 않는 내부 구간 여러 개를 평균해 기준 진행 방향을 계산합니다.
-        let referenceStartIndex = Swift.max(0, anchorIndex - 4)
-        var referenceDirection = CGVector.zero
-        var stableSegmentLengths: [CGFloat] = []
-        for index in referenceStartIndex..<anchorIndex {
-            let start = self[index]
-            let end = self[index + 1]
-            let dx = end.x - start.x
-            let dy = end.y - start.y
-            let length = hypot(dx, dy)
-            guard length > 0.001 else { continue }
-            referenceDirection.dx += dx / length
-            referenceDirection.dy += dy / length
-            stableSegmentLengths.append(length)
-        }
-        let referenceLength = hypot(referenceDirection.dx, referenceDirection.dy)
-        guard referenceLength > 0.001, !stableSegmentLengths.isEmpty else { return self }
-
-        let unitX = referenceDirection.dx / referenceLength
-        let unitY = referenceDirection.dy / referenceLength
-        let averageStableLength = stableSegmentLengths.reduce(0, +) / CGFloat(stableSegmentLengths.count)
-        let anchor = self[anchorIndex]
-        var minimumDirectionCosine: CGFloat = 1
-        var maximumLateralDistance: CGFloat = 0
-        var terminalPathLength: CGFloat = 0
-
-        for index in (anchorIndex + 1)..<count {
-            let previous = self[index - 1]
-            let point = self[index]
-            let segmentX = point.x - previous.x
-            let segmentY = point.y - previous.y
-            let segmentLength = hypot(segmentX, segmentY)
-            guard segmentLength > 0.001 else { continue }
-            terminalPathLength += segmentLength
-            minimumDirectionCosine = Swift.min(
-                minimumDirectionCosine,
-                (segmentX * unitX + segmentY * unitY) / segmentLength
-            )
-            let fromAnchorX = point.x - anchor.x
-            let fromAnchorY = point.y - anchor.y
-            maximumLateralDistance = Swift.max(
-                maximumLateralDistance,
-                abs(fromAnchorX * unitY - fromAnchorY * unitX)
-            )
-        }
-        guard terminalPathLength > 0.001 else { return self }
-
-        // 각도와 측면 이탈 중 더 큰 값을 사용합니다. 정상 진행 방향과 10도 이내인 끝은 유지합니다.
-        let angleFactor = Swift.min(1, Swift.max(0, (0.985 - minimumDirectionCosine) / 0.85))
-        let lateralFactor = Swift.min(
-            1,
-            Swift.max(0, maximumLateralDistance / Swift.max(averageStableLength * 1.35, 0.001))
-        )
-        let flickFactor = Swift.max(angleFactor, lateralFactor)
-        guard flickFactor > 0.01 else { return self }
-
-        let totalPathLength = indices.dropFirst().reduce(CGFloat.zero) { partial, index in
-            let previous = self[index - 1]
-            let point = self[index]
-            return partial + hypot(point.x - previous.x, point.y - previous.y)
-        }
-        let terminalShare = terminalPathLength / Swift.max(totalPathLength, 0.001)
-        // 획 전체에서 차지하는 비중이 큰 방향 전환은 의도한 모양일 수 있으므로 보정량을 낮춥니다.
-        // 짧은 필기에서는 꼬리 구간의 상대 비율이 커도 실제 거리는 짧을 수 있으므로 35% 이하는
-        // 최대 신뢰도로 처리합니다. 긴 방향 전환만 단계적으로 낮춰 시작·끝 완화 체감이 사라지지 않게 합니다.
-        let shortTailConfidence = Swift.min(1, Swift.max(0.35, (0.68 - terminalShare) / 0.32))
-        let correction = strength * flickFactor * shortTailConfidence
-        guard correction > 0.001 else { return self }
-
-        var result = self
-        for index in (anchorIndex + 1)..<count {
-            let point = self[index]
-            let fromAnchorX = point.x - anchor.x
-            let fromAnchorY = point.y - anchor.y
-            let forwardDistance = Swift.max(0, fromAnchorX * unitX + fromAnchorY * unitY)
-            let projectedPoint = CGPoint(
-                x: anchor.x + unitX * forwardDistance,
-                y: anchor.y + unitY * forwardDistance
-            )
-            let terminalProgress = CGFloat(index - anchorIndex) / CGFloat(terminalPointCount)
-            // 안쪽 좌표는 약하게, 실제 끝점은 강하게 보정해 경로가 갑자기 꺾이지 않게 연결합니다.
-            let localCorrection = Swift.min(1, correction * (0.45 + terminalProgress * 0.55))
-            result[index] = CGPoint(
-                x: point.x + (projectedPoint.x - point.x) * localCorrection,
-                y: point.y + (projectedPoint.y - point.y) * localCorrection
-            )
-        }
-        return result
-    }
 }
 
 extension Array where Element == CGFloat {

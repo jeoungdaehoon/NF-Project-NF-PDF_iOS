@@ -586,9 +586,9 @@ enum PortalPDFMarkupTool: String, CaseIterable, Identifiable {
     /// iPad에는 손가락 손글씨와 Apple Pencil을 모두 표시하고 iPhone에는 기존 펜만 표시합니다.
     static var visibleTools: [PortalPDFMarkupTool] {
         if UIDevice.current.userInterfaceIdiom == .pad {
-            return [.view, .handwriting, .pen, .highlighter, .neon, .eraser, .lasso, .box, .text, .image]
+            return [.view, .handwriting, .pen, .highlighter, .neon, .eraser, .lasso, .text, .image]
         }
-        return [.view, .pen, .highlighter, .neon, .eraser, .lasso, .box, .text, .image]
+        return [.view, .pen, .highlighter, .neon, .eraser, .lasso, .text, .image]
     }
 
     /// 손가락 손글씨와 Apple Pencil 모드가 공유하는 자유선 편집 기능인지 여부입니다.
