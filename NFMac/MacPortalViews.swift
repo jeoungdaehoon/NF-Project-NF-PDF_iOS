@@ -2,6 +2,24 @@ import AppKit
 import AuthenticationServices
 import SwiftUI
 
+private enum MacPortalTitlebarPalette {
+    static let backgroundNSColor = NSColor(
+        srgbRed: 85.0 / 255.0,
+        green: 85.0 / 255.0,
+        blue: 84.0 / 255.0,
+        alpha: 1
+    )
+    static let foreground = Color(
+        nsColor: NSColor(
+            srgbRed: 220.0 / 255.0,
+            green: 220.0 / 255.0,
+            blue: 218.0 / 255.0,
+            alpha: 1
+        )
+    )
+    static let separator = Color.white.opacity(0.18)
+}
+
 struct MacPortalRootView: View {
     @EnvironmentObject private var preferences: MacPortalPreferences
     @StateObject private var authentication = MacAuthenticationModel()
@@ -398,6 +416,8 @@ private struct MacPortalWorkspace: View {
     }
 
     private func navigateFromSharedSidebar(to url: URL) {
+        primary.dismissTransientSidebarAfterSelection()
+        secondary.dismissTransientSidebarAfterSelection()
         let target = isSplit && activePane == .secondary ? secondary : primary
         target.navigate(to: url)
     }
@@ -493,7 +513,7 @@ private struct MacPortalToolbar: View {
     let onActivate: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             if showsSidebarButton {
                 Button {
                     onActivate()
@@ -501,6 +521,7 @@ private struct MacPortalToolbar: View {
                 } label: {
                     Image(systemName: sidebarHidden ? "line.3.horizontal" : "sidebar.left")
                         .frame(width: 20, height: 20)
+                        .offset(y: -2)
                 }
                 .help(sidebarHidden ? "전체 메뉴 열기" : "전체 메뉴 닫기")
                 .onHover { model.setToolbarSidebarHover($0) }
@@ -513,6 +534,8 @@ private struct MacPortalToolbar: View {
                 model.goBack()
             } label: {
                 Image(systemName: "chevron.left")
+                    .frame(width: 20, height: 20, alignment: .center)
+                    .offset(y: -2)
             }
                 .disabled(!model.canGoBack).help("뒤로 가기")
             Button {
@@ -520,6 +543,8 @@ private struct MacPortalToolbar: View {
                 model.goForward()
             } label: {
                 Image(systemName: "chevron.right")
+                    .frame(width: 20, height: 20, alignment: .center)
+                    .offset(y: -2)
             }
                 .disabled(!model.canGoForward).help("앞으로 가기")
             Button {
@@ -527,6 +552,8 @@ private struct MacPortalToolbar: View {
                 model.reloadCurrentPage()
             } label: {
                 Image(systemName: "arrow.clockwise")
+                    .frame(width: 20, height: 20, alignment: .center)
+                    .offset(y: -2)
             }
             .help("현재 페이지 새로고침")
             Button {
@@ -534,6 +561,8 @@ private struct MacPortalToolbar: View {
                 model.goHome()
             } label: {
                 Image(systemName: "house")
+                    .frame(width: 20, height: 20, alignment: .center)
+                    .offset(y: -2)
             }
             .help("홈")
             Rectangle()
@@ -545,6 +574,8 @@ private struct MacPortalToolbar: View {
                         MacPortalTabButton(
                             page: page,
                             isSelected: page.id == model.activePageID,
+                            selectedBackground: model.themeBackground,
+                            selectedForeground: model.themeForeground,
                             canClose: model.pages.count > 1,
                             onSelect: {
                                 onActivate()
@@ -562,6 +593,8 @@ private struct MacPortalToolbar: View {
                     onToggleSplit()
                 } label: {
                     Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                        .frame(width: 20, height: 20, alignment: .center)
+                        .offset(y: -2)
                 }
                 .help(isSplit ? "2분할 닫기" : "현재 페이지를 좌우로 2분할")
                 Rectangle()
@@ -575,23 +608,23 @@ private struct MacPortalToolbar: View {
                     }
                 } label: {
                     Label("\(preferences.zoomPercent)%", systemImage: "textformat.size")
-                        // borderless Menu가 상위 foregroundStyle 대신 시스템 색을 선택하는
-                        // 경우에도 웹에서 전달된 현재 테마의 문구색을 유지합니다.
-                        .foregroundStyle(model.themeForeground)
+                        .frame(height: 20, alignment: .center)
+                        .offset(y: -2)
+                        .foregroundStyle(MacPortalTitlebarPalette.foreground)
                 }
-                .tint(model.themeForeground)
+                .tint(MacPortalTitlebarPalette.foreground)
                 .menuStyle(.borderlessButton)
                 .fixedSize()
             }
         }
         .buttonStyle(.borderless)
         .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(model.themeForeground)
+        .foregroundStyle(MacPortalTitlebarPalette.foreground)
         .padding(.leading, 10)
         .padding(.trailing, 10)
-        .frame(height: 32)
-        .background(model.themeBackground)
-        .overlay(alignment: .bottom) {
+        .frame(height: 32, alignment: .center)
+        .background(Color.clear)
+        .background(alignment: .bottom) {
             Rectangle()
                 .fill(separatorColor)
                 .frame(height: 1)
@@ -599,13 +632,15 @@ private struct MacPortalToolbar: View {
     }
 
     private var separatorColor: Color {
-        model.themeForeground.opacity(0.16)
+        MacPortalTitlebarPalette.separator
     }
 }
 
 private struct MacPortalTabButton: View {
     let page: MacPortalPage
     let isSelected: Bool
+    let selectedBackground: Color
+    let selectedForeground: Color
     let canClose: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
@@ -617,8 +652,9 @@ private struct MacPortalTabButton: View {
                 Text(page.title)
                     .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
-                    .padding(.leading, 10)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 5)
+                    .offset(x: showsCloseButton ? 0 : 11.5)
             }
             .help(page.url.absoluteString)
 
@@ -630,14 +666,37 @@ private struct MacPortalTabButton: View {
             }
             .help(canClose ? "탭 닫기" : "마지막 탭은 닫을 수 없습니다")
             .disabled(!canClose)
-            .opacity(isHovering && canClose ? 1 : 0)
-            .accessibilityHidden(!canClose)
+            .opacity(showsCloseButton ? 1 : 0)
+            .scaleEffect(showsCloseButton ? 1 : 0.85)
+            .accessibilityHidden(!showsCloseButton)
         }
+        .offset(y: -2)
         .padding(.trailing, 3)
-        .background(isSelected ? Color.accentColor.opacity(0.25) : .clear)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .frame(height: 32, alignment: .center)
+        .foregroundStyle(isSelected ? selectedForeground : MacPortalTitlebarPalette.foreground)
+        .background(alignment: .bottom) {
+            if isSelected {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 7,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: 7,
+                    style: .continuous
+                )
+                .fill(selectedBackground)
+                .frame(height: 32)
+            }
+        }
         .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.18)) {
+                isHovering = hovering
+            }
+        }
+    }
+
+    private var showsCloseButton: Bool {
+        isHovering && canClose
     }
 }
 
@@ -725,6 +784,8 @@ private struct MacWindowConfigurator: NSViewRepresentable {
             guard let window else { return }
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            window.backgroundColor = MacPortalTitlebarPalette.backgroundNSColor
             window.styleMask.insert([.resizable, .fullSizeContentView])
             window.minSize = NSSize(width: 980, height: 680)
             window.collectionBehavior.insert(.fullScreenPrimary)
@@ -782,6 +843,8 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
             self.onLeadingInsetChange = onLeadingInsetChange
             hostingController.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 32)
             hostingController.view.autoresizingMask = [.width]
+            hostingController.view.wantsLayer = true
+            hostingController.view.layer?.backgroundColor = MacPortalTitlebarPalette.backgroundNSColor.cgColor
             accessoryController.view = hostingController.view
             accessoryController.layoutAttribute = .left
         }

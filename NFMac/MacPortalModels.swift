@@ -27,7 +27,7 @@ enum MacAppVersion {
     }
 
     static var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "30"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "39"
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
@@ -288,6 +288,16 @@ final class MacPortalBrowserModel: ObservableObject {
         }
         isWebSidebarHovered = hovering
         updateSidebarHoverVisibility()
+    }
+
+    func dismissTransientSidebarAfterSelection() {
+        guard sidebarHidden else { return }
+        sidebarHoverCloseTask?.cancel()
+        sidebarHoverCloseTask = nil
+        isToolbarSidebarHovered = false
+        isWebSidebarHovered = false
+        isSidebarHoverVisible = false
+        applySidebarPreviewVisibility(false)
     }
 
     func refreshNavigationState() {

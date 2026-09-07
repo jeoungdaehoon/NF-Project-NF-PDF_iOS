@@ -230,6 +230,10 @@ struct MacPortalWebView: NSViewRepresentable {
                 onSidebarNavigate(url)
             case "NFPortalMacSidebarHover":
                 if let record = message.body as? [String: Any] {
+                    if (record["dismissAfterSelection"] as? NSNumber)?.boolValue == true {
+                        model.dismissTransientSidebarAfterSelection()
+                        return
+                    }
                     let hovering = (record["hovering"] as? NSNumber)?.boolValue ?? false
                     let width = (record["width"] as? NSNumber).map { CGFloat(truncating: $0) }
                     model.setWebSidebarHover(hovering, width: width)
@@ -575,6 +579,13 @@ struct MacPortalWebView: NSViewRepresentable {
             var target = event.target;
             var link = target && target.closest && target.closest('a[href]');
             var navigation = target && target.closest && target.closest('#portal-navigation');
+            if (navigation && window.__nfMacSidebarHidden && event.isTrusted) {
+                document.documentElement.removeAttribute('data-nf-mac-sidebar-preview');
+                window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
+                    hovering: false,
+                    dismissAfterSelection: true
+                });
+            }
             if (link && navigation) {
                 try {
                     var url = new URL(link.href, location.href);
