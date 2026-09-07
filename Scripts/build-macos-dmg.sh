@@ -26,7 +26,7 @@ xcodebuild \
     -destination "generic/platform=macOS" \
     -derivedDataPath "${DERIVED_DATA}" \
     CODE_SIGNING_ALLOWED=NO \
-    build
+    clean build
 
 APP_SOURCE="${DERIVED_DATA}/Build/Products/Release/NF macOS.app"
 if [[ ! -d "${APP_SOURCE}" ]]; then
