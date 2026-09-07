@@ -269,6 +269,17 @@ private enum MacPortalPaneSelection {
     case secondary
 }
 
+private struct MacPrimaryPaneWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        let nextValue = nextValue()
+        if nextValue > 0 {
+            value = nextValue
+        }
+    }
+}
+
 private struct MacPortalWorkspace: View {
     @EnvironmentObject private var preferences: MacPortalPreferences
     @ObservedObject var authentication: MacAuthenticationModel
@@ -278,6 +289,8 @@ private struct MacPortalWorkspace: View {
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
     @State private var remotePDFRequest: MacPDFRemoteRequest?
+    @State private var primaryPaneWidth: CGFloat = 0
+    @State private var titlebarLeadingInset: CGFloat = 0
 
     var body: some View {
         HSplitView {
@@ -287,6 +300,14 @@ private struct MacPortalWorkspace: View {
                 onSidebarNavigate: navigateFromSharedSidebar
             )
             .frame(minWidth: 480)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: MacPrimaryPaneWidthPreferenceKey.self,
+                        value: proxy.size.width
+                    )
+                }
+            }
 
             if isSplit {
                 MacPortalPane(
@@ -298,35 +319,29 @@ private struct MacPortalWorkspace: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .onPreferenceChange(MacPrimaryPaneWidthPreferenceKey.self) { width in
+            if width > 0, abs(primaryPaneWidth - width) > 0.5 {
+                primaryPaneWidth = width
+            }
+        }
         .background {
-            MacTitlebarAccessory {
+            MacTitlebarAccessory(onLeadingInsetChange: { inset in
+                if abs(titlebarLeadingInset - inset) > 0.5 {
+                    titlebarLeadingInset = inset
+                }
+            }) {
                 HStack(spacing: 0) {
-                    MacPortalToolbar(
-                        model: primary,
-                        preferences: preferences,
-                        isSplit: isSplit,
-                        sidebarHidden: primary.sidebarHidden,
-                        showsSidebarButton: true,
-                        showsTrailingControls: !isSplit,
-                        onToggleSidebar: toggleSharedSidebar,
-                        onToggleSplit: toggleSplit,
-                        onActivate: { activePane = .primary }
-                    )
-                    .frame(maxWidth: .infinity)
+                    if isSplit, primaryPaneWidth > titlebarLeadingInset {
+                        primaryToolbar
+                            .frame(width: primaryPaneWidth - titlebarLeadingInset)
+                    } else {
+                        primaryToolbar
+                            .frame(maxWidth: .infinity)
+                    }
 
                     if isSplit {
-                        MacPortalToolbar(
-                            model: secondary,
-                            preferences: preferences,
-                            isSplit: true,
-                            sidebarHidden: primary.sidebarHidden,
-                            showsSidebarButton: false,
-                            showsTrailingControls: true,
-                            onToggleSidebar: toggleSharedSidebar,
-                            onToggleSplit: toggleSplit,
-                            onActivate: { activePane = .secondary }
-                        )
-                        .frame(maxWidth: .infinity)
+                        secondaryToolbar
+                            .frame(maxWidth: .infinity)
                     }
                 }
             }
@@ -385,6 +400,34 @@ private struct MacPortalWorkspace: View {
     private func navigateFromSharedSidebar(to url: URL) {
         let target = isSplit && activePane == .secondary ? secondary : primary
         target.navigate(to: url)
+    }
+
+    private var primaryToolbar: some View {
+        MacPortalToolbar(
+            model: primary,
+            preferences: preferences,
+            isSplit: isSplit,
+            sidebarHidden: primary.sidebarHidden,
+            showsSidebarButton: true,
+            showsTrailingControls: !isSplit,
+            onToggleSidebar: toggleSharedSidebar,
+            onToggleSplit: toggleSplit,
+            onActivate: { activePane = .primary }
+        )
+    }
+
+    private var secondaryToolbar: some View {
+        MacPortalToolbar(
+            model: secondary,
+            preferences: preferences,
+            isSplit: true,
+            sidebarHidden: primary.sidebarHidden,
+            showsSidebarButton: false,
+            showsTrailingControls: true,
+            onToggleSidebar: toggleSharedSidebar,
+            onToggleSplit: toggleSplit,
+            onActivate: { activePane = .secondary }
+        )
     }
 }
 
@@ -692,13 +735,18 @@ private struct MacWindowConfigurator: NSViewRepresentable {
 
 private struct MacTitlebarAccessory: NSViewRepresentable {
     let rootView: AnyView
+    let onLeadingInsetChange: (CGFloat) -> Void
 
-    init<Content: View>(@ViewBuilder content: () -> Content) {
+    init<Content: View>(
+        onLeadingInsetChange: @escaping (CGFloat) -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.onLeadingInsetChange = onLeadingInsetChange
         rootView = AnyView(content())
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(rootView: rootView)
+        Coordinator(rootView: rootView, onLeadingInsetChange: onLeadingInsetChange)
     }
 
     func makeNSView(context: Context) -> WindowAnchorView {
@@ -710,7 +758,10 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WindowAnchorView, context: Context) {
-        context.coordinator.update(rootView: rootView)
+        context.coordinator.update(
+            rootView: rootView,
+            onLeadingInsetChange: onLeadingInsetChange
+        )
         context.coordinator.install(in: nsView.window)
     }
 
@@ -723,17 +774,24 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
         private let accessoryController = NSTitlebarAccessoryViewController()
         private weak var installedWindow: NSWindow?
         private var resizeObserver: NSObjectProtocol?
+        private var onLeadingInsetChange: (CGFloat) -> Void
+        private var reportedLeadingInset: CGFloat = -1
 
-        init(rootView: AnyView) {
+        init(rootView: AnyView, onLeadingInsetChange: @escaping (CGFloat) -> Void) {
             hostingController = NSHostingController(rootView: rootView)
+            self.onLeadingInsetChange = onLeadingInsetChange
             hostingController.view.frame = NSRect(x: 0, y: 0, width: 1200, height: 32)
             hostingController.view.autoresizingMask = [.width]
             accessoryController.view = hostingController.view
             accessoryController.layoutAttribute = .left
         }
 
-        func update(rootView: AnyView) {
+        func update(
+            rootView: AnyView,
+            onLeadingInsetChange: @escaping (CGFloat) -> Void
+        ) {
             hostingController.rootView = rootView
+            self.onLeadingInsetChange = onLeadingInsetChange
             resizeToWindow()
         }
 
@@ -780,6 +838,14 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
             hostingController.view.setFrameSize(
                 NSSize(width: max(320, window.frame.width - leadingInset), height: 32)
             )
+
+            if abs(reportedLeadingInset - leadingInset) > 0.5 {
+                reportedLeadingInset = leadingInset
+                let callback = onLeadingInsetChange
+                DispatchQueue.main.async {
+                    callback(leadingInset)
+                }
+            }
         }
     }
 
