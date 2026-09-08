@@ -28,6 +28,9 @@ struct PortalRouteView: View {
     @State private var routeMessage: String?
     /// 현재 앱 내부 PDF 미리보기로 표시할 첨부 파일 정보입니다.
     @State private var attachmentPreviewItem: PortalAttachmentPreviewItem?
+    @State private var attachmentPanelFraction: CGFloat?
+    @State private var attachmentPanelDragStartWidth: CGFloat?
+    @AppStorage("nf.pdf.editor.fullscreen.mode.enabled") private var isAttachmentFullscreen = false
     /// 웹 탭바에서 진입한 네이티브 PDF 문서 페이지 표시 여부입니다.
     @State private var isPDFDocumentsPresented = false
     /// Mac 메뉴의 PDF 가져오기 명령이 표시하는 시스템 파일 선택기입니다.
@@ -118,13 +121,39 @@ struct PortalRouteView: View {
             /// ViewModel의 일회성 메시지를 Alert로 표시합니다.
             routeMessage = message
         }
-        .fullScreenCover(item: $attachmentPreviewItem) { item in
-            PortalPDFPreviewView(
-                item: item,
-                onPDFLocalStorageEnabled: {
-                    viewModel.onPDFLocalStorageChanged(true)
+        .overlay(alignment: .trailing) {
+            GeometryReader { geometry in
+                if let item = attachmentPreviewItem {
+                    let availableWidth = geometry.size.width
+                    let panelWidth = PortalAttachmentPanelLayout.width(
+                        for: availableWidth, fraction: attachmentPanelFraction, fullscreen: isAttachmentFullscreen
+                    )
+                    PortalPDFPreviewView(
+                        item: item,
+                        onPDFLocalStorageEnabled: {
+                            viewModel.onPDFLocalStorageChanged(true)
+                        },
+                        onClose: {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                attachmentPreviewItem = nil
+                            }
+                        }
+                    )
+                    .id(item.id)
+                    .frame(width: panelWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(portalTheme.backgroundColor)
+                    .clipped()
+                    .overlay(alignment: .leading) {
+                        if !isAttachmentFullscreen {
+                            attachmentPanelResizeHandle(availableWidth: availableWidth, panelWidth: panelWidth)
+                        }
+                    }
+                    .shadow(color: .black.opacity(0.2), radius: 16, x: -6)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .transition(.move(edge: .trailing))
                 }
-            )
+            }
         }
         .fullScreenCover(isPresented: $isPDFDocumentsPresented) {
             PortalPDFDocumentsView()
@@ -232,8 +261,43 @@ struct PortalRouteView: View {
         - item: PDF 미리보기 화면에 전달할 첨부 파일 정보입니다.
      */
     private func presentAttachmentPreview(_ item: PortalAttachmentPreviewItem) {
-        /// fullScreenCover(item:) 상태를 갱신해 현재 Route 위에 PDF 미리보기를 전체 화면으로 표시합니다.
-        attachmentPreviewItem = item
+        // 웹 페이지/스크롤 위치는 유지하고 네이티브 PDFView만 오른쪽에 표시합니다.
+        withAnimation(.easeInOut(duration: 0.25)) {
+            attachmentPreviewItem = item
+        }
+    }
+
+    private func attachmentPanelResizeHandle(availableWidth: CGFloat, panelWidth: CGFloat) -> some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 24)
+            .contentShape(Rectangle())
+            .overlay {
+                Capsule()
+                    .fill(portalTheme.mutedColor.opacity(0.65))
+                    .frame(width: 4, height: 48)
+            }
+            .offset(x: -12)
+            .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { value in
+                    guard availableWidth > 0 else { return }
+                    let start = attachmentPanelDragStartWidth ?? panelWidth
+                    attachmentPanelDragStartWidth = start
+                    let width = PortalAttachmentPanelLayout.resizedWidth(
+                        startWidth: start, translation: value.translation.width, availableWidth: availableWidth
+                    )
+                    attachmentPanelFraction = width / availableWidth
+                }
+                .onEnded { _ in attachmentPanelDragStartWidth = nil })
+            .accessibilityLabel("PDF 패널 너비 조절")
+            .accessibilityValue("\(Int(panelWidth)) 포인트")
+            .accessibilityAdjustableAction { direction in
+                guard availableWidth > 0 else { return }
+                let delta: CGFloat = direction == .increment ? -40 : 40
+                attachmentPanelFraction = PortalAttachmentPanelLayout.resizedWidth(
+                    startWidth: panelWidth, translation: delta, availableWidth: availableWidth
+                ) / availableWidth
+            }
     }
 
     /** 웹 탭바의 PDF 문서 메뉴에서 네이티브 문서 페이지로 전환합니다. */

@@ -236,6 +236,34 @@ struct NFTests {
         }
     }
 
+    @Test func cloudAuthPopupRestrictsNavigationToAppleHTTPS() {
+        for value in ["about:blank", "https://idmsa.apple.com/auth", "https://appleid.apple.com/", "https://www.icloud.com/"] {
+            #expect(PortalCloudAuthPopup.allows(URL(string: value)!))
+        }
+        for value in ["http://idmsa.apple.com/", "https://apple.com.evil.test/", "https://evilapple.com/", "file:///tmp/test", "https://example.com/"] {
+            #expect(!PortalCloudAuthPopup.allows(URL(string: value)!))
+        }
+    }
+
+    @Test func attachmentPanelResizesAndRestoresWidthAfterFullscreen() {
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -100, availableWidth: 1024) == 612)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 100, availableWidth: 1024) == 412)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 1000, availableWidth: 1024) == 320)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -1000, availableWidth: 1024) == 1000)
+        #expect(PortalAttachmentPanelLayout.width(for: 1024, fraction: 0.6, fullscreen: true) == 1024)
+        #expect(PortalAttachmentPanelLayout.width(for: 1024, fraction: 0.6) == 1024 * 0.6)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 366, translation: 100, availableWidth: 390) == 320)
+        #expect(PortalAttachmentPanelLayout.width(for: 390, fraction: 0.6, fullscreen: true) == 390)
+    }
+
+    @Test func attachmentPanelKeepsWebVisibleAcrossPhoneAndTabletWidths() {
+        #expect(PortalAttachmentPanelLayout.width(for: 390) == 366)
+        #expect(PortalAttachmentPanelLayout.width(for: 1024) == 512)
+        #expect(PortalAttachmentPanelLayout.width(for: 1366) == 683)
+        #expect(PortalAttachmentPanelLayout.width(for: 600) == 420)
+        #expect(PortalAttachmentPanelLayout.width(for: 0) == 0)
+    }
+
     @Test func pressureCenterlineReducesJitterWithoutMovingEndpoints() {
         let points = (0..<100).map { CGPoint(x: CGFloat($0), y: $0.isMultiple(of: 2) ? 0.2 : -0.2) }
         let smoothed = PortalPDFVariableWidthStroke.smoothedCenterline(points: points, baseLineWidth: 4)

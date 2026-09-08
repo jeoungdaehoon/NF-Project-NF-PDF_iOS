@@ -240,6 +240,9 @@ extension PortalPDFPreviewView {
             finishPDFDocumentTitleEditing()
         }
         withAnimation(.easeInOut(duration: 0.2)) {
+            if !isPDFEditorFullscreenModeEnabled {
+                isPDFPresentationModeEnabled = false
+            }
             isPDFEditorFullscreenModeEnabled.toggle()
             isPDFSettingsPresented = false
         }

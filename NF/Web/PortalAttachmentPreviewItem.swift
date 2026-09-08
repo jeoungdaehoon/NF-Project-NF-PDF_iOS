@@ -7,6 +7,27 @@
 
 import Foundation
 
+/// iPad는 우측 절반, 좁은 iPhone은 원래 페이지가 조금 보이는 슬라이드 폭을 사용합니다.
+enum PortalAttachmentPanelLayout {
+    static func width(for availableWidth: CGFloat, fraction: CGFloat? = nil, fullscreen: Bool = false) -> CGFloat {
+        guard availableWidth.isFinite, availableWidth > 0 else { return 0 }
+        if fullscreen { return availableWidth }
+        if let fraction, fraction.isFinite {
+            return resizedWidth(startWidth: availableWidth * fraction, translation: 0, availableWidth: availableWidth)
+        }
+        if availableWidth < 600 { return max(0, availableWidth - 24) }
+        return min(availableWidth, max(420, availableWidth * 0.5))
+    }
+
+    static func resizedWidth(startWidth: CGFloat, translation: CGFloat, availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth.isFinite, availableWidth > 0,
+              startWidth.isFinite, translation.isFinite else { return 0 }
+        let maximum = max(0, availableWidth - 24)
+        let minimum = min(320, maximum)
+        return min(maximum, max(minimum, startWidth - translation))
+    }
+}
+
 /**
  Portal 첨부 파일 내부 미리보기 화면에 전달할 데이터 모델입니다. ( J.D.H )
  - Version: 1.0.0

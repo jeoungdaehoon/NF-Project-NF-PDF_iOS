@@ -4,11 +4,12 @@ import SwiftUI
 
 private enum MacPortalTitlebarPalette {
     static let backgroundNSColor = NSColor(
-        srgbRed: 85.0 / 255.0,
-        green: 85.0 / 255.0,
-        blue: 84.0 / 255.0,
+        srgbRed: 40.0 / 255.0,
+        green: 40.0 / 255.0,
+        blue: 40.0 / 255.0,
         alpha: 1
     )
+    static let background = Color(nsColor: backgroundNSColor)
     static let foreground = Color(
         nsColor: NSColor(
             srgbRed: 220.0 / 255.0,
@@ -18,6 +19,40 @@ private enum MacPortalTitlebarPalette {
         )
     )
     static let separator = Color.white.opacity(0.18)
+}
+
+private final class MacPortalTitlebarBackgroundView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private func applyMacPortalTitlebarBackground(to window: NSWindow) {
+    guard let closeButton = window.standardWindowButton(.closeButton),
+          let titlebarView = closeButton.superview else { return }
+
+    // macOS draws the traffic-light area in a separate AppKit titlebar view.
+    // An opaque child must sit above the system material but below the buttons;
+    // changing only the container layer is hidden by NSVisualEffectView.
+    let backgroundIdentifier = NSUserInterfaceItemIdentifier("NFMacTitlebarBackground")
+    let backgroundView: NSView
+    if let existing = titlebarView.subviews.first(where: { $0.identifier == backgroundIdentifier }) {
+        backgroundView = existing
+    } else {
+        let created = MacPortalTitlebarBackgroundView(frame: titlebarView.bounds)
+        created.identifier = backgroundIdentifier
+        created.autoresizingMask = [.width, .height]
+        titlebarView.addSubview(created, positioned: .below, relativeTo: nil)
+        backgroundView = created
+    }
+    backgroundView.frame = titlebarView.bounds
+    backgroundView.wantsLayer = true
+    backgroundView.layer?.backgroundColor = MacPortalTitlebarPalette.backgroundNSColor.cgColor
+
+    [titlebarView, titlebarView.superview]
+        .compactMap { $0 }
+        .forEach { view in
+            view.wantsLayer = true
+            view.layer?.backgroundColor = MacPortalTitlebarPalette.backgroundNSColor.cgColor
+        }
 }
 
 struct MacPortalRootView: View {
@@ -461,12 +496,12 @@ private struct MacPortalPane: View {
         VStack(spacing: 0) {
             // The interactive toolbar is hosted by a native title-bar accessory.
             // Keep its exact layout height here so the web view never shifts.
-            Color.clear
+            MacPortalTitlebarPalette.background
                 .frame(height: 32)
                 .allowsHitTesting(false)
             if model.sidebarHidden {
                 GeometryReader { geometry in
-                    let sidebarInset = model.isSidebarHoverVisible ? model.sidebarHoverWidth : 0
+                    let sidebarInset = model.isSidebarHoverVisible ? max(model.sidebarHoverWidth - 1, 0) : 0
 
                     ZStack(alignment: .topLeading) {
                         portalWebView
@@ -475,7 +510,10 @@ private struct MacPortalPane: View {
                         MacBreadcrumbBar(model: model, onActivate: onActivate)
                             .frame(width: geometry.size.width)
                             .offset(x: sidebarInset)
-                            .animation(.easeInOut(duration: 0.3), value: model.isSidebarHoverVisible)
+                            .animation(
+                                .spring(response: 0.34, dampingFraction: 0.88, blendDuration: 0.05),
+                                value: model.isSidebarHoverVisible
+                            )
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
                     .clipped()
@@ -623,7 +661,7 @@ private struct MacPortalToolbar: View {
         .padding(.leading, 10)
         .padding(.trailing, 10)
         .frame(height: 32, alignment: .center)
-        .background(Color.clear)
+        .background(MacPortalTitlebarPalette.background)
         .background(alignment: .bottom) {
             Rectangle()
                 .fill(separatorColor)
@@ -719,9 +757,9 @@ private struct MacBreadcrumbBar: View {
             }
             .padding(.horizontal, 14)
         }
-        .font(.system(size: 13, weight: .medium))
+        .font(.system(size: 12, weight: .medium))
         .foregroundStyle(model.themeForeground)
-        .frame(height: 34)
+        .frame(height: 26)
         .background(model.themeBackground)
     }
 }
@@ -790,6 +828,7 @@ private struct MacWindowConfigurator: NSViewRepresentable {
             window.minSize = NSSize(width: 980, height: 680)
             window.collectionBehavior.insert(.fullScreenPrimary)
             window.isMovableByWindowBackground = false
+            applyMacPortalTitlebarBackground(to: window)
         }
     }
 }
@@ -860,6 +899,7 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
 
         func install(in window: NSWindow?) {
             guard let window else { return }
+            applyMacPortalTitlebarBackground(to: window)
             if installedWindow !== window {
                 uninstall()
                 installedWindow = window
@@ -892,6 +932,7 @@ private struct MacTitlebarAccessory: NSViewRepresentable {
 
         private func resizeToWindow() {
             guard let window = installedWindow else { return }
+            applyMacPortalTitlebarBackground(to: window)
             let leadingInset: CGFloat
             if let zoomButton = window.standardWindowButton(.zoomButton) {
                 leadingInset = zoomButton.convert(zoomButton.bounds, to: nil).maxX + 8

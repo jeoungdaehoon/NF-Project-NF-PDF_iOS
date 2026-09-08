@@ -56,6 +56,12 @@ final class PortalPDFBackgroundSaveController {
 struct PortalPDFPreviewView: View {
     /// 전체 화면 PDF 보기 닫기 처리를 위한 SwiftUI dismiss 환경 값입니다.
     @Environment(\.dismiss) var dismiss
+    /// 웹 위 슬라이드 패널에서는 모달 dismiss 대신 부모의 패널 상태를 닫습니다.
+    let onClose: (() -> Void)?
+
+    func closePDFPreview() {
+        if let onClose { onClose() } else { dismiss() }
+    }
     /// 웹 포털에서 전달된 현재 네이티브 테마입니다.
     @Environment(\.portalAppTheme) var portalTheme
     /// 편집 박스의 블러 틴트를 시스템 색상과 반대로 적용하기 위한 환경 값입니다.
@@ -96,7 +102,8 @@ struct PortalPDFPreviewView: View {
 
     init(
         item: PortalAttachmentPreviewItem,
-        onPDFLocalStorageEnabled: @escaping () -> Void = {}
+        onPDFLocalStorageEnabled: @escaping () -> Void = {},
+        onClose: (() -> Void)? = nil
     ) {
         var displayItem = item
         displayItem.title = item.title.removingPercentEncoding ?? item.title
@@ -105,6 +112,7 @@ struct PortalPDFPreviewView: View {
         _switchingHistoryRecordID = State(initialValue: nil)
         self.historyCookieHeader = item.cookieHeader
         self.onPDFLocalStorageEnabled = onPDFLocalStorageEnabled
+        self.onClose = onClose
     }
 
     /// 시스템 색상 모드와 반대되는 밝기의 블러 배경을 편집 박스에 제공합니다.
@@ -452,7 +460,7 @@ struct PortalPDFPreviewView: View {
                 disablePDFPresentationMode()
             } else {
                 persistPendingLocalPDFEdits()
-                dismiss()
+                closePDFPreview()
             }
         } label: {
             Image(systemName: "xmark")
@@ -690,7 +698,7 @@ struct PortalPDFPreviewView: View {
     var pdfFullscreenTabBarCloseButton: some View {
         Button {
             persistPendingLocalPDFEdits()
-            dismiss()
+            closePDFPreview()
         } label: {
             Image(systemName: "xmark")
                 .frame(width: 42, height: 42)
@@ -895,7 +903,7 @@ struct PortalPDFPreviewView: View {
                     id: currentDocumentHistoryID
                 )
                 isPDFDocumentOperationInProgress = false
-                dismiss()
+                closePDFPreview()
             } catch {
                 isPDFDocumentOperationInProgress = false
                 pdfDocumentOperationErrorMessage = "현재 PDF 문서를 휴지통으로 이동하지 못했습니다."
@@ -1250,6 +1258,19 @@ struct PortalPDFPreviewView: View {
 
     var pdfSettingsPopoverContent: some View {
         VStack(alignment: .leading, spacing: 4) {
+            Button {
+                togglePDFEditorFullscreenMode()
+            } label: {
+                pdfSettingsRow(
+                    isPDFEditorFullscreenModeEnabled ? "전체화면 모드 종료" : "전체화면 모드",
+                    systemImage: isPDFEditorFullscreenModeEnabled ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                    subtitle: "X · 문서 탭 · 설정만 상단에 표시"
+                )
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+
             Toggle(isOn: $isPDFPresentationModeEnabled) {
                 pdfSettingsRow(
                     "프레젠테이션 모드",

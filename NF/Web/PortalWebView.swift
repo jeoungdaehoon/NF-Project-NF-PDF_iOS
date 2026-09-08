@@ -342,6 +342,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         - coordinator: WKWebView Coordinator 입니다.
      */
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.cloudAuthPopup?.closePopup()
         coordinator.cancelInitialLoadTimeout()
         /// ScriptMessageHandler 순환 참조를 막기 위해 Bridge를 제거합니다.
         webView.configuration.userContentController.removeScriptMessageHandler(forName: Coordinator.googleLoginBridgeName)
@@ -367,6 +368,7 @@ extension PortalWebViewContent {
      - Date: 2026.07.29
      */
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIDocumentPickerDelegate {
+        var cloudAuthPopup: PortalCloudAuthPopup?
         /// Google 로그인 Bridge 이름 입니다.
         static let googleLoginBridgeName = "NFPortalIOSGoogleLogin"
         /// 로그아웃 Bridge 이름 입니다.
@@ -672,6 +674,14 @@ extension PortalWebViewContent {
             - decisionHandler: 이동 허용/취소 처리 Callback 입니다.
          */
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if navigationAction.targetFrame == nil,
+               navigationAction.request.url?.absoluteString == "about:blank",
+               navigationAction.sourceFrame.isMainFrame,
+               let sourceURL = navigationAction.sourceFrame.request.url,
+               viewModel.isPortalURL(sourceURL), sourceURL.path == "/settings" {
+                decisionHandler(.allow)
+                return
+            }
             /// URL이 없는 이동은 기본 허용합니다.
             guard let url = navigationAction.request.url else {
                 decisionHandler(.allow)
@@ -906,6 +916,26 @@ extension PortalWebViewContent {
          - Returns: `WKWebView?`
          */
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            if navigationAction.request.url?.absoluteString == "about:blank",
+               navigationAction.sourceFrame.isMainFrame,
+               let sourceURL = navigationAction.sourceFrame.request.url,
+               viewModel.isPortalURL(sourceURL), sourceURL.path == "/settings", cloudAuthPopup == nil,
+               let presenter = webView.window?.rootViewController {
+                var top = presenter
+                while let presented = top.presentedViewController { top = presented }
+                guard !top.isBeingDismissed else { return nil }
+                // WebKit이 전달한 설정으로 생성해야 window.opener/postMessage 관계가 유지됩니다.
+                // 인증 창에는 포털 네이티브 브리지와 주입 스크립트를 노출하지 않습니다.
+                configuration.userContentController = WKUserContentController()
+                let popup = PortalCloudAuthPopup(configuration: configuration)
+                popup.onClose = { [weak self] in self?.cloudAuthPopup = nil }
+                cloudAuthPopup = popup
+                let navigation = UINavigationController(rootViewController: popup)
+                navigation.modalPresentationStyle = .formSheet
+                navigation.isModalInPresentation = true
+                top.present(navigation, animated: true)
+                return popup.webView
+            }
             /// Portal 내부 화면은 현재 WKWebView에서 이어서 표시하되, 첨부 파일은 Portal 화면을 덮지 않도록 외부 열기로 분리합니다.
             if let url = navigationAction.request.url {
                 if isAttachmentNavigationURL(url) {
