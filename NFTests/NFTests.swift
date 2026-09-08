@@ -245,6 +245,23 @@ struct NFTests {
         }
     }
 
+    @Test func pdfPreviewConstructionDoesNotWriteHistory() {
+        let key = PortalPDFDocumentHistoryStore.storageKey
+        let before = UserDefaults.standard.data(forKey: key)
+        let item = PortalAttachmentPreviewItem(url: URL(string: "https://example.com/constructor-regression.pdf")!, cookieHeader: nil)
+        for _ in 0..<20 { _ = PortalPDFPreviewView(item: item) }
+        #expect(UserDefaults.standard.data(forKey: key) == before)
+    }
+
+    @Test func pdfOpeningWorkerDecodesAndRejectsInvalidData() async throws {
+        let prepared = await PortalPDFOpeningWorker.decode(data: onePagePDFData())
+        #expect(try #require(prepared).document.pageCount == 1)
+        let invalid = await PortalPDFOpeningWorker.decode(data: Data("not a pdf".utf8))
+        #expect(invalid == nil)
+        let missing = await PortalPDFOpeningWorker.read(fileURL: URL(fileURLWithPath: "/private/tmp/\(UUID().uuidString).pdf"))
+        #expect(missing == nil)
+    }
+
     @Test func attachmentPanelResizesAndRestoresWidthAfterFullscreen() {
         #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -100, availableWidth: 1024) == 612)
         #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 100, availableWidth: 1024) == 412)

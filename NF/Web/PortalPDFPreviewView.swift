@@ -108,7 +108,9 @@ struct PortalPDFPreviewView: View {
         var displayItem = item
         displayItem.title = item.title.removingPercentEncoding ?? item.title
         _activeItem = State(initialValue: displayItem)
-        _documentHistoryRecords = State(initialValue: PortalPDFDocumentHistoryStore.record(displayItem))
+        // View 값은 레이아웃 갱신마다 재생성될 수 있으므로 init에서는 저장하지 않습니다.
+        // 열람 기록은 아래 .task(id: item.id)에서 실제 진입 시 한 번만 기록합니다.
+        _documentHistoryRecords = State(initialValue: [])
         _switchingHistoryRecordID = State(initialValue: nil)
         self.historyCookieHeader = item.cookieHeader
         self.onPDFLocalStorageEnabled = onPDFLocalStorageEnabled
@@ -132,6 +134,7 @@ struct PortalPDFPreviewView: View {
     let pdfLocalStorageRepository = PortalPDFLocalStorageRepository()
     /// PDF 다운로드 및 변환 진행 상태입니다.
     @State var state: PortalPDFPreviewLoadState = .loading
+    @State private var documentOpeningToken: UUID?
     /// 로컬에 없는 PDF를 처음 열 때 표시할 저장 방식 안내입니다.
     @State var initialOpenPrompt: PortalPDFInitialOpenPrompt?
     /// 로컬 저장 다운로드의 실제 수신 진행률입니다.
@@ -1009,6 +1012,7 @@ struct PortalPDFPreviewView: View {
                 updatePDFPresentationMode(isEnabled: isEnabled)
             }
             .onDisappear {
+                documentOpeningToken = nil
                 localAutosaveController.cancelScheduledSave()
                 if !suppressPDFPersistenceOnDisappear {
                     persistPendingLocalPDFEdits()
@@ -2137,16 +2141,20 @@ struct PortalPDFPreviewView: View {
     /** 로컬 저장 여부를 먼저 확인하고 최초 문서에 필요한 안내를 표시합니다. */
     @MainActor
     func preparePDFDocumentOpening() async {
+        let token = UUID()
+        documentOpeningToken = token
+        let openingItemID = item.id
         state = .loading
         localDownloadProgress = nil
         /// 설정이 꺼져 있어도 이미 저장된 문서는 로컬 파일을 우선 사용합니다.
         // PDFView가 편집 중인 파일을 자동 저장이 원자 교체하면 PDFKit의 지연 로딩이
         // 파일 변경을 감지해 타일을 다시 만들 수 있습니다. 메모리 Data로 문서를 열어
         // 화면 문서와 디스크 저장 파일의 생명주기를 분리합니다.
-        if let localData = pdfLocalStorageRepository.data(for: item),
-           let localDocument = PDFDocument(data: localData),
-           localDocument.pageCount > 0 {
-            _ = localDocument.restorePortalEditableAnnotations()
+        let fileURL = pdfLocalStorageRepository.fileURLForOpening(for: item)
+        let prepared = await PortalPDFOpeningWorker.read(fileURL: fileURL)
+        guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItemID else { return }
+        if let localDocument = prepared?.document {
+            guard await restoreOpeningAnnotations(localDocument, token: token, itemID: openingItemID) else { return }
             state = .loaded(localDocument)
             return
         }
@@ -2156,6 +2164,9 @@ struct PortalPDFPreviewView: View {
     /** PDF를 다운로드하고 선택한 방식에 따라 저장한 뒤 PDFView를 표시합니다. */
     @MainActor
     func downloadAndOpenPDF(saveLocally: Bool) async {
+        let token = UUID()
+        documentOpeningToken = token
+        let openingItem = item
         state = .loading
         localDownloadProgress = saveLocally ? 0 : nil
         do {
@@ -2167,10 +2178,12 @@ struct PortalPDFPreviewView: View {
             let downloader = PortalPDFProgressDownloader { progress in
                 guard saveLocally else { return }
                 Task { @MainActor in
+                    guard documentOpeningToken == token, item.id == openingItem.id else { return }
                     localDownloadProgress = progress
                 }
             }
             let (data, response) = try await downloader.download(request)
+            guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItem.id else { return }
             guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
                 throw PortalPDFPreviewError.downloadFailed
             }
@@ -2188,19 +2201,34 @@ struct PortalPDFPreviewView: View {
             } else {
                 documentData = data
             }
-            guard let document = PDFDocument(data: documentData), document.pageCount > 0 else {
+            let prepared = await PortalPDFOpeningWorker.decode(data: documentData)
+            guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItem.id else { return }
+            guard let document = prepared?.document else {
                 throw PortalPDFPreviewError.invalidPDF
             }
-            _ = document.restorePortalEditableAnnotations()
+            guard await restoreOpeningAnnotations(document, token: token, itemID: openingItem.id) else { return }
             state = .loaded(document)
         } catch let error as PortalPDFPreviewError {
+            guard documentOpeningToken == token, item.id == openingItem.id else { return }
             state = .failed(error.localizedDescription)
         } catch {
+            guard documentOpeningToken == token, item.id == openingItem.id else { return }
             state = .failed(saveLocally
                 ? "PDF를 로컬에 저장하는 중 오류가 발생했습니다."
                 : "첨부 파일을 불러오는 중 오류가 발생했습니다.")
         }
         localDownloadProgress = nil
+    }
+
+    /// UIKit 기반 사용자 주석은 메인 액터에서 복원하되 페이지 사이에 UI 처리를 양보합니다.
+    @MainActor
+    private func restoreOpeningAnnotations(_ document: PDFDocument, token: UUID, itemID: UUID) async -> Bool {
+        for index in 0..<document.pageCount {
+            await Task.yield()
+            guard !Task.isCancelled, documentOpeningToken == token, item.id == itemID else { return false }
+            _ = document.restorePortalEditableAnnotations(pageRange: index..<(index + 1))
+        }
+        return !Task.isCancelled && documentOpeningToken == token && item.id == itemID
     }
 }
 

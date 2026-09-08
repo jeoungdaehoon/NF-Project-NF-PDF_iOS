@@ -198,6 +198,10 @@ final class PortalPDFLocalStorageRepository {
     }
 
     /** 캐시된 PDF 데이터를 조회합니다. */
+    func fileURLForOpening(for item: PortalAttachmentPreviewItem) -> URL {
+        item.localFileURL ?? cacheFileURL(for: item)
+    }
+
     func data(for item: PortalAttachmentPreviewItem) -> Data? {
         let fileURL = item.localFileURL ?? cacheFileURL(for: item)
         return try? Data(contentsOf: fileURL, options: [.mappedIfSafe])

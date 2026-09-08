@@ -341,9 +341,9 @@ extension PDFDocument {
 
     /// 저장된 Stamp 메타데이터를 앱의 선택·이동 가능한 이미지·도형·텍스트 Annotation으로 복원합니다.
     @discardableResult
-    func restorePortalEditableAnnotations() -> Bool {
+    func restorePortalEditableAnnotations(pageRange: Range<Int>? = nil) -> Bool {
         var didOptimizeInk = false
-        for pageIndex in 0..<pageCount {
+        for pageIndex in pageRange ?? 0..<pageCount {
             guard let page = page(at: pageIndex) else { continue }
             let annotations = page.annotations
             let restoredAnnotations = annotations.map { annotation -> PDFAnnotation in
