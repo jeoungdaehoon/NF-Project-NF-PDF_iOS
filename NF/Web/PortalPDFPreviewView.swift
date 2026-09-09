@@ -58,6 +58,12 @@ struct PortalPDFPreviewView: View {
     @Environment(\.dismiss) var dismiss
     /// 웹 위 슬라이드 패널에서는 모달 dismiss 대신 부모의 패널 상태를 닫습니다.
     let onClose: (() -> Void)?
+    /// 슬라이드 패널은 너비 상태와 무관하게 X·탭·설정 한 줄 상단 UI를 사용합니다.
+    let usesCompactTitleBar: Bool
+
+    var usesFullscreenTitleBar: Bool {
+        usesCompactTitleBar || isPDFEditorFullscreenModeEnabled
+    }
 
     func closePDFPreview() {
         if let onClose { onClose() } else { dismiss() }
@@ -103,7 +109,8 @@ struct PortalPDFPreviewView: View {
     init(
         item: PortalAttachmentPreviewItem,
         onPDFLocalStorageEnabled: @escaping () -> Void = {},
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        usesCompactTitleBar: Bool = false
     ) {
         var displayItem = item
         displayItem.title = item.title.removingPercentEncoding ?? item.title
@@ -115,6 +122,7 @@ struct PortalPDFPreviewView: View {
         self.historyCookieHeader = item.cookieHeader
         self.onPDFLocalStorageEnabled = onPDFLocalStorageEnabled
         self.onClose = onClose
+        self.usesCompactTitleBar = usesCompactTitleBar
     }
 
     /// 시스템 색상 모드와 반대되는 밝기의 블러 배경을 편집 박스에 제공합니다.
@@ -497,7 +505,7 @@ struct PortalPDFPreviewView: View {
     }
 
     var showsPDFNavigationControls: Bool {
-        !isPDFEditorFullscreenModeEnabled &&
+        !usesFullscreenTitleBar &&
             (!isPDFPresentationModeEnabled || arePDFPresentationControlsVisible)
     }
 
@@ -638,7 +646,7 @@ struct PortalPDFPreviewView: View {
     /// 지금까지 열어본 문서를 가로 탭으로 표시하며 활성 문서는 항상 가장 왼쪽에 둡니다.
     var pdfDocumentHistoryTabBar: some View {
         HStack(spacing: 0) {
-            if isPDFEditorFullscreenModeEnabled {
+            if usesFullscreenTitleBar {
                 pdfFullscreenTabBarCloseButton
             }
 
@@ -683,7 +691,7 @@ struct PortalPDFPreviewView: View {
             }
             .frame(maxWidth: .infinity)
 
-            if isPDFEditorFullscreenModeEnabled {
+            if usesFullscreenTitleBar {
                 pdfFullscreenTabBarSettingsButton
             }
         }

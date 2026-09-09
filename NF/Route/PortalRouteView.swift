@@ -137,7 +137,8 @@ struct PortalRouteView: View {
                             withAnimation(.easeInOut(duration: 0.25)) {
                                 attachmentPreviewItem = nil
                             }
-                        }
+                        },
+                        usesCompactTitleBar: true
                     )
                     .id(item.id)
                     .frame(width: panelWidth)
@@ -262,7 +263,8 @@ struct PortalRouteView: View {
      */
     private func presentAttachmentPreview(_ item: PortalAttachmentPreviewItem) {
         // 웹 페이지/스크롤 위치는 유지하고 네이티브 PDFView만 오른쪽에 표시합니다.
-        withAnimation(.easeInOut(duration: 0.25)) {
+        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.52)) {
+            isAttachmentFullscreen = false
             attachmentPreviewItem = item
         }
     }
@@ -270,14 +272,15 @@ struct PortalRouteView: View {
     private func attachmentPanelResizeHandle(availableWidth: CGFloat, panelWidth: CGFloat) -> some View {
         Rectangle()
             .fill(Color.clear)
-            .frame(width: 24)
+            .frame(width: 32)
             .contentShape(Rectangle())
             .overlay {
-                Capsule()
-                    .fill(portalTheme.mutedColor.opacity(0.65))
-                    .frame(width: 4, height: 48)
+                Image(systemName: "arrow.left.and.right")
+                    .font(.system(size: 15))
+                    .frame(width: 30, height: 38)
+                    .background(portalTheme.backgroundColor, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(portalTheme.mutedColor.opacity(0.4)))
             }
-            .offset(x: -12)
             .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
                 .onChanged { value in
                     guard availableWidth > 0 else { return }

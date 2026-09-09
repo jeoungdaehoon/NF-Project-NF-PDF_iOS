@@ -15,15 +15,14 @@ enum PortalAttachmentPanelLayout {
         if let fraction, fraction.isFinite {
             return resizedWidth(startWidth: availableWidth * fraction, translation: 0, availableWidth: availableWidth)
         }
-        if availableWidth < 600 { return max(0, availableWidth - 24) }
-        return min(availableWidth, max(420, availableWidth * 0.5))
+        return resizedWidth(startWidth: availableWidth * 0.5, translation: 0, availableWidth: availableWidth)
     }
 
     static func resizedWidth(startWidth: CGFloat, translation: CGFloat, availableWidth: CGFloat) -> CGFloat {
         guard availableWidth.isFinite, availableWidth > 0,
               startWidth.isFinite, translation.isFinite else { return 0 }
-        let maximum = max(0, availableWidth - 24)
-        let minimum = min(320, maximum)
+        let maximum = availableWidth * (availableWidth < 768 ? 0.9 : 0.8)
+        let minimum = min(maximum, max(300, availableWidth * 0.3))
         return min(maximum, max(minimum, startWidth - translation))
     }
 }

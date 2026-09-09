@@ -20,7 +20,8 @@ enum PortalPDFVariableWidthStroke {
         pressures: [CGFloat],
         baseLineWidth: CGFloat
     ) -> UIBezierPath? {
-        guard !points.isEmpty, points.count == pressures.count else { return nil }
+        guard !points.isEmpty, points.count == pressures.count,
+              baseLineWidth.isFinite, baseLineWidth > 0 else { return nil }
 
         guard let firstPoint = points.first else { return nil }
 
@@ -31,7 +32,7 @@ enum PortalPDFVariableWidthStroke {
         let smoothedPressures = pressures.weightedMovingAverage(radius: 4)
         let widths = continuousLineWidths(pressures: smoothedPressures, baseLineWidth: baseLineWidth)
         guard renderedPoints.count > 1 else {
-            let diameter = widths.first ?? max(0.3, baseLineWidth)
+            let diameter = widths.first ?? baseLineWidth
             return UIBezierPath(
                 ovalIn: CGRect(
                     x: firstPoint.x - diameter / 2,
@@ -98,7 +99,7 @@ enum PortalPDFVariableWidthStroke {
         guard points.count > 2 else { return points }
         let averaged = points.weightedMovingAverage(radius: 2)
         // 큰 방향 전환은 유지하고 확대 시 보이는 센서 좌표의 작은 흔들림만 줄입니다.
-        let maximumDisplacement = max(0.3, baseLineWidth) * 0.18
+        let maximumDisplacement = max(0, baseLineWidth) * 0.18
         var result = points
         for index in 1..<(points.count - 1) {
             let dx = averaged[index].x - points[index].x
@@ -115,7 +116,9 @@ enum PortalPDFVariableWidthStroke {
     static func lineWidth(for pressure: CGFloat, baseLineWidth: CGFloat) -> CGFloat {
         let normalizedPressure = min(1, max(0, pressure))
         // 기존 0.45~1.70배보다 압력 대비 범위를 넓혀 강하게 누를 때 굵기 차이를 분명하게 합니다.
-        return max(0.3, baseLineWidth * (0.42 + normalizedPressure * 1.58))
+        // 표시 경로에는 펜 설정 UI의 최소 굵기를 적용하지 않습니다.
+        // 올가미로 줄인 폭과 압력 비율이 저장·재표시에서도 그대로 유지되어야 합니다.
+        return max(0, baseLineWidth) * (0.42 + normalizedPressure * 1.58)
     }
 
     static func continuousLineWidths(
@@ -124,7 +127,7 @@ enum PortalPDFVariableWidthStroke {
     ) -> [CGFloat] {
         guard !pressures.isEmpty else { return [] }
         let targets = pressures.map { lineWidth(for: $0, baseLineWidth: baseLineWidth) }
-        let maximumStep = max(0.05, baseLineWidth * 0.075)
+        let maximumStep = max(0, baseLineWidth) * 0.075
         guard targets.count > 2 else { return targets }
         var widths = targets
         let lastIndex = widths.index(before: widths.endIndex)

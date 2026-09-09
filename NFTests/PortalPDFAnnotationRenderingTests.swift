@@ -12,6 +12,63 @@ import XCTest
 
 @MainActor
 final class PortalPDFAnnotationRenderingTests: XCTestCase {
+    func testTinyPressureStrokeKeepsScaledGeometryAfterReleaseAndRestore() throws {
+        let points = [CGPoint(x: 10, y: 20), CGPoint(x: 20, y: 22), CGPoint(x: 30, y: 19), CGPoint(x: 40, y: 25)]
+        let pressure = try XCTUnwrap(PortalPDFPressureInkAnnotation.groupedAnnotation(
+            fragments: [.init(points: points, pressures: [0.1, 0.9, 0.2, 0.4])], baseLineWidth: 1, color: .black
+        ))
+        let original = try XCTUnwrap(pressure.strokePaths.first).bounds
+        let scale: CGFloat = 0.1
+        pressure.transformStroke(scale: scale, rotation: 0, around: .zero)
+        let scaled = try XCTUnwrap(pressure.strokePaths.first).bounds
+        XCTAssertEqual(scaled.minX, original.minX * scale, accuracy: 0.00001)
+        XCTAssertEqual(scaled.minY, original.minY * scale, accuracy: 0.00001)
+        XCTAssertEqual(scaled.width, original.width * scale, accuracy: 0.00001)
+        XCTAssertEqual(scaled.height, original.height * scale, accuracy: 0.00001)
+        let document = PDFDocument()
+        let page = PDFPage()
+        document.insert(page, at: 0)
+        page.addAnnotation(pressure)
+        let edits = PortalPDFPageEditDocument.capture(from: document)
+        let restored = try JSONDecoder().decode(PortalPDFPageEditDocument.self, from: JSONEncoder().encode(edits))
+        restored.installInteractionProxies(in: document)
+        let reloaded = try XCTUnwrap(page.annotations.compactMap { $0 as? PortalPDFPressureInkAnnotation }.first)
+        XCTAssertEqual(try XCTUnwrap(PortalPDFPressureInkAnnotation.storedBaseLineWidth(in: reloaded)), 0.1, accuracy: 0.00001)
+        XCTAssertEqual(try XCTUnwrap(reloaded.strokePaths.first).bounds.height, scaled.height, accuracy: 0.00001)
+        pressure.transformStroke(scale: 10, rotation: 0, around: .zero)
+        XCTAssertEqual(try XCTUnwrap(pressure.strokePaths.first).bounds.height, original.height, accuracy: 0.00001)
+    }
+
+    func testTinyStandardInkOverlayDoesNotClampStoredWidth() throws {
+        let document = PDFDocument()
+        let page = PDFPage()
+        page.setBounds(CGRect(x: 0, y: 0, width: 320, height: 480), for: .mediaBox)
+        document.insert(page, at: 0)
+        let ink = PDFAnnotation(bounds: CGRect(x: 10, y: 10, width: 40, height: 40), forType: .ink, withProperties: nil)
+        let path = UIBezierPath()
+        path.move(to: .zero)
+        path.addLine(to: CGPoint(x: 30, y: 30))
+        ink.add(path)
+        let border = PDFBorder()
+        border.lineWidth = 0.04
+        ink.border = border
+        page.addAnnotation(ink)
+        let edits = PortalPDFPageEditDocument.capture(from: document)
+        let restored = try JSONDecoder().decode(PortalPDFPageEditDocument.self, from: JSONEncoder().encode(edits))
+        restored.installInteractionProxies(in: document)
+        XCTAssertEqual(try XCTUnwrap(page.annotations.first?.border?.lineWidth), 0.04, accuracy: 0.00001)
+        let view = PDFView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        view.document = document
+        view.layoutDocumentView()
+        let overlay = PortalPDFInkOverlayView(frame: view.bounds)
+        overlay.configure(page: page, pdfView: view, pageEditData: restored.page(at: 0))
+        let layer = try XCTUnwrap(overlay.layer.sublayers?.flatMap { $0.sublayers ?? [] }
+            .first { $0.name?.hasPrefix("nf.ink.") == true } as? CAShapeLayer)
+        let a = view.convert(CGPoint.zero, from: page)
+        let b = view.convert(CGPoint(x: 1, y: 0), from: page)
+        XCTAssertEqual(layer.lineWidth, 0.04 * hypot(b.x - a.x, b.y - a.y), accuracy: 0.00001)
+    }
+
     private let pageSize = CGSize(width: 320, height: 480)
 
     func testZoomPercentageReportingCoalesces1000PercentRoundTrip() async throws {

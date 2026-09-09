@@ -253,6 +253,23 @@ struct NFTests {
         #expect(UserDefaults.standard.data(forKey: key) == before)
     }
 
+    @Test func attachmentCompactTitleBarDoesNotEnableFullscreen() {
+        let key = "nf.pdf.editor.fullscreen.mode.enabled"
+        let before = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.set(false, forKey: key)
+        defer {
+            if let before { UserDefaults.standard.set(before, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let item = PortalAttachmentPreviewItem(url: URL(string: "https://example.com/compact.pdf")!, cookieHeader: nil)
+        let panel = PortalPDFPreviewView(item: item, usesCompactTitleBar: true)
+        #expect(panel.usesFullscreenTitleBar)
+        #expect(!panel.showsPDFNavigationControls)
+        #expect(!panel.isPDFEditorFullscreenModeEnabled)
+        #expect(!PortalPDFPreviewView(item: item).usesFullscreenTitleBar)
+        #expect(PortalAttachmentPanelLayout.width(for: 1024, fullscreen: panel.isPDFEditorFullscreenModeEnabled) == 512)
+    }
+
     @Test func pdfOpeningWorkerDecodesAndRejectsInvalidData() async throws {
         let prepared = await PortalPDFOpeningWorker.decode(data: onePagePDFData())
         #expect(try #require(prepared).document.pageCount == 1)
@@ -265,19 +282,19 @@ struct NFTests {
     @Test func attachmentPanelResizesAndRestoresWidthAfterFullscreen() {
         #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -100, availableWidth: 1024) == 612)
         #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 100, availableWidth: 1024) == 412)
-        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 1000, availableWidth: 1024) == 320)
-        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -1000, availableWidth: 1024) == 1000)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: 1000, availableWidth: 1024) == 1024 * 0.3)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 512, translation: -1000, availableWidth: 1024) == 1024 * 0.8)
         #expect(PortalAttachmentPanelLayout.width(for: 1024, fraction: 0.6, fullscreen: true) == 1024)
         #expect(PortalAttachmentPanelLayout.width(for: 1024, fraction: 0.6) == 1024 * 0.6)
-        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 366, translation: 100, availableWidth: 390) == 320)
+        #expect(PortalAttachmentPanelLayout.resizedWidth(startWidth: 366, translation: 100, availableWidth: 390) == 300)
         #expect(PortalAttachmentPanelLayout.width(for: 390, fraction: 0.6, fullscreen: true) == 390)
     }
 
     @Test func attachmentPanelKeepsWebVisibleAcrossPhoneAndTabletWidths() {
-        #expect(PortalAttachmentPanelLayout.width(for: 390) == 366)
+        #expect(PortalAttachmentPanelLayout.width(for: 390) == 300)
         #expect(PortalAttachmentPanelLayout.width(for: 1024) == 512)
         #expect(PortalAttachmentPanelLayout.width(for: 1366) == 683)
-        #expect(PortalAttachmentPanelLayout.width(for: 600) == 420)
+        #expect(PortalAttachmentPanelLayout.width(for: 600) == 300)
         #expect(PortalAttachmentPanelLayout.width(for: 0) == 0)
     }
 

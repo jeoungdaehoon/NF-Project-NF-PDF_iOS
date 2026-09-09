@@ -1670,7 +1670,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         for (displayIndex, annotation) in page.annotations.enumerated()
         where PortalPDFInkDisplaySuppression.isSuppressed(annotation) {
             if annotation.isPortalInkAnnotation {
-                let lineWidth = max(0.3, annotation.border?.lineWidth ?? 1) * pageUnitScale
+                let lineWidth = max(0, annotation.border?.lineWidth ?? 1) * pageUnitScale
                 for path in annotation.paths ?? [] {
                     var localToPage = CGAffineTransform(
                         translationX: annotation.bounds.minX,
@@ -1926,7 +1926,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             case .ink:
                 guard let ink = object.ink,
                       let color = UIColor.portalColor(rgba: ink.colorRGBA) else { continue }
-                let lineWidth = max(0.3, ink.lineWidth) * pageUnitScale
+                let lineWidth = max(0, ink.lineWidth) * pageUnitScale
                 for savedPath in ink.paths {
                     var transform = pageToOverlay
                     guard let overlayPath = savedPath.uiBezierPath.cgPath.copy(using: &transform) else { continue }
