@@ -129,11 +129,14 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             model.connect(webView)
-            model.record(url: webView.url ?? MacPortalConfig.dashboardURL, title: webView.title)
             webView.evaluateJavaScript("""
             try { localStorage.setItem('nfPortalMacPageZoom', '\(preferences.zoomPercent)'); } catch (_) {}
             window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', { detail: { percent: \(preferences.zoomPercent) } }));
-            window.__nfMacNotifyNavigation && window.__nfMacNotifyNavigation(0);
+            if (window.__nfMacNotifyNavigation) {
+                [0, 120, 350, 800].forEach(function(delay) {
+                    setTimeout(function() { window.__nfMacNotifyNavigation(0); }, delay);
+                });
+            }
             """)
             deliverPDFState(to: webView)
         }
@@ -200,6 +203,7 @@ struct MacPortalWebView: NSViewRepresentable {
                 let title = record["title"] as? String
                 let breadcrumbs = record["breadcrumbs"] as? [[String: Any]] ?? []
                 model.record(url: url, title: title, breadcrumbRecords: breadcrumbs)
+                model.updatePageTitles(from: record["navigationTitles"] as? [[String: Any]] ?? [])
                 model.updateTheme(
                     background: record["background"] as? String,
                     foreground: record["foreground"] as? String
@@ -399,19 +403,24 @@ struct MacPortalWebView: NSViewRepresentable {
                     background-color: var(--sidebar-background) !important;
                     background-clip: border-box !important;
                     transform: translate3d(calc(-100% + var(--nf-mac-sidebar-overscan)), 0, 0) !important;
-                    transition: transform 340ms cubic-bezier(0.2, 1.08, 0.35, 1) !important;
+                    animation: none !important;
+                    transition: transform 220ms ease-out !important;
                     will-change: transform;
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"][data-nf-mac-sidebar-preview="true"] #portal-navigation {
                     transform: none !important;
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] #portal-content {
-                    transform: translate3d(0, 0, 0) !important;
-                    transition: transform 340ms cubic-bezier(0.2, 1.08, 0.35, 1) !important;
-                    will-change: transform;
+                    /* A transformed scroll container re-bases fixed editor controls and makes
+                       their pointer-relative position drift by the vertical scroll offset. */
+                    position: relative !important;
+                    left: 0 !important;
+                    transform: none !important;
+                    transition: left 220ms ease-out !important;
+                    will-change: left;
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"][data-nf-mac-sidebar-preview="true"] #portal-content {
-                    transform: translate3d(calc(var(--nf-mac-sidebar-preview-width, 276px) - 1px), 0, 0) !important;
+                    left: calc(var(--nf-mac-sidebar-preview-width, 276px) - 1px) !important;
                 }
                 @media (prefers-reduced-motion: reduce) {
                     html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] #portal-navigation,
@@ -435,37 +444,93 @@ struct MacPortalWebView: NSViewRepresentable {
         installDesktopHostStyle();
 
         function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
-        function currentTitle() {
-            var navigation = document.getElementById('portal-navigation');
-            if (navigation) {
-                var current = location.pathname.replace(/\/$/, '') + location.search;
-                var links = Array.from(navigation.querySelectorAll('a[href]'));
-                var active = links.find(function(link) { return link.getAttribute('aria-current') === 'page'; }) ||
-                    links.find(function(link) {
-                        try { var u = new URL(link.href, location.href); return u.pathname.replace(/\/$/, '') + u.search === current; }
-                        catch (_) { return false; }
-                    });
-                if (active) return clean((active.querySelector('span.truncate') || active.querySelector('span') || active).textContent);
+        function normalizedPath(value) {
+            try {
+                var path = new URL(value, location.href).pathname.replace(/\/+$/, '');
+                return path || '/';
+            } catch (_) {
+                var fallback = String(value || '').replace(/\/+$/, '');
+                return fallback || '/';
             }
-            return clean(document.title) || 'NF Portal';
+        }
+        function routeFallbackTitle() {
+            var path = normalizedPath(location.href);
+            var titles = {
+                '/': 'NF Portal',
+                '/dashboard': 'NF Portal',
+                '/projects': '프로젝트',
+                '/daily-reports': '일일보고',
+                '/weekly-reports': '주간보고',
+                '/artifacts': '산출물',
+                '/releases': '배포',
+                '/environment': '환경 정보',
+                '/slack': 'Slack',
+                '/logs': '로그',
+                '/logs/history': '수정 히스토리',
+                '/logs/errors': '오류',
+                '/logs/trash': '휴지통',
+                '/settings': '설정',
+                '/settings/font-accessories': '폰트 액세서리',
+                '/custom-tabs': '페이지 추가·관리'
+            };
+            return titles[path] || (path.indexOf('/custom/') === 0 ? '상세 페이지' : clean(path.split('/').pop())) || 'NF Portal';
+        }
+        function navigationLinks() {
+            var navigation = document.getElementById('portal-navigation');
+            return navigation ? Array.from(navigation.querySelectorAll('a[href]')) : [];
+        }
+        function currentNavigationLink() {
+            var currentExact = normalizedPath(location.href) + location.search;
+            var currentPath = normalizedPath(location.href);
+            var links = navigationLinks();
+            return links.find(function(link) {
+                try {
+                    var url = new URL(link.href, location.href);
+                    return normalizedPath(url.href) + url.search === currentExact;
+                } catch (_) { return false; }
+            }) || links.find(function(link) {
+                try { return normalizedPath(link.href) === currentPath; }
+                catch (_) { return false; }
+            });
+        }
+        function linkTitle(link) {
+            if (!link) return '';
+            var label = link.querySelector('span.truncate') || link.querySelector('span') || link;
+            return clean(label.textContent);
+        }
+        function navigationTitles() {
+            var seen = {};
+            return navigationLinks().reduce(function(records, link) {
+                try {
+                    var url = new URL(link.href, location.href);
+                    var path = normalizedPath(url.href);
+                    var title = linkTitle(link);
+                    if (url.origin !== location.origin || !title || title === 'NF Portal' || seen[path]) return records;
+                    seen[path] = true;
+                    records.push({ url: url.href, title: title });
+                } catch (_) {}
+                return records;
+            }, []);
+        }
+        function currentTitle() {
+            var active = currentNavigationLink();
+            if (active) return linkTitle(active) || routeFallbackTitle();
+            var titleControl = document.querySelector('.portal-titlebar [aria-label="두 번 선택하면 페이지 최상단으로 이동"]');
+            var portalTitle = clean(titleControl && titleControl.textContent);
+            if (portalTitle && portalTitle !== 'NF Portal') return portalTitle;
+            var documentTitle = clean(document.title);
+            if (documentTitle && documentTitle !== 'NF Portal') return documentTitle;
+            return routeFallbackTitle();
         }
         function breadcrumbs() {
-            var navigation = document.getElementById('portal-navigation');
             var home = { title: 'NF Portal', url: location.origin + '/' };
-            if (!navigation) return [home, { title: currentTitle(), url: location.href }];
-            var current = location.pathname.replace(/\/$/, '') + location.search;
-            var links = Array.from(navigation.querySelectorAll('a[href]'));
-            var active = links.find(function(link) { return link.getAttribute('aria-current') === 'page'; }) ||
-                links.find(function(link) {
-                    try { var u = new URL(link.href, location.href); return u.pathname.replace(/\/$/, '') + u.search === current; }
-                    catch (_) { return false; }
-                });
+            var active = currentNavigationLink();
             if (!active) return [home, { title: currentTitle(), url: location.href }];
             var labels = [];
             var row = active.closest('[data-navigation-key], li, [role="treeitem"]') || active;
             var key = clean(row.getAttribute && row.getAttribute('data-navigation-key'));
             if (/[>›/]/.test(key)) labels = key.split(/\s*[>›/]\s*/).map(clean).filter(Boolean);
-            var page = clean((active.querySelector('span.truncate') || active.querySelector('span') || active).textContent) || currentTitle();
+            var page = linkTitle(active) || currentTitle();
             labels = labels.filter(function(label) { return label !== page; });
             labels.push(page);
             return [home].concat(labels.map(function(label, index) {
@@ -555,13 +620,17 @@ struct MacPortalWebView: NSViewRepresentable {
                 if (window.__nfMacSidebarHidden) window.__nfMacSetSidebarHidden(true);
                 var style = getComputedStyle(document.body || document.documentElement);
                 var title = currentTitle();
-                var signature = location.href + '|' + title;
+                var resolvedNavigationTitles = navigationTitles();
+                var signature = location.href + '|' + title + '|' + resolvedNavigationTitles.map(function(item) {
+                    return item.url + '=' + item.title;
+                }).join(';');
                 if (signature === lastSignature && delay !== 0) return;
                 lastSignature = signature;
                 window.webkit.messageHandlers.NFPortalMacNavigation.postMessage({
                     url: location.href,
                     title: title,
                     breadcrumbs: breadcrumbs(),
+                    navigationTitles: resolvedNavigationTitles,
                     background: style.backgroundColor,
                     foreground: style.color
                 });
@@ -577,6 +646,28 @@ struct MacPortalWebView: NSViewRepresentable {
         });
         addEventListener('popstate', function() { window.__nfMacNotifyNavigation(40); });
         addEventListener('pageshow', function() { window.__nfMacNotifyNavigation(0); });
+        var navigationObserver = new MutationObserver(function(mutations) {
+            var changed = mutations.some(function(mutation) {
+                var target = mutation.target && mutation.target.nodeType === 1
+                    ? mutation.target
+                    : mutation.target && mutation.target.parentElement;
+                if (target && target.closest && target.closest('#portal-navigation, .portal-titlebar')) return true;
+                return Array.from(mutation.addedNodes || []).some(function(node) {
+                    return node && node.nodeType === 1 && (
+                        node.matches('#portal-navigation, .portal-titlebar') ||
+                        node.querySelector('#portal-navigation, .portal-titlebar')
+                    );
+                });
+            });
+            if (changed) window.__nfMacNotifyNavigation(60);
+        });
+        navigationObserver.observe(document.documentElement, {
+            subtree: true,
+            childList: true,
+            characterData: true,
+            attributes: true,
+            attributeFilter: ['href', 'aria-current']
+        });
         document.addEventListener('pointerdown', function(event) {
             var target = event.target;
             if (!target || !target.closest || target.closest('#portal-navigation')) return;
@@ -600,7 +691,15 @@ struct MacPortalWebView: NSViewRepresentable {
             var target = event.target;
             var link = target && target.closest && target.closest('a[href]');
             var navigation = target && target.closest && target.closest('#portal-navigation');
-            if (navigation && window.__nfMacSidebarHidden && event.isTrusted) {
+            var disclosureButton = navigation && target && target.closest && target.closest('button[aria-expanded]');
+            var isDisclosureInteraction = !!(disclosureButton && navigation.contains(disclosureButton));
+            if (navigation && window.__nfMacSidebarHidden && event.isTrusted && isDisclosureInteraction) {
+                var overscan = parseFloat(getComputedStyle(navigation).getPropertyValue('--nf-mac-sidebar-overscan')) || 0;
+                window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
+                    hovering: true,
+                    width: Math.max(0, navigation.getBoundingClientRect().width - overscan)
+                });
+            } else if (navigation && window.__nfMacSidebarHidden && event.isTrusted) {
                 document.documentElement.removeAttribute('data-nf-mac-sidebar-preview');
                 window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
                     hovering: false,

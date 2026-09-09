@@ -27,7 +27,7 @@ enum MacAppVersion {
     }
 
     static var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "40"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "45"
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
@@ -159,13 +159,20 @@ final class MacPortalBrowserModel: ObservableObject {
         sidebarHidden = defaults.bool(forKey: "nf.mac.portal.sidebarHidden.\(identifier).v2")
         if let data = defaults.data(forKey: "nf.mac.portal.pages.\(identifier).v2"),
            let stored = try? JSONDecoder().decode([MacPortalPage].self, from: data) {
-            let authenticatedPages = stored.filter { !MacPortalConfig.isLoginURL($0.url) }
+            let authenticatedPages = stored
+                .filter { !MacPortalConfig.isLoginURL($0.url) }
+                .map { page in
+                    guard Self.isGenericPortalTitle(page.title) else { return page }
+                    let fallback = Self.fallbackTitle(for: page.url)
+                    guard !Self.isGenericPortalTitle(fallback) else { return page }
+                    return MacPortalPage(url: page.url, title: fallback, accessedAt: page.accessedAt)
+                }
             pages = Array(authenticatedPages.sorted { $0.accessedAt > $1.accessedAt }.prefix(14))
             if let first = pages.first {
                 self.initialURL = first.url
                 activePageID = first.id
             }
-            if authenticatedPages.count != stored.count,
+            if authenticatedPages != stored,
                let sanitizedData = try? JSONEncoder().encode(pages) {
                 defaults.set(sanitizedData, forKey: "nf.mac.portal.pages.\(identifier).v2")
             }
@@ -202,7 +209,15 @@ final class MacPortalBrowserModel: ObservableObject {
             return
         }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTitle = cleanTitle?.isEmpty == false ? cleanTitle! : fallbackTitle(for: url)
+        let existingTitle = pages.first(where: { $0.id == url.absoluteString })?.title
+        let resolvedTitle: String
+        if let cleanTitle, !cleanTitle.isEmpty, !Self.isGenericPortalTitle(cleanTitle) {
+            resolvedTitle = cleanTitle
+        } else if let existingTitle, !Self.isGenericPortalTitle(existingTitle) {
+            resolvedTitle = existingTitle
+        } else {
+            resolvedTitle = Self.fallbackTitle(for: url)
+        }
         let page = MacPortalPage(url: url, title: resolvedTitle, accessedAt: Date().timeIntervalSince1970)
         pages.removeAll { $0.id == page.id }
         pages.insert(page, at: 0)
@@ -213,6 +228,31 @@ final class MacPortalBrowserModel: ObservableObject {
         breadcrumbs = resolveBreadcrumbs(breadcrumbRecords, url: url, title: resolvedTitle)
         refreshNavigationState()
         applySidebarVisibility()
+    }
+
+    func updatePageTitles(from records: [[String: Any]]) {
+        let titlesByPath = records.reduce(into: [String: String]()) { result, record in
+            guard let rawURL = record["url"] as? String,
+                  let url = URL(string: rawURL),
+                  let rawTitle = record["title"] as? String else { return }
+            let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !Self.isGenericPortalTitle(title) else { return }
+            result[Self.normalizedPath(for: url)] = title
+        }
+
+        var revisedPages = pages
+        var changed = false
+        for index in revisedPages.indices {
+            let page = revisedPages[index]
+            let resolvedTitle = titlesByPath[Self.normalizedPath(for: page.url)]
+                ?? (Self.isGenericPortalTitle(page.title) ? Self.fallbackTitle(for: page.url) : page.title)
+            guard !Self.isGenericPortalTitle(resolvedTitle), resolvedTitle != page.title else { continue }
+            revisedPages[index].title = resolvedTitle
+            changed = true
+        }
+        guard changed else { return }
+        pages = revisedPages
+        persistPages()
     }
 
     func open(_ page: MacPortalPage) {
@@ -372,9 +412,38 @@ final class MacPortalBrowserModel: ObservableObject {
         }
     }
 
-    private func fallbackTitle(for url: URL) -> String {
+    private static func fallbackTitle(for url: URL) -> String {
+        let titles: [String: String] = [
+            "/daily-reports": "일일보고",
+            "/weekly-reports": "주간보고",
+            "/projects": "프로젝트",
+            "/artifacts": "산출물",
+            "/releases": "배포",
+            "/environment": "환경 정보",
+            "/slack": "Slack",
+            "/logs": "로그",
+            "/logs/history": "수정 히스토리",
+            "/logs/errors": "오류",
+            "/logs/trash": "휴지통",
+            "/settings": "설정",
+            "/settings/font-accessories": "폰트 액세서리",
+            "/custom-tabs": "페이지 추가·관리",
+        ]
+        let path = normalizedPath(for: url)
+        if let title = titles[path] { return title }
+        if path.hasPrefix("/custom/") { return "NF Portal" }
         let name = url.deletingPathExtension().lastPathComponent.removingPercentEncoding ?? ""
         return name.isEmpty || name == "dashboard" ? "NF Portal" : name
+    }
+
+    private static func normalizedPath(for url: URL) -> String {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return path.isEmpty ? "/" : "/\(path)"
+    }
+
+    private static func isGenericPortalTitle(_ title: String) -> Bool {
+        let normalized = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "nf portal" || normalized == "nf"
     }
 
     private func resolveBreadcrumbs(

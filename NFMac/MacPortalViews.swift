@@ -496,22 +496,23 @@ private struct MacPortalPane: View {
         VStack(spacing: 0) {
             // The interactive toolbar is hosted by a native title-bar accessory.
             // Keep its exact layout height here so the web view never shifts.
-            MacPortalTitlebarPalette.background
+            model.themeBackground
                 .frame(height: 32)
                 .allowsHitTesting(false)
             if model.sidebarHidden {
                 GeometryReader { geometry in
-                    let sidebarInset = model.isSidebarHoverVisible ? max(model.sidebarHoverWidth - 1, 0) : 0
+                    let sidebarInset = model.isSidebarHoverVisible ? max(model.sidebarHoverWidth, 0) : 0
+                    let breadcrumbWidth = max(geometry.size.width - sidebarInset, 0)
 
                     ZStack(alignment: .topLeading) {
                         portalWebView
                             .frame(width: geometry.size.width, height: geometry.size.height)
 
                         MacBreadcrumbBar(model: model, onActivate: onActivate)
-                            .frame(width: geometry.size.width)
+                            .frame(width: breadcrumbWidth)
                             .offset(x: sidebarInset)
                             .animation(
-                                .spring(response: 0.34, dampingFraction: 0.88, blendDuration: 0.05),
+                                .easeOut(duration: 0.22),
                                 value: model.isSidebarHoverVisible
                             )
                     }
@@ -662,11 +663,6 @@ private struct MacPortalToolbar: View {
         .padding(.trailing, 10)
         .frame(height: 32, alignment: .center)
         .background(MacPortalTitlebarPalette.background)
-        .background(alignment: .bottom) {
-            Rectangle()
-                .fill(separatorColor)
-                .frame(height: 1)
-        }
     }
 
     private var separatorColor: Color {
@@ -714,15 +710,21 @@ private struct MacPortalTabButton: View {
         .foregroundStyle(isSelected ? selectedForeground : MacPortalTitlebarPalette.foreground)
         .background(alignment: .bottom) {
             if isSelected {
-                UnevenRoundedRectangle(
-                    topLeadingRadius: 7,
-                    bottomLeadingRadius: 0,
-                    bottomTrailingRadius: 0,
-                    topTrailingRadius: 7,
-                    style: .continuous
-                )
-                .fill(selectedBackground)
-                .frame(height: 32)
+                ZStack(alignment: .bottom) {
+                    UnevenRoundedRectangle(
+                        topLeadingRadius: 7,
+                        bottomLeadingRadius: 0,
+                        bottomTrailingRadius: 0,
+                        topTrailingRadius: 7,
+                        style: .continuous
+                    )
+                    .fill(selectedBackground)
+                    .frame(height: 32)
+
+                    Rectangle()
+                        .fill(selectedBackground)
+                        .frame(height: 1)
+                }
             }
         }
         .buttonStyle(.plain)
