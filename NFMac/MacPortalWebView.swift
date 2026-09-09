@@ -105,7 +105,7 @@ struct MacPortalWebView: NSViewRepresentable {
         webView.uiDelegate = nil
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
         var model: MacPortalBrowserModel
         var preferences: MacPortalPreferences
         var onFocus: () -> Void
@@ -165,6 +165,10 @@ struct MacPortalWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            if navigationAction.shouldPerformDownload || isDownloadNavigationURL(url) {
+                decisionHandler(.download)
+                return
+            }
             if isAttachmentNavigationURL(url) {
                 presentAttachmentPreview(url, from: webView)
                 decisionHandler(.cancel)
@@ -176,6 +180,37 @@ struct MacPortalWebView: NSViewRepresentable {
                 return
             }
             decisionHandler(.allow)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            let disposition = (navigationResponse.response as? HTTPURLResponse)?
+                .value(forHTTPHeaderField: "Content-Disposition")?
+                .lowercased() ?? ""
+            if disposition.contains("attachment") || !navigationResponse.canShowMIMEType {
+                decisionHandler(.download)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            navigationAction: WKNavigationAction,
+            didBecome download: WKDownload
+        ) {
+            download.delegate = self
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            navigationResponse: WKNavigationResponse,
+            didBecome download: WKDownload
+        ) {
+            download.delegate = self
         }
 
         func webView(
@@ -193,6 +228,73 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         func webViewDidClose(_ webView: WKWebView) { model.refreshNavigationState() }
+
+        func webView(
+            _ webView: WKWebView,
+            runOpenPanelWith parameters: WKOpenPanelParameters,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping ([URL]?) -> Void
+        ) {
+            let panel = NSOpenPanel()
+            panel.title = "첨부할 파일 선택"
+            panel.prompt = "선택"
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = parameters.allowsDirectories
+            panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+            panel.resolvesAliases = true
+
+            let finish: (NSApplication.ModalResponse) -> Void = { response in
+                completionHandler(response == .OK ? panel.urls : nil)
+            }
+            if let window = webView.window {
+                panel.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                panel.begin(completionHandler: finish)
+            }
+        }
+
+        func download(
+            _ download: WKDownload,
+            decideDestinationUsing response: URLResponse,
+            suggestedFilename: String,
+            completionHandler: @escaping (URL?) -> Void
+        ) {
+            let panel = NSSavePanel()
+            panel.title = "첨부 파일 저장"
+            panel.prompt = "저장"
+            panel.canCreateDirectories = true
+            panel.nameFieldStringValue = Self.safeFileName(suggestedFilename)
+
+            let finish: (NSApplication.ModalResponse) -> Void = { response in
+                guard response == .OK, let url = panel.url else {
+                    completionHandler(nil)
+                    return
+                }
+                if FileManager.default.fileExists(atPath: url.path) {
+                    do {
+                        try FileManager.default.removeItem(at: url)
+                    } catch {
+                        completionHandler(nil)
+                        return
+                    }
+                }
+                completionHandler(url)
+            }
+            if let window = model.webView?.window {
+                panel.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                panel.begin(completionHandler: finish)
+            }
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            guard (error as NSError).code != NSURLErrorCancelled else { return }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "첨부 파일을 저장하지 못했습니다."
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
@@ -291,10 +393,22 @@ struct MacPortalWebView: NSViewRepresentable {
         private func isAttachmentNavigationURL(_ url: URL) -> Bool {
             if url.path.hasPrefix("/api/artifacts/files") { return true }
             if url.pathExtension.lowercased() == "pdf" { return true }
-            if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: {
-                $0.name.lowercased() == "download"
-            }) == true { return true }
             return false
+        }
+
+        private func isDownloadNavigationURL(_ url: URL) -> Bool {
+            URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: {
+                $0.name.lowercased() == "download"
+                    && ($0.value == nil || !["0", "false", "no"].contains($0.value?.lowercased() ?? ""))
+            }) == true
+        }
+
+        private static func safeFileName(_ value: String) -> String {
+            let cleaned = value
+                .components(separatedBy: CharacterSet(charactersIn: "/:\0"))
+                .joined(separator: "-")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? "첨부 파일" : cleaned
         }
 
         private func presentAttachmentPreview(_ url: URL, from webView: WKWebView) {

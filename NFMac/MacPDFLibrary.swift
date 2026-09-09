@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Foundation
 import PDFKit
@@ -391,7 +392,10 @@ struct MacRemotePDFPreviewView: View {
     let storesLocally: Bool
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
-    @State private var title = "PDF 문서"
+    @State private var image: NSImage?
+    @State private var attachmentData: Data?
+    @State private var attachmentIsMovie = false
+    @State private var title = "첨부 파일"
     @State private var errorMessage: String?
     @State private var didStoreLocally = false
 
@@ -407,16 +411,33 @@ struct MacRemotePDFPreviewView: View {
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
+                Button("기본 앱에서 열기") { openInDefaultApplication() }
+                    .disabled(attachmentData == nil)
+                Button("저장") { saveAttachment() }
+                    .disabled(attachmentData == nil)
             }
             .padding(12)
             Divider()
             Group {
                 if let pdfDocument {
                     MacPDFKitView(document: pdfDocument)
+                } else if let image {
+                    ScrollView([.horizontal, .vertical]) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(20)
+                    }
+                } else if attachmentData != nil {
+                    ContentUnavailableView(
+                        "첨부 파일을 불러왔습니다",
+                        systemImage: attachmentIsMovie ? "film" : "doc",
+                        description: Text("기본 앱에서 열거나 Mac에 저장할 수 있습니다.")
+                    )
                 } else if let errorMessage {
-                    ContentUnavailableView("PDF를 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                    ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
                 } else {
-                    ProgressView("PDF를 불러오는 중…")
+                    ProgressView("첨부 파일을 불러오는 중…")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -431,19 +452,80 @@ struct MacRemotePDFPreviewView: View {
                 urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
             let (data, response) = try await URLSession.shared.data(for: urlRequest)
-            guard let document = PDFDocument(data: data), document.pageCount > 0 else {
-                throw CocoaError(.fileReadCorruptFile)
+            if let response = response as? HTTPURLResponse,
+               !(200..<300).contains(response.statusCode) {
+                throw URLError(.badServerResponse)
             }
             let responseName = response.suggestedFilename ?? request.url.lastPathComponent
-            title = responseName.isEmpty ? "PDF 문서.pdf" : responseName
-            pdfDocument = document
-            if storesLocally {
-                _ = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url)
-                didStoreLocally = true
+            title = Self.safeFileName(responseName.isEmpty ? "첨부 파일" : responseName)
+            attachmentData = data
+
+            let mimeType = response.mimeType?.lowercased() ?? ""
+            let fileExtension = (title as NSString).pathExtension.lowercased()
+            attachmentIsMovie = mimeType.hasPrefix("video/") || ["mov", "mp4", "m4v", "avi", "mkv"].contains(fileExtension)
+            let isPDF = mimeType == "application/pdf" || fileExtension == "pdf" || data.starts(with: Data("%PDF".utf8))
+            if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
+                pdfDocument = document
+                if storesLocally {
+                    _ = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url)
+                    didStoreLocally = true
+                }
+            } else if mimeType.hasPrefix("image/") || NSImage(data: data) != nil {
+                image = NSImage(data: data)
             }
         } catch {
             errorMessage = "네트워크 연결과 파일 형식을 확인해 주세요."
         }
+    }
+
+    private func saveAttachment() {
+        guard let attachmentData else { return }
+        let panel = NSSavePanel()
+        panel.title = "첨부 파일 저장"
+        panel.prompt = "저장"
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = title
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try attachmentData.write(to: url, options: .atomic)
+            } catch {
+                Self.showFileError("첨부 파일을 저장하지 못했습니다.", error: error)
+            }
+        }
+    }
+
+    private func openInDefaultApplication() {
+        guard let attachmentData else { return }
+        do {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("NF-AttachmentPreview", isDirectory: true)
+                .appendingPathComponent(request.id.uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(Self.safeFileName(title))
+            try attachmentData.write(to: url, options: .atomic)
+            guard NSWorkspace.shared.open(url) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+        } catch {
+            Self.showFileError("첨부 파일을 기본 앱에서 열지 못했습니다.", error: error)
+        }
+    }
+
+    private static func safeFileName(_ value: String) -> String {
+        let cleaned = value
+            .components(separatedBy: CharacterSet(charactersIn: "/:\0"))
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "첨부 파일" : cleaned
+    }
+
+    private static func showFileError(_ title: String, error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 }
 
