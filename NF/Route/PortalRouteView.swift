@@ -148,6 +148,8 @@ struct PortalRouteView: View {
                     .overlay(alignment: .leading) {
                         if !isAttachmentFullscreen {
                             attachmentPanelResizeHandle(availableWidth: availableWidth, panelWidth: panelWidth)
+                                // gesture/contentShape 바깥의 여백: 타이틀바 X 버튼으로 터치를 통과시킵니다.
+                                .padding(.top, PortalAttachmentPanelLayout.titleBarHeight)
                         }
                     }
                     .shadow(color: .black.opacity(0.2), radius: 16, x: -6)

@@ -695,7 +695,7 @@ struct PortalPDFPreviewView: View {
                 pdfFullscreenTabBarSettingsButton
             }
         }
-        .frame(height: 42)
+        .frame(height: PortalAttachmentPanelLayout.titleBarHeight)
         .scrollIndicators(.hidden)
         .background(pdfWorkspaceBackgroundColor)
         .overlay(alignment: .bottom) {

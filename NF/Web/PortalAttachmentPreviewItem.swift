@@ -9,6 +9,9 @@ import Foundation
 
 /// iPad는 우측 절반, 좁은 iPhone은 원래 페이지가 조금 보이는 슬라이드 폭을 사용합니다.
 enum PortalAttachmentPanelLayout {
+    /// 상단 닫기·문서 탭·설정 영역은 패널 크기 조절 제스처에서 제외합니다.
+    static let titleBarHeight: CGFloat = 42
+
     static func width(for availableWidth: CGFloat, fraction: CGFloat? = nil, fullscreen: Bool = false) -> CGFloat {
         guard availableWidth.isFinite, availableWidth > 0 else { return 0 }
         if fullscreen { return availableWidth }
