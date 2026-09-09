@@ -231,6 +231,83 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
+            runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping () -> Void
+        ) {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "NF Portal"
+            alert.informativeText = message
+            alert.addButton(withTitle: "확인")
+
+            if let window = webView.window {
+                alert.beginSheetModal(for: window) { _ in completionHandler() }
+            } else {
+                alert.runModal()
+                completionHandler()
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (Bool) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "작업을 진행하시겠습니까?"
+            alert.informativeText = message
+            alert.addButton(withTitle: "확인")
+            let cancelButton = alert.addButton(withTitle: "취소")
+            cancelButton.keyEquivalent = "\u{1b}"
+
+            let finish: (NSApplication.ModalResponse) -> Void = { response in
+                completionHandler(response == .alertFirstButtonReturn)
+            }
+            if let window = webView.window {
+                alert.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                finish(alert.runModal())
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptTextInputPanelWithPrompt prompt: String,
+            defaultText: String?,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (String?) -> Void
+        ) {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "값을 입력해 주세요."
+            alert.informativeText = prompt
+            alert.addButton(withTitle: "확인")
+            let cancelButton = alert.addButton(withTitle: "취소")
+            cancelButton.keyEquivalent = "\u{1b}"
+
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+            input.stringValue = defaultText ?? ""
+            input.placeholderString = prompt
+            alert.accessoryView = input
+
+            let finish: (NSApplication.ModalResponse) -> Void = { response in
+                completionHandler(response == .alertFirstButtonReturn ? input.stringValue : nil)
+            }
+            if let window = webView.window {
+                alert.beginSheetModal(for: window) { response in
+                    finish(response)
+                }
+                window.makeFirstResponder(input)
+            } else {
+                finish(alert.runModal())
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
             runOpenPanelWith parameters: WKOpenPanelParameters,
             initiatedByFrame frame: WKFrameInfo,
             completionHandler: @escaping ([URL]?) -> Void

@@ -27,7 +27,7 @@ enum MacAppVersion {
     }
 
     static var build: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "46"
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "47"
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
