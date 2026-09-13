@@ -155,6 +155,14 @@ struct MacPortalWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
+            if normalizedURL != url {
+                var request = navigationAction.request
+                request.url = normalizedURL
+                webView.load(request)
+                decisionHandler(.cancel)
+                return
+            }
             if url.scheme == MacPortalConfig.callbackScheme {
                 NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
@@ -165,13 +173,13 @@ struct MacPortalWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-            if navigationAction.shouldPerformDownload || isDownloadNavigationURL(url) {
-                decisionHandler(.download)
-                return
-            }
             if isAttachmentNavigationURL(url) {
                 presentAttachmentPreview(url, from: webView)
                 decisionHandler(.cancel)
+                return
+            }
+            if navigationAction.shouldPerformDownload || isDownloadNavigationURL(url) {
+                decisionHandler(.download)
                 return
             }
             if let scheme = url.scheme, !["http", "https", "about", "blob", "data"].contains(scheme) {
@@ -187,6 +195,12 @@ struct MacPortalWebView: NSViewRepresentable {
             decidePolicyFor navigationResponse: WKNavigationResponse,
             decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
         ) {
+            if let responseURL = navigationResponse.response.url,
+               isPDFResponse(navigationResponse.response) {
+                presentAttachmentPreview(responseURL, from: webView)
+                decisionHandler(.cancel)
+                return
+            }
             let disposition = (navigationResponse.response as? HTTPURLResponse)?
                 .value(forHTTPHeaderField: "Content-Disposition")?
                 .lowercased() ?? ""
@@ -220,9 +234,10 @@ struct MacPortalWebView: NSViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
             if let url = navigationAction.request.url {
-                if isAttachmentNavigationURL(url) { presentAttachmentPreview(url, from: webView) }
-                else if MacPortalConfig.isPortalURL(url) { webView.load(URLRequest(url: url)) }
-                else { NSWorkspace.shared.open(url) }
+                let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
+                if isAttachmentNavigationURL(normalizedURL) { presentAttachmentPreview(normalizedURL, from: webView) }
+                else if MacPortalConfig.isPortalURL(normalizedURL) { webView.load(URLRequest(url: normalizedURL)) }
+                else { NSWorkspace.shared.open(normalizedURL) }
             }
             return nil
         }
@@ -470,7 +485,15 @@ struct MacPortalWebView: NSViewRepresentable {
         private func isAttachmentNavigationURL(_ url: URL) -> Bool {
             if url.path.hasPrefix("/api/artifacts/files") { return true }
             if url.pathExtension.lowercased() == "pdf" { return true }
+            if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: {
+                $0.name.lowercased() == "download"
+            }) == true { return true }
             return false
+        }
+
+        private func isPDFResponse(_ response: URLResponse) -> Bool {
+            if response.mimeType?.lowercased() == "application/pdf" { return true }
+            return response.suggestedFilename?.lowercased().hasSuffix(".pdf") == true
         }
 
         private func isDownloadNavigationURL(_ url: URL) -> Bool {

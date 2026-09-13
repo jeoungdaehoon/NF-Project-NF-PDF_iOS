@@ -408,16 +408,19 @@ private struct MacPortalWorkspace: View {
         .onReceive(NotificationCenter.default.publisher(for: MacPDFLocalStorageRepository.didChangeNotification)) { _ in
             refreshPDFLibraryState()
         }
+        .overlay(alignment: .trailing) {
+            if let request = remotePDFRequest {
+                MacResizableRemotePDFPanel(
+                    request: request,
+                    storesLocally: preferences.pdfLocalStorageEnabled,
+                    onClose: closeRemotePDFPreview
+                )
+                .transition(.move(edge: .trailing))
+            }
+        }
         .sheet(isPresented: $isPDFLibraryPresented, onDismiss: refreshPDFLibraryState) {
             MacPDFLibraryView()
                 .frame(minWidth: 820, minHeight: 620)
-        }
-        .sheet(item: $remotePDFRequest, onDismiss: refreshPDFLibraryState) { request in
-            MacRemotePDFPreviewView(
-                request: request,
-                storesLocally: preferences.pdfLocalStorageEnabled
-            )
-            .frame(minWidth: 900, minHeight: 700)
         }
     }
 
@@ -426,7 +429,18 @@ private struct MacPortalWorkspace: View {
         model.onLogout = authentication.logout
         model.onAuthenticationRequired = authentication.requireLogin
         model.onOpenPDFDocuments = { isPDFLibraryPresented = true }
-        model.onPreviewPDFAttachment = { remotePDFRequest = $0 }
+        model.onPreviewPDFAttachment = { request in
+            withAnimation(MacPDFSlidePanelLayout.animation) {
+                remotePDFRequest = request
+            }
+        }
+    }
+
+    private func closeRemotePDFPreview() {
+        withAnimation(MacPDFSlidePanelLayout.animation) {
+            remotePDFRequest = nil
+        }
+        refreshPDFLibraryState()
     }
 
     private func refreshPDFLibraryState() {
@@ -483,6 +497,100 @@ private struct MacPortalWorkspace: View {
             onToggleSplit: toggleSplit,
             onActivate: { activePane = .secondary }
         )
+    }
+}
+
+private struct MacResizableRemotePDFPanel: View {
+    let request: MacPDFRemoteRequest
+    let storesLocally: Bool
+    let onClose: () -> Void
+
+    @State private var preferredWidth: CGFloat?
+    @State private var resizeStartWidth: CGFloat?
+    @State private var isResizing = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let topInset: CGFloat = 32
+            let panelWidth = MacPDFSlidePanelLayout.width(
+                preferredWidth: preferredWidth,
+                for: geometry.size.width
+            )
+
+            ZStack(alignment: .leading) {
+                MacRemotePDFPreviewView(
+                    request: request,
+                    storesLocally: storesLocally,
+                    isContainerResizing: isResizing,
+                    onClose: onClose
+                )
+                .id(request.id)
+
+                MacPDFPanelResizeHandle()
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let startWidth = resizeStartWidth ?? panelWidth
+                                if resizeStartWidth == nil {
+                                    resizeStartWidth = startWidth
+                                    isResizing = true
+                                }
+                                let nextWidth = MacPDFSlidePanelLayout.width(
+                                    preferredWidth: startWidth - value.translation.width,
+                                    for: geometry.size.width
+                                )
+                                if abs((preferredWidth ?? panelWidth) - nextWidth) >= 0.5 {
+                                    preferredWidth = nextWidth
+                                }
+                            }
+                            .onEnded { _ in
+                                resizeStartWidth = nil
+                                isResizing = false
+                            }
+                    )
+            }
+            .frame(width: panelWidth)
+            .frame(height: max(geometry.size.height - topInset, 0))
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipped()
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .bottomTrailing
+            )
+        }
+    }
+}
+
+private struct MacPDFPanelResizeHandle: View {
+    @State private var isHovering = false
+
+    var body: some View {
+        ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+
+            Rectangle()
+                .fill(Color.primary.opacity(isHovering ? 0.42 : 0.18))
+                .frame(width: isHovering ? 2 : 1)
+        }
+        .frame(width: MacPDFSlidePanelLayout.resizeHandleWidth)
+        .onHover { hovering in
+            guard hovering != isHovering else { return }
+            isHovering = hovering
+            if hovering {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
+            }
+        }
+        .onDisappear {
+            if isHovering {
+                NSCursor.pop()
+            }
+        }
+        .accessibilityLabel("PDF 보기 너비 조절")
+        .accessibilityHint("가로로 드래그하여 PDF 보기 너비를 변경합니다.")
     }
 }
 

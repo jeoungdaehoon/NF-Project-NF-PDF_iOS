@@ -14,7 +14,7 @@ import Foundation
  */
 enum PortalConfig {
     /// 운영 Portal Host 정보 입니다.
-    static let portalHost = "hlp-project-portal-745194786909.asia-northeast3.run.app"
+    static let portalHost = "notefree-1076199489932.asia-northeast3.run.app"
     /// 운영 Portal Origin 정보 입니다.
     static let portalOrigin = "https://\(portalHost)"
     /// WebView에서 표시할 Dashboard URL 정보 입니다.

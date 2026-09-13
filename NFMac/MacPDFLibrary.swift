@@ -11,6 +11,19 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
     let cookieHeader: String?
 }
 
+enum MacPDFSlidePanelLayout {
+    static let animation = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.52)
+    static let resizeHandleWidth: CGFloat = 10
+
+    static func width(preferredWidth: CGFloat?, for availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth.isFinite, availableWidth > 0 else { return 0 }
+        let minimum = min(480, availableWidth)
+        let maximum = max(minimum, availableWidth * 0.9)
+        let defaultWidth = max(minimum, availableWidth * 0.5)
+        return min(maximum, max(minimum, preferredWidth ?? defaultWidth))
+    }
+}
+
 struct MacLocalPDFDocument: Identifiable, Hashable {
     let id: String
     let fileName: String
@@ -387,9 +400,10 @@ private struct MacPDFDocumentView: View {
 }
 
 struct MacRemotePDFPreviewView: View {
-    @Environment(\.dismiss) private var dismiss
     let request: MacPDFRemoteRequest
     let storesLocally: Bool
+    let isContainerResizing: Bool
+    let onClose: () -> Void
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
     @State private var image: NSImage?
@@ -402,7 +416,8 @@ struct MacRemotePDFPreviewView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("닫기", action: dismiss.callAsFunction)
+                Button("닫기", action: onClose)
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
@@ -420,7 +435,10 @@ struct MacRemotePDFPreviewView: View {
             Divider()
             Group {
                 if let pdfDocument {
-                    MacPDFKitView(document: pdfDocument)
+                    MacPDFKitView(
+                        document: pdfDocument,
+                        isContainerResizing: isContainerResizing
+                    )
                 } else if let image {
                     ScrollView([.horizontal, .vertical]) {
                         Image(nsImage: image)
@@ -531,9 +549,10 @@ struct MacRemotePDFPreviewView: View {
 
 private struct MacPDFKitView: NSViewRepresentable {
     let document: PDFDocument?
+    var isContainerResizing = false
 
     func makeNSView(context: Context) -> PDFView {
-        let view = PDFView()
+        let view = MacInteractivePDFView()
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displayDirection = .vertical
@@ -547,5 +566,61 @@ private struct MacPDFKitView: NSViewRepresentable {
             view.document = document
             view.autoScales = true
         }
+        (view as? MacInteractivePDFView)?.setContainerResizeInProgress(isContainerResizing)
+    }
+}
+
+private final class MacInteractivePDFView: PDFView {
+    private var commandDragStartX: CGFloat?
+    private var commandDragStartScale: CGFloat?
+    private var isContainerResizeInProgress = false
+
+    func setContainerResizeInProgress(_ isResizing: Bool) {
+        guard isResizing != isContainerResizeInProgress else { return }
+        isContainerResizeInProgress = isResizing
+
+        // PDFKit's automatic fit recalculates and rerenders every page for every
+        // intermediate frame. Keep the current scale during a live panel resize;
+        // the newly exposed area is rendered without repeatedly rescaling the PDF.
+        if isResizing {
+            autoScales = false
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.contains(.command) else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        commandDragStartX = event.locationInWindow.x
+        commandDragStartScale = scaleFactor
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let startX = commandDragStartX,
+              let startScale = commandDragStartScale else {
+            super.mouseDragged(with: event)
+            return
+        }
+
+        let horizontalDistance = event.locationInWindow.x - startX
+        guard abs(horizontalDistance) >= 1 else { return }
+
+        autoScales = false
+        let zoomMultiplier = CGFloat(pow(2, Double(horizontalDistance / 240)))
+        let minimum = max(minScaleFactor, 0.1)
+        let maximum = max(maxScaleFactor, minimum)
+        scaleFactor = min(maximum, max(minimum, startScale * zoomMultiplier))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard commandDragStartX != nil else {
+            super.mouseUp(with: event)
+            return
+        }
+        commandDragStartX = nil
+        commandDragStartScale = nil
     }
 }

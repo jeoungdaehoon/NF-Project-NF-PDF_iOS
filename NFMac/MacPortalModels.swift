@@ -5,7 +5,10 @@ import SwiftUI
 import WebKit
 
 enum MacPortalConfig {
-    static let host = "hlp-project-portal-745194786909.asia-northeast3.run.app"
+    static let host = "notefree-1076199489932.asia-northeast3.run.app"
+    static let legacyHosts: Set<String> = [
+        "hlp-project-portal-745194786909.asia-northeast3.run.app",
+    ]
     static let origin = "https://\(host)"
     static let dashboardURL = URL(string: "\(origin)/dashboard")!
     static let googleLoginURL = URL(string: "\(origin)/api/auth/start-google?callbackUrl=%2Fapi%2Fauth%2Fmobile%2Fcomplete")!
@@ -13,11 +16,24 @@ enum MacPortalConfig {
     static let appleLoginURL = URL(string: "\(origin)/api/auth/mobile/apple")!
     static let callbackScheme = "com.nf.portal"
 
-    static func isPortalURL(_ url: URL) -> Bool { url.host == host }
+    static func isPortalURL(_ url: URL) -> Bool { url.host?.lowercased() == host }
+
+    static func normalizedPortalURL(_ url: URL) -> URL {
+        guard let sourceHost = url.host?.lowercased(), legacyHosts.contains(sourceHost),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        components.scheme = "https"
+        components.host = host
+        components.port = nil
+        return components.url ?? url
+    }
 
     static func isLoginURL(_ url: URL) -> Bool {
-        guard isPortalURL(url) else { return false }
-        return url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) == "login"
+        guard let sourceHost = url.host?.lowercased(),
+              sourceHost == host || legacyHosts.contains(sourceHost) else { return false }
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+        return path == "login" || path.hasPrefix("api/auth/")
     }
 }
 
@@ -154,25 +170,20 @@ final class MacPortalBrowserModel: ObservableObject {
 
     init(identifier: String, initialURL: URL? = nil, defaults: UserDefaults = .standard) {
         self.identifier = identifier
-        self.initialURL = initialURL ?? MacPortalConfig.dashboardURL
+        let requestedInitialURL = MacPortalConfig.normalizedPortalURL(initialURL ?? MacPortalConfig.dashboardURL)
+        self.initialURL = MacPortalConfig.isPortalURL(requestedInitialURL)
+            ? requestedInitialURL
+            : MacPortalConfig.dashboardURL
         self.defaults = defaults
         sidebarHidden = defaults.bool(forKey: "nf.mac.portal.sidebarHidden.\(identifier).v2")
         if let data = defaults.data(forKey: "nf.mac.portal.pages.\(identifier).v2"),
            let stored = try? JSONDecoder().decode([MacPortalPage].self, from: data) {
-            let authenticatedPages = stored
-                .filter { !MacPortalConfig.isLoginURL($0.url) }
-                .map { page in
-                    guard Self.isGenericPortalTitle(page.title) else { return page }
-                    let fallback = Self.fallbackTitle(for: page.url)
-                    guard !Self.isGenericPortalTitle(fallback) else { return page }
-                    return MacPortalPage(url: page.url, title: fallback, accessedAt: page.accessedAt)
-                }
-            pages = Array(authenticatedPages.sorted { $0.accessedAt > $1.accessedAt }.prefix(14))
+            pages = Self.sanitizedPages(stored)
             if let first = pages.first {
                 self.initialURL = first.url
                 activePageID = first.id
             }
-            if authenticatedPages != stored,
+            if pages != stored,
                let sanitizedData = try? JSONEncoder().encode(pages) {
                 defaults.set(sanitizedData, forKey: "nf.mac.portal.pages.\(identifier).v2")
             }
@@ -192,10 +203,19 @@ final class MacPortalBrowserModel: ObservableObject {
     func startURL() -> URL { initialURL }
 
     func cloneState(from source: MacPortalBrowserModel, sidebarHidden: Bool? = nil) {
-        pages = source.pages
-        breadcrumbs = source.breadcrumbs
+        pages = Self.sanitizedPages(source.pages)
+        breadcrumbs = source.breadcrumbs.map { breadcrumb in
+            MacPortalBreadcrumb(
+                title: breadcrumb.title,
+                url: breadcrumb.url.map(MacPortalConfig.normalizedPortalURL)
+            )
+        }
         self.sidebarHidden = sidebarHidden ?? source.sidebarHidden
-        initialURL = source.webView?.url ?? source.currentPage?.url ?? MacPortalConfig.dashboardURL
+        let sourceURL = source.webView?.url ?? source.currentPage?.url ?? MacPortalConfig.dashboardURL
+        let normalizedURL = MacPortalConfig.normalizedPortalURL(sourceURL)
+        initialURL = MacPortalConfig.isPortalURL(normalizedURL) && !MacPortalConfig.isLoginURL(normalizedURL)
+            ? normalizedURL
+            : pages.first?.url ?? MacPortalConfig.dashboardURL
         activePageID = initialURL.absoluteString
         persistPages()
     }
@@ -203,29 +223,31 @@ final class MacPortalBrowserModel: ObservableObject {
     var currentPage: MacPortalPage? { pages.first { $0.id == activePageID } }
 
     func record(url: URL, title: String?, breadcrumbRecords: [[String: Any]] = []) {
-        guard url.scheme == "https" || url.scheme == "http" else { return }
-        guard !MacPortalConfig.isLoginURL(url) else {
+        let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
+        guard normalizedURL.scheme == "https" || normalizedURL.scheme == "http",
+              MacPortalConfig.isPortalURL(normalizedURL) else { return }
+        guard !MacPortalConfig.isLoginURL(normalizedURL) else {
             onAuthenticationRequired?()
             return
         }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let existingTitle = pages.first(where: { $0.id == url.absoluteString })?.title
+        let existingTitle = pages.first(where: { $0.id == normalizedURL.absoluteString })?.title
         let resolvedTitle: String
         if let cleanTitle, !cleanTitle.isEmpty, !Self.isGenericPortalTitle(cleanTitle) {
             resolvedTitle = cleanTitle
         } else if let existingTitle, !Self.isGenericPortalTitle(existingTitle) {
             resolvedTitle = existingTitle
         } else {
-            resolvedTitle = Self.fallbackTitle(for: url)
+            resolvedTitle = Self.fallbackTitle(for: normalizedURL)
         }
-        let page = MacPortalPage(url: url, title: resolvedTitle, accessedAt: Date().timeIntervalSince1970)
+        let page = MacPortalPage(url: normalizedURL, title: resolvedTitle, accessedAt: Date().timeIntervalSince1970)
         pages.removeAll { $0.id == page.id }
         pages.insert(page, at: 0)
         pages = Array(pages.prefix(14))
         activePageID = page.id
-        initialURL = url
+        initialURL = normalizedURL
         persistPages()
-        breadcrumbs = resolveBreadcrumbs(breadcrumbRecords, url: url, title: resolvedTitle)
+        breadcrumbs = resolveBreadcrumbs(breadcrumbRecords, url: normalizedURL, title: resolvedTitle)
         refreshNavigationState()
         applySidebarVisibility()
     }
@@ -258,12 +280,17 @@ final class MacPortalBrowserModel: ObservableObject {
     func open(_ page: MacPortalPage) {
         guard let index = pages.firstIndex(where: { $0.id == page.id }) else { return }
         var selectedPage = pages.remove(at: index)
+        selectedPage = MacPortalPage(
+            url: MacPortalConfig.normalizedPortalURL(selectedPage.url),
+            title: selectedPage.title,
+            accessedAt: selectedPage.accessedAt
+        )
         selectedPage.accessedAt = Date().timeIntervalSince1970
         pages.insert(selectedPage, at: 0)
-        activePageID = page.id
-        initialURL = page.url
+        activePageID = selectedPage.id
+        initialURL = selectedPage.url
         persistPages()
-        webView?.load(URLRequest(url: page.url))
+        webView?.load(URLRequest(url: selectedPage.url))
     }
 
     func close(_ page: MacPortalPage) {
@@ -286,10 +313,13 @@ final class MacPortalBrowserModel: ObservableObject {
     }
 
     func navigate(to url: URL) {
-        guard url.scheme == "https" || url.scheme == "http" else { return }
-        initialURL = url
-        activePageID = url.absoluteString
-        webView?.load(URLRequest(url: url))
+        let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
+        guard normalizedURL.scheme == "https" || normalizedURL.scheme == "http",
+              MacPortalConfig.isPortalURL(normalizedURL),
+              !MacPortalConfig.isLoginURL(normalizedURL) else { return }
+        initialURL = normalizedURL
+        activePageID = normalizedURL.absoluteString
+        webView?.load(URLRequest(url: normalizedURL))
     }
 
     func goBack() { webView?.goBack() }
@@ -412,6 +442,32 @@ final class MacPortalBrowserModel: ObservableObject {
         }
     }
 
+    private static func sanitizedPages(_ stored: [MacPortalPage]) -> [MacPortalPage] {
+        let migrated = stored.compactMap { page -> MacPortalPage? in
+            let normalizedURL = MacPortalConfig.normalizedPortalURL(page.url)
+            guard MacPortalConfig.isPortalURL(normalizedURL),
+                  !MacPortalConfig.isLoginURL(normalizedURL) else { return nil }
+
+            let resolvedTitle: String
+            if isGenericPortalTitle(page.title) {
+                let fallback = fallbackTitle(for: normalizedURL)
+                resolvedTitle = isGenericPortalTitle(fallback) ? page.title : fallback
+            } else {
+                resolvedTitle = page.title
+            }
+            return MacPortalPage(
+                url: normalizedURL,
+                title: resolvedTitle,
+                accessedAt: page.accessedAt
+            )
+        }
+        .sorted { $0.accessedAt > $1.accessedAt }
+
+        var seenPageIDs = Set<String>()
+        let uniquePages = migrated.filter { seenPageIDs.insert($0.id).inserted }
+        return Array(uniquePages.prefix(14))
+    }
+
     private static func fallbackTitle(for url: URL) -> String {
         let titles: [String: String] = [
             "/daily-reports": "일일보고",
@@ -455,7 +511,9 @@ final class MacPortalBrowserModel: ObservableObject {
             guard let rawTitle = record["title"] as? String else { return nil }
             let clean = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty else { return nil }
-            let itemURL = (record["url"] as? String).flatMap(URL.init(string:))
+            let itemURL = (record["url"] as? String)
+                .flatMap(URL.init(string:))
+                .map(MacPortalConfig.normalizedPortalURL)
             return MacPortalBreadcrumb(title: clean, url: itemURL)
         }
         if !resolved.isEmpty { return resolved }
