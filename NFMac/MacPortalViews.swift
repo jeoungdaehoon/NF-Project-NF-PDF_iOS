@@ -600,6 +600,12 @@ private struct MacPortalPane: View {
     let onActivate: () -> Void
     let onSidebarNavigate: (URL) -> Void
 
+    @State private var isFindPresented = false
+    @State private var findQuery = ""
+    @State private var findMatchFound: Bool?
+    @State private var findRequestSequence = 0
+    @FocusState private var isFindFieldFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             // The interactive toolbar is hosted by a native title-bar accessory.
@@ -633,6 +639,31 @@ private struct MacPortalPane: View {
             }
         }
         .background(model.themeBackground)
+        .overlay(alignment: .topTrailing) {
+            if isFindPresented {
+                MacPortalFindBar(
+                    query: $findQuery,
+                    matchFound: findMatchFound,
+                    isFieldFocused: $isFindFieldFocused,
+                    onPrevious: { performFind(backwards: true) },
+                    onNext: { performFind(backwards: false) },
+                    onClose: closeFind
+                )
+                .padding(.top, 40)
+                .padding(.trailing, 14)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .onChange(of: findQuery) { _, query in
+            guard isFindPresented else { return }
+            if query.isEmpty {
+                findRequestSequence += 1
+                findMatchFound = nil
+                model.clearTextFind()
+            } else {
+                performFind(backwards: false)
+            }
+        }
         // NSSplitView applies the title-bar safe area to each arranged pane.
         // Ignore it per pane so both toolbars stay beside the traffic lights.
         .ignoresSafeArea(.container, edges: .top)
@@ -643,8 +674,108 @@ private struct MacPortalPane: View {
             model: model,
             preferences: preferences,
             onFocus: onActivate,
-            onSidebarNavigate: onSidebarNavigate
+            onSidebarNavigate: onSidebarNavigate,
+            onFindCommand: presentFind,
+            onFindNextCommand: { backwards in
+                if isFindPresented, !findQuery.isEmpty {
+                    performFind(backwards: backwards)
+                } else {
+                    presentFind()
+                }
+            }
         )
+    }
+
+    private func presentFind() {
+        onActivate()
+        withAnimation(.easeOut(duration: 0.16)) {
+            isFindPresented = true
+        }
+        Task { @MainActor in
+            isFindFieldFocused = true
+        }
+    }
+
+    private func performFind(backwards: Bool) {
+        guard !findQuery.isEmpty else {
+            isFindFieldFocused = true
+            return
+        }
+        findRequestSequence += 1
+        let requestSequence = findRequestSequence
+        model.findText(findQuery, backwards: backwards) { found in
+            guard requestSequence == findRequestSequence else { return }
+            findMatchFound = found
+        }
+    }
+
+    private func closeFind() {
+        findRequestSequence += 1
+        model.clearTextFind()
+        findMatchFound = nil
+        withAnimation(.easeIn(duration: 0.12)) {
+            isFindPresented = false
+        }
+    }
+}
+
+private struct MacPortalFindBar: View {
+    @Binding var query: String
+    let matchFound: Bool?
+    let isFieldFocused: FocusState<Bool>.Binding
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("문구 검색", text: $query)
+                .textFieldStyle(.plain)
+                .focused(isFieldFocused)
+                .onSubmit(onNext)
+                .frame(width: 210)
+
+            if let matchFound {
+                Text(matchFound ? "찾음" : "일치 없음")
+                    .font(.caption)
+                    .foregroundStyle(matchFound ? Color.secondary : Color.red)
+                    .frame(minWidth: 36)
+            }
+
+            Button(action: onPrevious) {
+                Image(systemName: "chevron.up")
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .help("이전 결과")
+            .disabled(query.isEmpty)
+
+            Button(action: onNext) {
+                Image(systemName: "chevron.down")
+            }
+            .keyboardShortcut("g", modifiers: .command)
+            .help("다음 결과")
+            .disabled(query.isEmpty)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+            }
+            .help("검색 닫기")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.primary.opacity(0.16), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+        .onExitCommand(perform: onClose)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("현재 페이지 문구 검색")
     }
 }
 

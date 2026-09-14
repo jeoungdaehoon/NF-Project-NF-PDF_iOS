@@ -2,18 +2,43 @@ import AppKit
 import SwiftUI
 import WebKit
 
+private final class MacPortalCommandWebView: WKWebView {
+    var onFindCommand: (() -> Void)?
+    var onFindNextCommand: ((Bool) -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        let hasUnsupportedModifier = modifiers.contains(.control) || modifiers.contains(.option)
+
+        if modifiers.contains(.command), !hasUnsupportedModifier, key == "f" {
+            onFindCommand?()
+            return true
+        }
+        if modifiers.contains(.command), !hasUnsupportedModifier, key == "g" {
+            onFindNextCommand?(modifiers.contains(.shift))
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 struct MacPortalWebView: NSViewRepresentable {
     @ObservedObject var model: MacPortalBrowserModel
     @ObservedObject var preferences: MacPortalPreferences
     let onFocus: () -> Void
     let onSidebarNavigate: (URL) -> Void
+    let onFindCommand: () -> Void
+    let onFindNextCommand: (Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             model: model,
             preferences: preferences,
             onFocus: onFocus,
-            onSidebarNavigate: onSidebarNavigate
+            onSidebarNavigate: onSidebarNavigate,
+            onFindCommand: onFindCommand,
+            onFindNextCommand: onFindNextCommand
         )
     }
 
@@ -42,9 +67,15 @@ struct MacPortalWebView: NSViewRepresentable {
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = MacPortalCommandWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
+        webView.onFindCommand = { [weak coordinator = context.coordinator] in
+            coordinator?.onFindCommand()
+        }
+        webView.onFindNextCommand = { [weak coordinator = context.coordinator] backwards in
+            coordinator?.onFindNextCommand(backwards)
+        }
         webView.allowsMagnification = false
         webView.setValue(false, forKey: "drawsBackground")
         webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
@@ -66,6 +97,8 @@ struct MacPortalWebView: NSViewRepresentable {
         context.coordinator.preferences = preferences
         context.coordinator.onFocus = onFocus
         context.coordinator.onSidebarNavigate = onSidebarNavigate
+        context.coordinator.onFindCommand = onFindCommand
+        context.coordinator.onFindNextCommand = onFindNextCommand
         if model.webView !== webView { model.connect(webView) }
         if context.coordinator.lastAppliedZoomPercent != preferences.zoomPercent {
             webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
@@ -103,6 +136,10 @@ struct MacPortalWebView: NSViewRepresentable {
             .forEach(controller.removeScriptMessageHandler(forName:))
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        if let commandWebView = webView as? MacPortalCommandWebView {
+            commandWebView.onFindCommand = nil
+            commandWebView.onFindNextCommand = nil
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
@@ -110,6 +147,8 @@ struct MacPortalWebView: NSViewRepresentable {
         var preferences: MacPortalPreferences
         var onFocus: () -> Void
         var onSidebarNavigate: (URL) -> Void
+        var onFindCommand: () -> Void
+        var onFindNextCommand: (Bool) -> Void
         var lastAppliedZoomPercent: Int?
         var lastAppliedAppearance: MacPortalAppearance?
         var lastAppliedPDFLocalStorageEnabled: Bool?
@@ -119,12 +158,16 @@ struct MacPortalWebView: NSViewRepresentable {
             model: MacPortalBrowserModel,
             preferences: MacPortalPreferences,
             onFocus: @escaping () -> Void,
-            onSidebarNavigate: @escaping (URL) -> Void
+            onSidebarNavigate: @escaping (URL) -> Void,
+            onFindCommand: @escaping () -> Void,
+            onFindNextCommand: @escaping (Bool) -> Void
         ) {
             self.model = model
             self.preferences = preferences
             self.onFocus = onFocus
             self.onSidebarNavigate = onSidebarNavigate
+            self.onFindCommand = onFindCommand
+            self.onFindNextCommand = onFindNextCommand
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

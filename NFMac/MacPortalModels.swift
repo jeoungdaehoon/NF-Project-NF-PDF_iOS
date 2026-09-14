@@ -334,6 +334,25 @@ final class MacPortalBrowserModel: ObservableObject {
         }
     }
 
+    func findText(_ text: String, backwards: Bool, completion: @escaping (Bool) -> Void) {
+        guard let webView, !text.isEmpty else {
+            completion(false)
+            return
+        }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = backwards
+        configuration.caseSensitive = false
+        configuration.wraps = true
+        webView.find(text, configuration: configuration) { result in
+            completion(result.matchFound)
+        }
+    }
+
+    func clearTextFind() {
+        guard let webView else { return }
+        webView.find("", configuration: WKFindConfiguration()) { _ in }
+    }
+
     func goHome() {
         navigate(to: MacPortalConfig.dashboardURL)
     }
