@@ -552,7 +552,12 @@ private struct MacResizableRemotePDFPanel: View {
             .frame(width: panelWidth)
             .frame(height: max(geometry.size.height - topInset, 0))
             .background(Color(nsColor: .windowBackgroundColor))
-            .clipped()
+            .clipShape(MacPDFPanelShape())
+            .overlay {
+                MacPDFPanelLeadingBorder()
+                    .stroke(Color.primary.opacity(isResizing ? 0.38 : 0.22), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity,
@@ -566,14 +571,8 @@ private struct MacPDFPanelResizeHandle: View {
     @State private var isHovering = false
 
     var body: some View {
-        ZStack {
-            Color.clear
-                .contentShape(Rectangle())
-
-            Rectangle()
-                .fill(Color.primary.opacity(isHovering ? 0.42 : 0.18))
-                .frame(width: isHovering ? 2 : 1)
-        }
+        Color.clear
+        .contentShape(Rectangle())
         .frame(width: MacPDFSlidePanelLayout.resizeHandleWidth)
         .onHover { hovering in
             guard hovering != isHovering else { return }
@@ -591,6 +590,33 @@ private struct MacPDFPanelResizeHandle: View {
         }
         .accessibilityLabel("PDF 보기 너비 조절")
         .accessibilityHint("가로로 드래그하여 PDF 보기 너비를 변경합니다.")
+    }
+}
+
+private struct MacPDFPanelShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = min(12, min(rect.width, rect.height))
+        var path = Path()
+        path.move(to: CGPoint(x: radius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: radius))
+        path.addQuadCurve(to: CGPoint(x: radius, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct MacPDFPanelLeadingBorder: Shape {
+    func path(in rect: CGRect) -> Path {
+        let radius = min(12, min(rect.width, rect.height))
+        let inset: CGFloat = 0.5
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + inset, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + inset, y: radius))
+        path.addQuadCurve(to: CGPoint(x: radius, y: rect.minY + inset), control: CGPoint(x: rect.minX + inset, y: rect.minY + inset))
+        return path
     }
 }
 

@@ -415,12 +415,24 @@ struct MacRemotePDFPreviewView: View {
     @State private var errorMessage: String?
     @State private var didStoreLocally = false
     @State private var markdownSearchQuery = ""
+    @State private var isMoreMenuPresented = false
+    @State private var pendingMoreMenuAction: MoreMenuAction?
+
+    private enum MoreMenuAction { case sharePDF, openOriginal, saveOriginal }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button("닫기", action: onClose)
-                    .keyboardShortcut(.cancelAction)
+            HStack(spacing: 10) {
+                Button(action: onClose) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help("뒤로")
+                .accessibilityLabel("첨부 미리보기 닫기")
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
@@ -429,18 +441,46 @@ struct MacRemotePDFPreviewView: View {
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
-                if markdown != nil {
-                    Button(markdownPreviewController.isSharing ? "PDF 생성 중…" : "PDF 외부 공유하기") {
-                        markdownPreviewController.sharePDF(fileName: title)
-                    }
-                    .disabled(!markdownPreviewController.isReady || markdownPreviewController.isSharing)
+                Button {
+                    isMoreMenuPresented.toggle()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
                 }
-                Button("기본 앱에서 열기") { openInDefaultApplication() }
-                    .disabled(attachmentData == nil)
-                Button("저장") { saveAttachment() }
-                    .disabled(attachmentData == nil)
+                .buttonStyle(.plain)
+                .help("더보기")
+                .accessibilityLabel("첨부 파일 더보기")
+                .popover(isPresented: $isMoreMenuPresented, arrowEdge: .top) {
+                    VStack(spacing: 0) {
+                        if markdown != nil {
+                            MacAttachmentMenuRow(
+                                title: markdownPreviewController.isSharing ? "PDF 생성 중…" : "PDF 외부 공유하기",
+                                systemImage: "square.and.arrow.up",
+                                isEnabled: markdownPreviewController.isReady && !markdownPreviewController.isSharing
+                            ) {
+                                pendingMoreMenuAction = .sharePDF
+                                isMoreMenuPresented = false
+                            }
+                        }
+                        MacAttachmentMenuRow(title: "기본 앱에서 열기", systemImage: "arrow.up.right.square", isEnabled: attachmentData != nil) {
+                            pendingMoreMenuAction = .openOriginal
+                            isMoreMenuPresented = false
+                        }
+                        MacAttachmentMenuRow(title: "원본 파일 저장", systemImage: "square.and.arrow.down", isEnabled: attachmentData != nil) {
+                            pendingMoreMenuAction = .saveOriginal
+                            isMoreMenuPresented = false
+                        }
+                    }
+                    .padding(6)
+                    .frame(width: 210)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .onDisappear(perform: runPendingMoreMenuAction)
+                }
             }
-            .padding(12)
+            .padding(.horizontal, 14)
+            .frame(height: 48)
             Divider()
             if markdown != nil {
                 HStack(spacing: 12) {
@@ -517,6 +557,16 @@ struct MacRemotePDFPreviewView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { await load() }
+    }
+
+    private func runPendingMoreMenuAction() {
+        guard let action = pendingMoreMenuAction else { return }
+        pendingMoreMenuAction = nil
+        switch action {
+        case .sharePDF: markdownPreviewController.sharePDF(fileName: title)
+        case .openOriginal: openInDefaultApplication()
+        case .saveOriginal: saveAttachment()
+        }
     }
 
     private func load() async {
@@ -607,6 +657,35 @@ struct MacRemotePDFPreviewView: View {
         alert.messageText = title
         alert.informativeText = error.localizedDescription
         alert.runModal()
+    }
+}
+
+private struct MacAttachmentMenuRow: View {
+    let title: String
+    let systemImage: String
+    let isEnabled: Bool
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 16, height: 16)
+                Text(title)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(minHeight: 26)
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .background(isHovering && isEnabled ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
+        .onHover { isHovering = $0 }
     }
 }
 
