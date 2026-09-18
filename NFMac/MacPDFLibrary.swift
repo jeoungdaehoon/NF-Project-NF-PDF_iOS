@@ -408,6 +408,7 @@ struct MacRemotePDFPreviewView: View {
     @State private var pdfDocument: PDFDocument?
     @State private var image: NSImage?
     @State private var markdown: String?
+    @StateObject private var markdownPreviewController = MacMarkdownPreviewController()
     @State private var attachmentData: Data?
     @State private var attachmentIsMovie = false
     @State private var title = "첨부 파일"
@@ -426,6 +427,12 @@ struct MacRemotePDFPreviewView: View {
                     Label("로컬 저장됨", systemImage: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
+                }
+                if markdown != nil {
+                    Button(markdownPreviewController.isSharing ? "PDF 생성 중…" : "PDF 외부 공유하기") {
+                        markdownPreviewController.sharePDF(fileName: title)
+                    }
+                    .disabled(!markdownPreviewController.isReady || markdownPreviewController.isSharing)
                 }
                 Button("기본 앱에서 열기") { openInDefaultApplication() }
                     .disabled(attachmentData == nil)
@@ -448,7 +455,7 @@ struct MacRemotePDFPreviewView: View {
                             .padding(20)
                     }
                 } else if let markdown {
-                    MacMarkdownPreviewView(markdown: markdown)
+                    MacMarkdownPreviewView(markdown: markdown, controller: markdownPreviewController)
                 } else if attachmentData != nil {
                     ContentUnavailableView(
                         "첨부 파일을 불러왔습니다",

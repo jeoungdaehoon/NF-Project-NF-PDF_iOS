@@ -172,6 +172,8 @@ enum PortalPDFPreviewLoadState {
     case loading
     /// PDFKit에서 표시 가능한 문서가 준비된 상태입니다.
     case loaded(PDFDocument)
+    /// Markdown 첨부 파일을 문서로 표시할 준비가 된 상태입니다.
+    case markdown(String)
     /// PDF로 열 수 없거나 다운로드에 실패한 상태입니다.
     case failed(String)
 }

@@ -400,6 +400,8 @@ struct PortalPDFPreviewView: View {
             loadingView
         case .loaded(let document):
             pdfEditorView(document: document)
+        case .markdown(let content):
+            PortalMarkdownAttachmentView(markdown: content, title: item.title, onClose: closePDFPreview)
         case .failed(let message):
             failedView(message: message)
         }
@@ -409,7 +411,7 @@ struct PortalPDFPreviewView: View {
     var previewNavigationLayer: some View {
         ZStack {
             VStack(spacing: 0) {
-                if !isPDFPresentationModeEnabled {
+                if !isPDFPresentationModeEnabled, !isMarkdownPreview {
                     pdfDocumentHistoryTabBar
                 }
                 previewStateContent
@@ -506,7 +508,12 @@ struct PortalPDFPreviewView: View {
 
     var showsPDFNavigationControls: Bool {
         !usesFullscreenTitleBar &&
-            (!isPDFPresentationModeEnabled || arePDFPresentationControlsVisible)
+            (!isPDFPresentationModeEnabled || arePDFPresentationControlsVisible) && !isMarkdownPreview
+    }
+
+    var isMarkdownPreview: Bool {
+        if case .markdown = state { return true }
+        return false
     }
 
     /// 중앙 문서명과 이름 변경 메뉴를 표시하며, 이름 변경 선택 시 같은 영역을 TextField로 전환합니다.
@@ -1880,7 +1887,7 @@ struct PortalPDFPreviewView: View {
 
     func failedView(message: String) -> some View {
         VStack(spacing: 14) {
-            Text("PDF 미리보기를 열 수 없습니다.")
+            Text("첨부 미리보기를 열 수 없습니다.")
                 .font(.headline)
                 .foregroundStyle(.primary)
             Text(message)
@@ -2166,7 +2173,54 @@ struct PortalPDFPreviewView: View {
             state = .loaded(localDocument)
             return
         }
+        let opensMarkdown = await isMarkdownAttachment(item)
+        guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItemID else { return }
+        if opensMarkdown {
+            await downloadAndOpenMarkdown()
+            return
+        }
         initialOpenPrompt = isPDFLocalStorageEnabled ? .localStorageEnabled : .localStorageDisabled
+    }
+
+    private func isMarkdownAttachment(_ item: PortalAttachmentPreviewItem) async -> Bool {
+        if PortalMarkdownAttachment.isMarkdownFileName(item.title)
+            || PortalMarkdownAttachment.isMarkdownFileName(item.url.lastPathComponent) { return true }
+        var request = URLRequest(url: item.url)
+        request.httpMethod = "HEAD"
+        if let cookieHeader = item.cookieHeader {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+        guard let (_, response) = try? await URLSession.shared.data(for: request),
+              let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode) else { return false }
+        return PortalMarkdownAttachment.isMarkdown(response)
+    }
+
+    @MainActor
+    private func downloadAndOpenMarkdown() async {
+        let token = documentOpeningToken
+        let openingItem = item
+        do {
+            var request = URLRequest(url: openingItem.url)
+            if let cookieHeader = openingItem.cookieHeader {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItem.id else { return }
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  let text = PortalMarkdownAttachment.decode(data) else {
+                throw PortalPDFPreviewError.unsupportedFile
+            }
+            if let name = response.suggestedFilename, PortalMarkdownAttachment.isMarkdownFileName(name) {
+                activeItem.title = name
+                documentHistoryRecords = PortalPDFDocumentHistoryStore.rename(id: item.historyIdentifier, title: name)
+            }
+            state = .markdown(text)
+        } catch {
+            guard documentOpeningToken == token, item.id == openingItem.id else { return }
+            state = .failed("Markdown 문서를 불러오지 못했습니다.")
+        }
     }
 
     /** PDF를 다운로드하고 선택한 방식에 따라 저장한 뒤 PDFView를 표시합니다. */
@@ -2194,6 +2248,16 @@ struct PortalPDFPreviewView: View {
             guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItem.id else { return }
             guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
                 throw PortalPDFPreviewError.downloadFailed
+            }
+            if PortalMarkdownAttachment.isMarkdown(httpResponse),
+               let text = PortalMarkdownAttachment.decode(data) {
+                if let name = httpResponse.suggestedFilename, PortalMarkdownAttachment.isMarkdownFileName(name) {
+                    activeItem.title = name
+                    documentHistoryRecords = PortalPDFDocumentHistoryStore.rename(id: item.historyIdentifier, title: name)
+                }
+                state = .markdown(text)
+                localDownloadProgress = nil
+                return
             }
             guard data.startsWithPDFSignature || httpResponse.isPDFContentType else {
                 throw PortalPDFPreviewError.unsupportedFile

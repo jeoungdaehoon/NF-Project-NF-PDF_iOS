@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html { background: #1b252f; }
+  body { margin: 0; color: #edf1f5; background: #1b252f; font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; overflow-wrap: anywhere; }
+  main { max-width: 1120px; margin: 0 auto; padding: 42px clamp(22px, 4vw, 56px) 90px; }
+  h1, h2, h3, h4, h5, h6 { color: #f5f7fa; line-height: 1.35; margin: 1.7em 0 .65em; font-weight: 700; }
+  h1 { font-size: 2.05em; margin-top: 0; }
+  h2 { font-size: 1.65em; border-top: 1px solid #354451; padding-top: .85em; }
+  h3 { font-size: 1.34em; }
+  h4 { font-size: 1.14em; }
+  h5, h6 { font-size: 1em; }
+  p, ul, ol, pre, blockquote, .table-scroll { margin: 0 0 1.25em; }
+  li { padding-left: .15em; }
+  li + li { margin-top: .2em; }
+  li > p { margin: .3em 0; }
+  ul, ol { padding-left: 1.6em; }
+  a { color: #85b7e1; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: 0; border-top: 1px solid #354451; margin: 2em 0; }
+  strong { font-weight: 700; }
+  :not(pre) > code { color: #85b7e1; font: .91em ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { padding: 19px 22px; background: #0e1216; border: 1px solid #293b49; border-left: 3px solid #71a9d6; border-radius: 7px; overflow-x: auto; white-space: pre; }
+  pre code { color: #a5cae8; font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: normal; }
+  blockquote { padding: 14px 18px; background: #243747; border-left: 4px solid #83bae7; border-radius: 5px; }
+  blockquote > :last-child { margin-bottom: 0; }
+  .table-scroll { width: 100%; overflow-x: auto; border: 1px solid #3a4956; border-radius: 9px; }
+  table { width: 100%; border-spacing: 0; border-collapse: separate; font-size: .94em; }
+  th, td { text-align: left; vertical-align: top; padding: 11px 13px; border-right: 1px solid #3a4956; border-bottom: 1px solid #3a4956; }
+  th:last-child, td:last-child { border-right: 0; }
+  tr:last-child td { border-bottom: 0; }
+  thead th { background: #243240; font-weight: 700; }
+  tbody tr:nth-child(even) { background: #1d2a35; }
+  td code, th code { white-space: nowrap; }
+  input[type="checkbox"] { accent-color: #83bae7; margin-right: .4em; }
+  @media (max-width: 650px) { main { padding-top: 28px; } body { font-size: 15px; } h1 { font-size: 1.75em; } h2 { font-size: 1.4em; } th, td { padding: 9px 10px; } }
+</style>
+</head>
+<body>
+<main id="document"></main>
+<script id="markdown-source" type="text/plain">MARKDOWN_BASE64_PLACEHOLDER</script>
+<!-- MARKED_LIBRARY -->
+<script>
+  const base64 = document.getElementById('markdown-source').textContent.trim();
+  const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+  const source = new TextDecoder('utf-8').decode(bytes);
+  const parsed = marked.parse(source, { gfm: true, breaks: false });
+  const staging = document.createElement('template');
+  staging.innerHTML = parsed;
+
+  const allowed = new Set(['H1','H2','H3','H4','H5','H6','P','BR','HR','STRONG','EM','DEL','UL','OL','LI','BLOCKQUOTE','PRE','CODE','TABLE','THEAD','TBODY','TR','TH','TD','A','INPUT']);
+  const discard = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','SVG','MATH','IMG','VIDEO','AUDIO','META','LINK']);
+  function clean(parent) {
+    for (const node of [...parent.childNodes]) {
+      if (node.nodeType === Node.COMMENT_NODE) { node.remove(); continue; }
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      if (discard.has(node.tagName)) { node.remove(); continue; }
+      if (!allowed.has(node.tagName)) {
+        clean(node);
+        node.replaceWith(...node.childNodes);
+        continue;
+      }
+      const href = node.tagName === 'A' ? node.getAttribute('href') : null;
+      const title = node.tagName === 'A' ? node.getAttribute('title') : null;
+      const language = node.tagName === 'CODE' ? node.getAttribute('class') : null;
+      const checkbox = node.tagName === 'INPUT' && node.getAttribute('type') === 'checkbox';
+      const checked = checkbox && node.hasAttribute('checked');
+      for (const attribute of [...node.attributes]) node.removeAttribute(attribute.name);
+      if (node.tagName === 'A' && href && /^(https?:|mailto:)/i.test(href)) {
+        node.setAttribute('href', href);
+        if (title) node.setAttribute('title', title);
+      }
+      if (node.tagName === 'CODE' && language && /^language-[a-z0-9+#._-]+$/i.test(language)) node.setAttribute('class', language);
+      if (node.tagName === 'INPUT') {
+        if (!checkbox) { node.remove(); continue; }
+        node.setAttribute('type', 'checkbox');
+        node.setAttribute('disabled', '');
+        if (checked) node.setAttribute('checked', '');
+      }
+      clean(node);
+    }
+  }
+  clean(staging.content);
+  for (const table of staging.content.querySelectorAll('table')) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-scroll';
+    table.replaceWith(wrapper);
+    wrapper.append(table);
+  }
+  document.getElementById('document').append(staging.content);
+</script>
+</body>
+</html>
