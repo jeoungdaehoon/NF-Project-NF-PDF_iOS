@@ -407,6 +407,7 @@ struct MacRemotePDFPreviewView: View {
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
     @State private var image: NSImage?
+    @State private var markdown: String?
     @State private var attachmentData: Data?
     @State private var attachmentIsMovie = false
     @State private var title = "첨부 파일"
@@ -446,6 +447,8 @@ struct MacRemotePDFPreviewView: View {
                             .scaledToFit()
                             .padding(20)
                     }
+                } else if let markdown {
+                    MacMarkdownPreviewView(markdown: markdown)
                 } else if attachmentData != nil {
                     ContentUnavailableView(
                         "첨부 파일을 불러왔습니다",
@@ -480,8 +483,12 @@ struct MacRemotePDFPreviewView: View {
 
             let mimeType = response.mimeType?.lowercased() ?? ""
             let fileExtension = (title as NSString).pathExtension.lowercased()
+            let sourceExtension = request.url.pathExtension.lowercased()
             attachmentIsMovie = mimeType.hasPrefix("video/") || ["mov", "mp4", "m4v", "avi", "mkv"].contains(fileExtension)
             let isPDF = mimeType == "application/pdf" || fileExtension == "pdf" || data.starts(with: Data("%PDF".utf8))
+            let isMarkdown = ["md", "markdown", "mdown"].contains(fileExtension)
+                || ["md", "markdown", "mdown"].contains(sourceExtension)
+                || ["text/markdown", "text/x-markdown"].contains(mimeType)
             if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
                 pdfDocument = document
                 if storesLocally {
@@ -490,6 +497,9 @@ struct MacRemotePDFPreviewView: View {
                 }
             } else if mimeType.hasPrefix("image/") || NSImage(data: data) != nil {
                 image = NSImage(data: data)
+            } else if isMarkdown {
+                markdown = String(data: data, encoding: .utf8)
+                    ?? String(data: data, encoding: .utf16)
             }
         } catch {
             errorMessage = "네트워크 연결과 파일 형식을 확인해 주세요."
