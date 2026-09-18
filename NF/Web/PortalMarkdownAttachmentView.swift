@@ -22,7 +22,26 @@ enum PortalMarkdownAttachment {
 @MainActor
 final class PortalMarkdownPreviewController: ObservableObject {
     @Published var isReady = false
+    @Published var searchHasMatch: Bool?
     weak var webView: WKWebView?
+    private var latestSearchQuery = ""
+
+    func find(_ query: String, backwards: Bool = false) {
+        guard isReady, let webView else { return }
+        latestSearchQuery = query
+        guard !query.isEmpty else {
+            searchHasMatch = nil
+            webView.evaluateJavaScript("window.getSelection().removeAllRanges()", completionHandler: nil)
+            return
+        }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = backwards
+        configuration.wraps = true
+        webView.find(query, configuration: configuration) { [weak self] result in
+            guard self?.latestSearchQuery == query else { return }
+            self?.searchHasMatch = result.matchFound
+        }
+    }
 }
 
 struct PortalMarkdownAttachmentView: View {
@@ -33,6 +52,7 @@ struct PortalMarkdownAttachmentView: View {
     @State private var pdfShareItem: PortalPDFShareItem?
     @State private var shareError: String?
     @State private var isSharing = false
+    @State private var searchQuery = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +81,51 @@ struct PortalMarkdownAttachmentView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.white)
             .padding(.horizontal, 8)
+            .background(Color(red: 0.11, green: 0.15, blue: 0.19))
+
+            HStack(spacing: 11) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.gray)
+                TextField("문구 검색", text: $searchQuery)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .onSubmit { controller.find(searchQuery) }
+                    .onChange(of: searchQuery) { _, query in controller.find(query) }
+                    .onChange(of: controller.isReady) { _, ready in
+                        if ready { controller.find(searchQuery) }
+                    }
+                if controller.searchHasMatch == false, !searchQuery.isEmpty {
+                    Text("결과 없음").font(.caption).foregroundStyle(.gray)
+                }
+                Button {
+                    controller.find(searchQuery, backwards: true)
+                } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .disabled(searchQuery.isEmpty || !controller.isReady)
+                .accessibilityLabel("이전 검색 결과")
+                Button {
+                    controller.find(searchQuery)
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .disabled(searchQuery.isEmpty || !controller.isReady)
+                .accessibilityLabel("다음 검색 결과")
+                Button {
+                    searchQuery = ""
+                    controller.find("")
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .disabled(searchQuery.isEmpty)
+                .accessibilityLabel("검색 닫기")
+            }
+            .font(.subheadline)
+            .buttonStyle(.plain)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .frame(height: 44)
             .background(Color(red: 0.11, green: 0.15, blue: 0.19))
 
             PortalMarkdownWebView(markdown: markdown, controller: controller)

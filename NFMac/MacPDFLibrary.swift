@@ -414,6 +414,7 @@ struct MacRemotePDFPreviewView: View {
     @State private var title = "첨부 파일"
     @State private var errorMessage: String?
     @State private var didStoreLocally = false
+    @State private var markdownSearchQuery = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -441,6 +442,51 @@ struct MacRemotePDFPreviewView: View {
             }
             .padding(12)
             Divider()
+            if markdown != nil {
+                HStack(spacing: 12) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("문구 검색", text: $markdownSearchQuery)
+                        .textFieldStyle(.plain)
+                        .onSubmit { markdownPreviewController.find(markdownSearchQuery) }
+                        .onChange(of: markdownSearchQuery) { _, query in
+                            markdownPreviewController.find(query)
+                        }
+                        .onChange(of: markdownPreviewController.isReady) { _, ready in
+                            if ready { markdownPreviewController.find(markdownSearchQuery) }
+                        }
+                    if markdownPreviewController.searchHasMatch == false, !markdownSearchQuery.isEmpty {
+                        Text("결과 없음").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button {
+                        markdownPreviewController.find(markdownSearchQuery, backwards: true)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .help("이전 결과")
+                    .disabled(markdownSearchQuery.isEmpty || !markdownPreviewController.isReady)
+                    Button {
+                        markdownPreviewController.find(markdownSearchQuery)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .help("다음 결과")
+                    .disabled(markdownSearchQuery.isEmpty || !markdownPreviewController.isReady)
+                    Button {
+                        markdownSearchQuery = ""
+                        markdownPreviewController.find("")
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .help("검색 닫기")
+                    .disabled(markdownSearchQuery.isEmpty)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+                .background(Color(red: 0.11, green: 0.15, blue: 0.19))
+            }
             Group {
                 if let pdfDocument {
                     MacPDFKitView(

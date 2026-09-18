@@ -4,11 +4,31 @@ import SwiftUI
 import WebKit
 
 @MainActor
-final class MacMarkdownPreviewController: ObservableObject {
+final class MacMarkdownPreviewController: NSObject, ObservableObject, NSSharingServicePickerDelegate {
     @Published var isReady = false
     @Published var isSharing = false
+    @Published var searchHasMatch: Bool?
     weak var webView: WKWebView?
     private var sharingPicker: NSSharingServicePicker?
+    private var sharedPDFURL: URL?
+    private var latestSearchQuery = ""
+
+    func find(_ query: String, backwards: Bool = false) {
+        guard isReady, let webView else { return }
+        latestSearchQuery = query
+        guard !query.isEmpty else {
+            searchHasMatch = nil
+            webView.evaluateJavaScript("window.getSelection().removeAllRanges()", completionHandler: nil)
+            return
+        }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = backwards
+        configuration.wraps = true
+        webView.find(query, configuration: configuration) { [weak self] result in
+            guard self?.latestSearchQuery == query else { return }
+            self?.searchHasMatch = result.matchFound
+        }
+    }
 
     func sharePDF(fileName: String) {
         guard isReady, !isSharing, let webView else { return }
@@ -36,12 +56,44 @@ final class MacMarkdownPreviewController: ObservableObject {
                     try data.write(to: url, options: .atomic)
                     let picker = NSSharingServicePicker(items: [url])
                     self.sharingPicker = picker
+                    self.sharedPDFURL = url
+                    picker.delegate = self
                     let topY = webView.isFlipped ? webView.bounds.minY + 20 : webView.bounds.maxY - 20
                     picker.show(relativeTo: NSRect(x: webView.bounds.maxX - 20, y: topY, width: 1, height: 1), of: webView, preferredEdge: .minY)
                     self.isSharing = false
                 } catch {
                     self.showShareError(error)
                 }
+            }
+        }
+    }
+
+    func sharingServicePicker(
+        _ sharingServicePicker: NSSharingServicePicker,
+        sharingServicesForItems items: [Any],
+        proposedSharingServices proposedServices: [NSSharingService]
+    ) -> [NSSharingService] {
+        guard let url = sharedPDFURL else { return proposedServices }
+        let icon = NSImage(systemSymbolName: "square.and.arrow.down", accessibilityDescription: "파일 저장하기")
+            ?? NSImage(size: NSSize(width: 16, height: 16))
+        let saveService = NSSharingService(title: "파일 저장하기", image: icon, alternateImage: nil) { [weak self] in
+            self?.savePDF(url)
+        }
+        return [saveService] + proposedServices
+    }
+
+    private func savePDF(_ url: URL) {
+        let panel = NSSavePanel()
+        panel.title = "PDF 파일 저장"
+        panel.prompt = "저장"
+        panel.nameFieldStringValue = url.lastPathComponent
+        panel.canCreateDirectories = true
+        panel.begin { [weak self] response in
+            guard response == .OK, let destination = panel.url else { return }
+            do {
+                try Data(contentsOf: url).write(to: destination, options: .atomic)
+            } catch {
+                self?.showShareError(error)
             }
         }
     }
