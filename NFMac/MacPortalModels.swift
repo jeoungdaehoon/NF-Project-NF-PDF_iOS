@@ -159,6 +159,7 @@ final class MacPortalBrowserModel: ObservableObject {
     @Published private(set) var canGoForward = false
     @Published private(set) var isSidebarHoverVisible = false
     @Published private(set) var sidebarHoverWidth: CGFloat = 276
+    @Published private(set) var linkedDocumentPanelWidthFraction: CGFloat = 0
     @Published var sidebarHidden = false {
         didSet { defaults.set(sidebarHidden, forKey: sidebarKey) }
     }
@@ -391,6 +392,12 @@ final class MacPortalBrowserModel: ObservableObject {
         }
         isWebSidebarHovered = hovering
         updateSidebarHoverVisibility()
+    }
+
+    func updateLinkedDocumentPanel(widthFraction: CGFloat) {
+        let normalized = widthFraction.isFinite ? min(max(widthFraction, 0), 1) : 0
+        guard abs(linkedDocumentPanelWidthFraction - normalized) > 0.002 else { return }
+        linkedDocumentPanelWidthFraction = normalized
     }
 
     func dismissTransientSidebarAfterSelection() {

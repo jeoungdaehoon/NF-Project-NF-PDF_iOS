@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 private final class MacPortalCommandWebView: WKWebView {
@@ -58,6 +59,8 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
         controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
+        controller.add(context.coordinator, name: "NFPortalMacLinkedDocumentPanel")
+        controller.add(context.coordinator, name: "NFPortalMacPDFShare")
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -121,6 +124,7 @@ struct MacPortalWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.closePopupWindows()
         let controller = webView.configuration.userContentController
         [
             "NFPortalMacNavigation",
@@ -132,6 +136,8 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
             "NFPortalMacSidebarHover",
+            "NFPortalMacLinkedDocumentPanel",
+            "NFPortalMacPDFShare",
         ]
             .forEach(controller.removeScriptMessageHandler(forName:))
         webView.navigationDelegate = nil
@@ -142,7 +148,7 @@ struct MacPortalWebView: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, NSWindowDelegate, NSSharingServicePickerDelegate {
         var model: MacPortalBrowserModel
         var preferences: MacPortalPreferences
         var onFocus: () -> Void
@@ -153,6 +159,12 @@ struct MacPortalWebView: NSViewRepresentable {
         var lastAppliedAppearance: MacPortalAppearance?
         var lastAppliedPDFLocalStorageEnabled: Bool?
         var lastAppliedPDFDocumentCount: Int?
+        private var popupWindows: [ObjectIdentifier: NSWindow] = [:]
+        private var popupWebViews: [ObjectIdentifier: WKWebView] = [:]
+        private var sharingPicker: NSSharingServicePicker?
+        private weak var sharingPopupWebView: WKWebView?
+        private var temporaryShareURLs: [URL] = []
+        private var pdfCreationWebViews: Set<ObjectIdentifier> = []
 
         init(
             model: MacPortalBrowserModel,
@@ -180,11 +192,15 @@ struct MacPortalWebView: NSViewRepresentable {
                     setTimeout(function() { window.__nfMacNotifyNavigation(0); }, delay);
                 });
             }
+            if (window.__nfMacNotifyLinkedDocumentPanel) {
+                window.__nfMacNotifyLinkedDocumentPanel(0);
+            }
             """)
             deliverPDFState(to: webView)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            model.updateLinkedDocumentPanel(widthFraction: 0)
             model.refreshNavigationState()
             model.applySidebarVisibility()
         }
@@ -276,7 +292,16 @@ struct MacPortalWebView: NSViewRepresentable {
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
-            if let url = navigationAction.request.url {
+            let requestedURL = navigationAction.request.url
+            let isBlankPopup = requestedURL == nil
+                || requestedURL?.absoluteString.isEmpty == true
+                || requestedURL?.scheme?.lowercased() == "about"
+            if navigationAction.targetFrame == nil,
+               isBlankPopup {
+                return makePDFSharePopup(configuration: configuration, sourceWebView: webView)
+            }
+
+            if let url = requestedURL {
                 let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
                 if isAttachmentNavigationURL(normalizedURL) { presentAttachmentPreview(normalizedURL, from: webView) }
                 else if MacPortalConfig.isPortalURL(normalizedURL) { webView.load(URLRequest(url: normalizedURL)) }
@@ -285,7 +310,221 @@ struct MacPortalWebView: NSViewRepresentable {
             return nil
         }
 
-        func webViewDidClose(_ webView: WKWebView) { model.refreshNavigationState() }
+        func webViewDidClose(_ webView: WKWebView) {
+            let identifier = ObjectIdentifier(webView)
+            if let window = popupWindows.removeValue(forKey: identifier) {
+                popupWebViews.removeValue(forKey: identifier)
+                window.delegate = nil
+                window.close()
+                return
+            }
+            model.refreshNavigationState()
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow,
+                  let entry = popupWindows.first(where: { $0.value === window }) else { return }
+            popupWindows.removeValue(forKey: entry.key)
+            if let webView = popupWebViews.removeValue(forKey: entry.key) {
+                webView.uiDelegate = nil
+            }
+        }
+
+        func closePopupWindows() {
+            let windows = Array(popupWindows.values)
+            popupWindows.removeAll()
+            popupWebViews.values.forEach {
+                $0.uiDelegate = nil
+            }
+            popupWebViews.removeAll()
+            sharingPicker?.close()
+            sharingPicker = nil
+            sharingPopupWebView = nil
+            pdfCreationWebViews.removeAll()
+            temporaryShareURLs.forEach { try? FileManager.default.removeItem(at: $0) }
+            temporaryShareURLs.removeAll()
+            windows.forEach {
+                $0.delegate = nil
+                $0.close()
+            }
+        }
+
+        private func makePDFSharePopup(
+            configuration: WKWebViewConfiguration,
+            sourceWebView: WKWebView
+        ) -> WKWebView {
+            let sourceSize = sourceWebView.window?.contentLayoutRect.size ?? NSSize(width: 1200, height: 800)
+            let width = min(max(sourceSize.width * 0.78, 720), 1280)
+            let height = min(max(sourceSize.height * 0.82, 620), 960)
+            let popupWebView = WKWebView(
+                frame: NSRect(x: 0, y: 0, width: width, height: height),
+                configuration: configuration
+            )
+            popupWebView.uiDelegate = self
+            popupWebView.setValue(false, forKey: "drawsBackground")
+            popupWebView.appearance = preferences.appearance.webAppearance
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: width, height: height),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "PDF 공유"
+            window.contentView = popupWebView
+            window.delegate = self
+            window.isReleasedWhenClosed = false
+            window.center()
+
+            let identifier = ObjectIdentifier(popupWebView)
+            popupWindows[identifier] = window
+            popupWebViews[identifier] = popupWebView
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return popupWebView
+        }
+
+        private func createPDFForSharing(from webView: WKWebView) {
+            let identifier = ObjectIdentifier(webView)
+            guard pdfCreationWebViews.insert(identifier).inserted else { return }
+            webView.evaluateJavaScript("""
+            ({
+                title: document.title || '',
+                width: Math.max(
+                    document.documentElement.scrollWidth || 0,
+                    document.body ? document.body.scrollWidth : 0,
+                    window.innerWidth || 0
+                ),
+                height: Math.max(
+                    document.documentElement.scrollHeight || 0,
+                    document.body ? document.body.scrollHeight : 0,
+                    window.innerHeight || 0
+                )
+            })
+            """) { [weak self, weak webView] pageValue, _ in
+                guard let self, let webView else { return }
+                let page = pageValue as? [String: Any]
+                let rawTitle = (page?["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = Self.safeFileName((rawTitle?.isEmpty == false ? rawTitle : nil) ?? "차트")
+                let captureWidth = max((page?["width"] as? NSNumber)?.doubleValue ?? webView.bounds.width, 1)
+                let captureHeight = max((page?["height"] as? NSNumber)?.doubleValue ?? webView.bounds.height, 1)
+                let configuration = WKPDFConfiguration()
+                configuration.rect = CGRect(x: 0, y: 0, width: captureWidth, height: captureHeight)
+
+                webView.createPDF(configuration: configuration) { [weak self, weak webView] result in
+                    guard let self, let webView else { return }
+                    pdfCreationWebViews.remove(identifier)
+                    do {
+                        let data = try result.get()
+                        let fileURL = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("\(title)-\(UUID().uuidString)")
+                            .appendingPathExtension("pdf")
+                        try data.write(to: fileURL, options: .atomic)
+                        temporaryShareURLs.append(fileURL)
+                        presentPDFActions(fileURL: fileURL, title: title, from: webView)
+                    } catch {
+                        presentPDFShareError(error, from: webView)
+                    }
+                }
+            }
+        }
+
+        private func presentPDFActions(fileURL: URL, title: String, from webView: WKWebView) {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "PDF 공유"
+            alert.informativeText = "PDF 파일을 외부 앱으로 공유하거나 Mac에 다운로드할 수 있습니다."
+            alert.addButton(withTitle: "외부 공유")
+            alert.addButton(withTitle: "PDF 다운로드")
+            let cancelButton = alert.addButton(withTitle: "취소")
+            cancelButton.keyEquivalent = "\u{1b}"
+
+            let finish: (NSApplication.ModalResponse) -> Void = { [weak self, weak webView] response in
+                guard let self, let webView else { return }
+                switch response {
+                case .alertFirstButtonReturn:
+                    presentSharingPicker(fileURL: fileURL, from: webView)
+                case .alertSecondButtonReturn:
+                    presentPDFSavePanel(fileURL: fileURL, title: title, from: webView)
+                default:
+                    closePopup(for: webView)
+                }
+            }
+            if let window = webView.window {
+                alert.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                finish(alert.runModal())
+            }
+        }
+
+        private func presentSharingPicker(fileURL: URL, from webView: WKWebView) {
+            let picker = NSSharingServicePicker(items: [fileURL])
+            picker.delegate = self
+            sharingPicker = picker
+            sharingPopupWebView = webView
+            let anchor = NSRect(x: webView.bounds.maxX - 1, y: webView.bounds.maxY - 1, width: 1, height: 1)
+            picker.show(relativeTo: anchor, of: webView, preferredEdge: .minY)
+        }
+
+        private func presentPDFSavePanel(fileURL: URL, title: String, from webView: WKWebView) {
+            let panel = NSSavePanel()
+            panel.title = "PDF 다운로드"
+            panel.prompt = "다운로드"
+            panel.canCreateDirectories = true
+            panel.allowedContentTypes = [.pdf]
+            panel.nameFieldStringValue = title.lowercased().hasSuffix(".pdf") ? title : "\(title).pdf"
+
+            let finish: (NSApplication.ModalResponse) -> Void = { [weak self, weak webView] response in
+                guard let self, let webView else { return }
+                guard response == .OK, let destination = panel.url else {
+                    closePopup(for: webView)
+                    return
+                }
+                do {
+                    let data = try Data(contentsOf: fileURL)
+                    try data.write(to: destination, options: .atomic)
+                    closePopup(for: webView)
+                } catch {
+                    presentPDFShareError(error, from: webView)
+                }
+            }
+            if let window = webView.window {
+                panel.beginSheetModal(for: window, completionHandler: finish)
+            } else {
+                panel.begin(completionHandler: finish)
+            }
+        }
+
+        private func closePopup(for webView: WKWebView) {
+            let identifier = ObjectIdentifier(webView)
+            guard let window = popupWindows.removeValue(forKey: identifier) else { return }
+            popupWebViews.removeValue(forKey: identifier)
+            webView.uiDelegate = nil
+            window.delegate = nil
+            window.close()
+        }
+
+        private func presentPDFShareError(_ error: Error, from webView: WKWebView) {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "PDF를 공유할 수 없습니다."
+            alert.informativeText = error.localizedDescription
+            alert.addButton(withTitle: "확인")
+            if let window = webView.window {
+                alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+        }
+
+        func sharingServicePicker(
+            _ sharingServicePicker: NSSharingServicePicker,
+            didChoose service: NSSharingService?
+        ) {
+            sharingPicker = nil
+            guard let webView = sharingPopupWebView else { return }
+            sharingPopupWebView = nil
+            closePopup(for: webView)
+        }
 
         func webView(
             _ webView: WKWebView,
@@ -481,6 +720,13 @@ struct MacPortalWebView: NSViewRepresentable {
                 } else if let hovering = message.body as? Bool {
                     model.setWebSidebarHover(hovering)
                 }
+            case "NFPortalMacLinkedDocumentPanel":
+                guard let record = message.body as? [String: Any],
+                      let value = record["widthFraction"] as? NSNumber else { return }
+                model.updateLinkedDocumentPanel(widthFraction: CGFloat(truncating: value))
+            case "NFPortalMacPDFShare":
+                guard let sourceWebView = message.webView else { return }
+                createPDFForSharing(from: sourceWebView)
             default:
                 break
             }
@@ -576,6 +822,9 @@ struct MacPortalWebView: NSViewRepresentable {
 
     private static let bootstrapScript = #"""
     (function() {
+        window.print = function() {
+            window.webkit.messageHandlers.NFPortalMacPDFShare.postMessage({ action: 'sharePDF' });
+        };
         document.documentElement.lang = 'ko-KR';
         document.documentElement.style.setProperty('-webkit-locale', '"ko-KR"');
         document.documentElement.setAttribute('data-nf-desktop-host', 'true');
@@ -686,10 +935,10 @@ struct MacPortalWebView: NSViewRepresentable {
                     }
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] [data-linked-document-panel="true"] {
-                    top: 26px !important;
+                    top: 0 !important;
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] [data-linked-document-panel="true"][data-linked-document-fullscreen="true"] {
-                    inset: 26px 0 0 !important;
+                    inset: 0 0 0 !important;
                     height: auto !important;
                 }
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] [data-linked-document-panel="true"] > [data-linked-document-body="true"] {
@@ -867,6 +1116,56 @@ struct MacPortalWebView: NSViewRepresentable {
             }));
         };
 
+        var linkedDocumentPanelTimer = null;
+        var lastLinkedDocumentPanelSignature = '';
+        window.__nfMacNotifyLinkedDocumentPanel = function(delay) {
+            clearTimeout(linkedDocumentPanelTimer);
+            linkedDocumentPanelTimer = setTimeout(function() {
+                var panel = document.querySelector('[data-linked-document-panel="true"]');
+                var widthFraction = 0;
+                if (panel) {
+                    var panelStyle = getComputedStyle(panel);
+                    var panelRect = panel.getBoundingClientRect();
+                    var viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0, 1);
+                    var visibleWidth = Math.max(
+                        0,
+                        Math.min(panelRect.right, viewportWidth) - Math.max(panelRect.left, 0)
+                    );
+                    var isVisible = panelStyle.display !== 'none'
+                        && panelStyle.visibility !== 'hidden'
+                        && Number(panelStyle.opacity || 1) > 0
+                        && panelRect.height > 0;
+                    if (isVisible) widthFraction = Math.min(1, visibleWidth / viewportWidth);
+                }
+                var signature = widthFraction.toFixed(4);
+                if (signature === lastLinkedDocumentPanelSignature) return;
+                lastLinkedDocumentPanelSignature = signature;
+                window.webkit.messageHandlers.NFPortalMacLinkedDocumentPanel.postMessage({
+                    widthFraction: widthFraction
+                });
+            }, typeof delay === 'number' ? delay : 40);
+        };
+
+        var linkedDocumentPanelObserver = new MutationObserver(function() {
+            [0, 80, 220, 500].forEach(function(delay) {
+                setTimeout(function() { window.__nfMacNotifyLinkedDocumentPanel(0); }, delay);
+            });
+        });
+        linkedDocumentPanelObserver.observe(document.documentElement, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: [
+                'style',
+                'class',
+                'hidden',
+                'aria-hidden',
+                'data-linked-document-panel',
+                'data-linked-document-fullscreen'
+            ]
+        });
+        addEventListener('resize', function() { window.__nfMacNotifyLinkedDocumentPanel(40); });
+
         var timer = null;
         var lastSignature = '';
         window.__nfMacNotifyNavigation = function(delay) {
@@ -903,6 +1202,7 @@ struct MacPortalWebView: NSViewRepresentable {
         });
         addEventListener('popstate', function() { window.__nfMacNotifyNavigation(40); });
         addEventListener('pageshow', function() { window.__nfMacNotifyNavigation(0); });
+        addEventListener('pageshow', function() { window.__nfMacNotifyLinkedDocumentPanel(0); });
         var navigationObserver = new MutationObserver(function(mutations) {
             var changed = mutations.some(function(mutation) {
                 var target = mutation.target && mutation.target.nodeType === 1

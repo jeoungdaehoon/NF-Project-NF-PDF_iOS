@@ -511,6 +511,7 @@ private struct MacResizableRemotePDFPanel: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let topInset: CGFloat = 32
             let panelWidth = MacPDFSlidePanelLayout.width(
                 preferredWidth: preferredWidth,
                 for: geometry.size.width
@@ -549,9 +550,7 @@ private struct MacResizableRemotePDFPanel: View {
                     )
             }
             .frame(width: panelWidth)
-            // The workspace begins immediately below the native title-bar tabs.
-            // Fill it completely so the preview also covers the breadcrumb/history row.
-            .frame(height: geometry.size.height)
+            .frame(height: max(geometry.size.height - topInset, 0))
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(MacPDFPanelShape())
             .overlay {
@@ -562,7 +561,7 @@ private struct MacResizableRemotePDFPanel: View {
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity,
-                alignment: .topTrailing
+                alignment: .bottomTrailing
             )
         }
     }
@@ -643,7 +642,11 @@ private struct MacPortalPane: View {
             if model.sidebarHidden {
                 GeometryReader { geometry in
                     let sidebarInset = model.isSidebarHoverVisible ? max(model.sidebarHoverWidth, 0) : 0
-                    let breadcrumbWidth = max(geometry.size.width - sidebarInset, 0)
+                    let linkedDocumentInset = geometry.size.width * model.linkedDocumentPanelWidthFraction
+                    let breadcrumbWidth = max(
+                        geometry.size.width - sidebarInset - linkedDocumentInset,
+                        0
+                    )
 
                     ZStack(alignment: .topLeading) {
                         portalWebView
@@ -655,6 +658,10 @@ private struct MacPortalPane: View {
                             .animation(
                                 .easeOut(duration: 0.22),
                                 value: model.isSidebarHoverVisible
+                            )
+                            .animation(
+                                .easeOut(duration: 0.22),
+                                value: model.linkedDocumentPanelWidthFraction
                             )
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
