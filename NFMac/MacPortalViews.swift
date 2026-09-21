@@ -511,7 +511,6 @@ private struct MacResizableRemotePDFPanel: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let topInset: CGFloat = 32
             let panelWidth = MacPDFSlidePanelLayout.width(
                 preferredWidth: preferredWidth,
                 for: geometry.size.width
@@ -550,7 +549,9 @@ private struct MacResizableRemotePDFPanel: View {
                     )
             }
             .frame(width: panelWidth)
-            .frame(height: max(geometry.size.height - topInset, 0))
+            // The workspace begins immediately below the native title-bar tabs.
+            // Fill it completely so the preview also covers the breadcrumb/history row.
+            .frame(height: geometry.size.height)
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(MacPDFPanelShape())
             .overlay {
@@ -561,7 +562,7 @@ private struct MacResizableRemotePDFPanel: View {
             .frame(
                 maxWidth: .infinity,
                 maxHeight: .infinity,
-                alignment: .bottomTrailing
+                alignment: .topTrailing
             )
         }
     }

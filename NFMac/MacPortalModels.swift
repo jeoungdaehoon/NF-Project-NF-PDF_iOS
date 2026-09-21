@@ -29,6 +29,20 @@ enum MacPortalConfig {
         return components.url ?? url
     }
 
+    static func tabIdentity(for url: URL) -> String {
+        let normalizedURL = normalizedPortalURL(url)
+        guard var components = URLComponents(url: normalizedURL, resolvingAgainstBaseURL: false) else {
+            return normalizedURL.absoluteString
+        }
+        // A route remains one tab when its search parameters or fragment change.
+        // Keep the full URL on the page so reopening it still restores that state.
+        components.query = nil
+        components.fragment = nil
+        let path = components.percentEncodedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.percentEncodedPath = path.isEmpty || path == "dashboard" ? "/dashboard" : "/\(path)"
+        return components.url?.absoluteString ?? normalizedURL.absoluteString
+    }
+
     static func isLoginURL(_ url: URL) -> Bool {
         guard let sourceHost = url.host?.lowercased(),
               sourceHost == host || legacyHosts.contains(sourceHost) else { return false }
@@ -126,7 +140,7 @@ struct MacPortalPage: Identifiable, Codable, Equatable {
     var title: String
     var accessedAt: TimeInterval
 
-    var id: String { url.absoluteString }
+    var id: String { MacPortalConfig.tabIdentity(for: url) }
 }
 
 struct MacPortalBreadcrumb: Identifiable, Equatable {
@@ -216,7 +230,7 @@ final class MacPortalBrowserModel: ObservableObject {
         initialURL = MacPortalConfig.isPortalURL(normalizedURL) && !MacPortalConfig.isLoginURL(normalizedURL)
             ? normalizedURL
             : pages.first?.url ?? MacPortalConfig.dashboardURL
-        activePageID = initialURL.absoluteString
+        activePageID = MacPortalConfig.tabIdentity(for: initialURL)
         persistPages()
     }
 
@@ -231,7 +245,7 @@ final class MacPortalBrowserModel: ObservableObject {
             return
         }
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let existingTitle = pages.first(where: { $0.id == normalizedURL.absoluteString })?.title
+        let existingTitle = pages.first(where: { $0.id == MacPortalConfig.tabIdentity(for: normalizedURL) })?.title
         let resolvedTitle: String
         if let cleanTitle, !cleanTitle.isEmpty, !Self.isGenericPortalTitle(cleanTitle) {
             resolvedTitle = cleanTitle
@@ -318,7 +332,7 @@ final class MacPortalBrowserModel: ObservableObject {
               MacPortalConfig.isPortalURL(normalizedURL),
               !MacPortalConfig.isLoginURL(normalizedURL) else { return }
         initialURL = normalizedURL
-        activePageID = normalizedURL.absoluteString
+        activePageID = MacPortalConfig.tabIdentity(for: normalizedURL)
         webView?.load(URLRequest(url: normalizedURL))
     }
 
