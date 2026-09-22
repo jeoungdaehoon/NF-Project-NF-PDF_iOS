@@ -949,6 +949,47 @@ struct MacPortalWebView: NSViewRepresentable {
         }
         installDesktopHostStyle();
 
+        function prepareProjectViewDatePicker(input) {
+            var menu = input.closest('[data-project-view-settings-menu="true"], [data-popup-menu-list]');
+            var clearance = 340;
+            if (!menu || window.innerHeight - input.getBoundingClientRect().bottom >= clearance) return false;
+            menu.dataset.projectViewDatePickerPrepared = 'true';
+            menu.style.paddingBottom = clearance + 'px';
+            var section = input.closest('[data-project-view-setting-section]');
+            if (section) {
+                var menuTop = menu.getBoundingClientRect().top;
+                menu.scrollTop += Math.max(0, section.getBoundingClientRect().top - menuTop - 12);
+            }
+            return true;
+        }
+
+        addEventListener('focusin', function(event) {
+            var input = event.target instanceof HTMLInputElement
+                ? event.target.closest('input[type="date"][data-project-view-date-input="true"]')
+                : null;
+            if (input) prepareProjectViewDatePicker(input);
+        }, true);
+
+        addEventListener('pointerdown', function(event) {
+            if (event.button !== 0 || !(event.target instanceof Element)) return;
+            var input = event.target.closest('input[type="date"][data-project-view-date-input="true"]');
+            if (!input || !prepareProjectViewDatePicker(input)) return;
+            event.preventDefault();
+            input.focus({ preventScroll: true });
+            input.getBoundingClientRect();
+            try { input.showPicker(); } catch (_) { input.click(); }
+        }, true);
+
+        addEventListener('change', function(event) {
+            if (!(event.target instanceof Element)) return;
+            var input = event.target.closest('input[type="date"][data-project-view-date-input="true"]');
+            if (!input) return;
+            var menu = input.closest('[data-project-view-settings-menu="true"], [data-popup-menu-list]');
+            if (!menu || menu.dataset.projectViewDatePickerPrepared !== 'true') return;
+            delete menu.dataset.projectViewDatePickerPrepared;
+            menu.style.removeProperty('padding-bottom');
+        }, true);
+
         function clean(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
         function normalizedPath(value) {
             try {
