@@ -564,6 +564,9 @@ private struct MacResizableRemotePDFPanel: View {
                 alignment: .bottomTrailing
             )
         }
+        // Measure from the window top, like MacPortalPane. The 32pt inset
+        // above reserves the title-bar tabs once, without a second safe-area gap.
+        .ignoresSafeArea(.container, edges: .top)
     }
 }
 
