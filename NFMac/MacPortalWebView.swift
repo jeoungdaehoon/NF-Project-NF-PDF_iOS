@@ -1166,17 +1166,14 @@ struct MacPortalWebView: NSViewRepresentable {
                 var widthFraction = 0;
                 if (panel) {
                     var panelStyle = getComputedStyle(panel);
-                    var panelRect = panel.getBoundingClientRect();
                     var viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0, 1);
-                    var visibleWidth = Math.max(
-                        0,
-                        Math.min(panelRect.right, viewportWidth) - Math.max(panelRect.left, 0)
-                    );
                     var isVisible = panelStyle.display !== 'none'
                         && panelStyle.visibility !== 'hidden'
-                        && Number(panelStyle.opacity || 1) > 0
-                        && panelRect.height > 0;
-                    if (isVisible) widthFraction = Math.min(1, visibleWidth / viewportWidth);
+                        && panel.offsetWidth > 0
+                        && panel.offsetHeight > 0;
+                    // Reserve the full slide width as soon as it mounts. Its entrance animation
+                    // translates it from offscreen, so the visible rect would lag behind the header.
+                    if (isVisible) widthFraction = Math.min(1, panel.offsetWidth / viewportWidth);
                 }
                 var signature = widthFraction.toFixed(4);
                 if (signature === lastLinkedDocumentPanelSignature) return;
@@ -1187,24 +1184,29 @@ struct MacPortalWebView: NSViewRepresentable {
             }, typeof delay === 'number' ? delay : 40);
         };
 
-        var linkedDocumentPanelObserver = new MutationObserver(function() {
-            [0, 80, 220, 500].forEach(function(delay) {
-                setTimeout(function() { window.__nfMacNotifyLinkedDocumentPanel(0); }, delay);
+        var linkedDocumentPanelNode = null;
+        var linkedDocumentPanelAttributesObserver = new MutationObserver(function() {
+            window.__nfMacNotifyLinkedDocumentPanel(0);
+        });
+        function watchLinkedDocumentPanel() {
+            var panel = document.querySelector('[data-linked-document-panel="true"]');
+            if (panel === linkedDocumentPanelNode) return;
+            linkedDocumentPanelAttributesObserver.disconnect();
+            linkedDocumentPanelNode = panel;
+            if (panel) linkedDocumentPanelAttributesObserver.observe(panel, {
+                attributes: true,
+                attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'data-linked-document-fullscreen']
             });
-        });
-        linkedDocumentPanelObserver.observe(document.documentElement, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-            attributeFilter: [
-                'style',
-                'class',
-                'hidden',
-                'aria-hidden',
-                'data-linked-document-panel',
-                'data-linked-document-fullscreen'
-            ]
-        });
+            window.__nfMacNotifyLinkedDocumentPanel(0);
+        }
+        function installLinkedDocumentPanelObserver() {
+            // React portals attach the slide directly to body. Ignore the many cell and
+            // editor mutations inside it; those are expensive in a large WebKit document.
+            new MutationObserver(watchLinkedDocumentPanel).observe(document.body, { childList: true });
+            watchLinkedDocumentPanel();
+        }
+        if (document.body) installLinkedDocumentPanelObserver();
+        else document.addEventListener('DOMContentLoaded', installLinkedDocumentPanelObserver, { once: true });
         addEventListener('resize', function() { window.__nfMacNotifyLinkedDocumentPanel(40); });
 
         var timer = null;
@@ -1244,28 +1246,38 @@ struct MacPortalWebView: NSViewRepresentable {
         addEventListener('popstate', function() { window.__nfMacNotifyNavigation(40); });
         addEventListener('pageshow', function() { window.__nfMacNotifyNavigation(0); });
         addEventListener('pageshow', function() { window.__nfMacNotifyLinkedDocumentPanel(0); });
-        var navigationObserver = new MutationObserver(function(mutations) {
-            var changed = mutations.some(function(mutation) {
-                var target = mutation.target && mutation.target.nodeType === 1
-                    ? mutation.target
-                    : mutation.target && mutation.target.parentElement;
-                if (target && target.closest && target.closest('#portal-navigation, .portal-titlebar')) return true;
-                return Array.from(mutation.addedNodes || []).some(function(node) {
-                    return node && node.nodeType === 1 && (
-                        node.matches('#portal-navigation, .portal-titlebar') ||
-                        node.querySelector('#portal-navigation, .portal-titlebar')
-                    );
-                });
-            });
-            if (changed) window.__nfMacNotifyNavigation(60);
+        var navigationObserver = new MutationObserver(function() {
+            window.__nfMacNotifyNavigation(60);
         });
-        navigationObserver.observe(document.documentElement, {
-            subtree: true,
-            childList: true,
-            characterData: true,
-            attributes: true,
-            attributeFilter: ['href', 'aria-current']
-        });
+        var observedNavigation = null;
+        var observedTitlebar = null;
+        function watchNavigationTargets() {
+            var navigation = document.getElementById('portal-navigation');
+            var titlebar = document.querySelector('.portal-titlebar');
+            if (navigation === observedNavigation && titlebar === observedTitlebar) return;
+            navigationObserver.disconnect();
+            observedNavigation = navigation;
+            observedTitlebar = titlebar;
+            var options = { subtree: true, childList: true, characterData: true,
+                attributes: true, attributeFilter: ['href', 'aria-current'] };
+            if (navigation) navigationObserver.observe(navigation, options);
+            if (titlebar) navigationObserver.observe(titlebar, options);
+            window.__nfMacNotifyNavigation(60);
+        }
+        function installNavigationObserver() {
+            // The large project editor is outside these two small navigation trees.
+            // Watch only their replacement boundaries so document rendering cannot
+            // trigger a scan of every inserted chart cell.
+            new MutationObserver(watchNavigationTargets).observe(document.body, { childList: true });
+            var content = document.getElementById('portal-content');
+            if (content) {
+                new MutationObserver(watchNavigationTargets).observe(content, { childList: true });
+                if (content.parentElement) new MutationObserver(watchNavigationTargets).observe(content.parentElement, { childList: true });
+            }
+            watchNavigationTargets();
+        }
+        if (document.body) installNavigationObserver();
+        else document.addEventListener('DOMContentLoaded', installNavigationObserver, { once: true });
         document.addEventListener('pointerdown', function(event) {
             var target = event.target;
             if (!target || !target.closest || target.closest('#portal-navigation')) return;

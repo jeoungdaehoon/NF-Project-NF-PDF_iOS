@@ -657,14 +657,11 @@ private struct MacPortalPane: View {
 
                         MacBreadcrumbBar(model: model, onActivate: onActivate)
                             .frame(width: breadcrumbWidth)
+                            .clipped()
                             .offset(x: sidebarInset)
                             .animation(
                                 .easeOut(duration: 0.22),
                                 value: model.isSidebarHoverVisible
-                            )
-                            .animation(
-                                .easeOut(duration: 0.22),
-                                value: model.linkedDocumentPanelWidthFraction
                             )
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)

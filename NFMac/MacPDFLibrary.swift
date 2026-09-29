@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import PDFKit
+import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -408,6 +409,7 @@ struct MacRemotePDFPreviewView: View {
     @State private var pdfDocument: PDFDocument?
     @State private var image: NSImage?
     @State private var markdown: String?
+    @State private var numbersPreviewURL: URL?
     @StateObject private var markdownPreviewController = MacMarkdownPreviewController()
     @State private var attachmentData: Data?
     @State private var attachmentIsMovie = false
@@ -542,14 +544,16 @@ struct MacRemotePDFPreviewView: View {
                     }
                 } else if let markdown {
                     MacMarkdownPreviewView(markdown: markdown, controller: markdownPreviewController)
+                } else if let numbersPreviewURL {
+                    MacNumbersQuickLookView(fileURL: numbersPreviewURL)
+                } else if let errorMessage {
+                    ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
                 } else if attachmentData != nil {
                     ContentUnavailableView(
                         "첨부 파일을 불러왔습니다",
                         systemImage: attachmentIsMovie ? "film" : "doc",
                         description: Text("기본 앱에서 열거나 Mac에 저장할 수 있습니다.")
                     )
-                } else if let errorMessage {
-                    ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
                 } else {
                     ProgressView("첨부 파일을 불러오는 중…")
                 }
@@ -592,6 +596,8 @@ struct MacRemotePDFPreviewView: View {
             let isMarkdown = ["md", "markdown", "mdown"].contains(fileExtension)
                 || ["md", "markdown", "mdown"].contains(sourceExtension)
                 || ["text/markdown", "text/x-markdown"].contains(mimeType)
+            let isNumbers = fileExtension == "numbers" || sourceExtension == "numbers"
+                || ["application/vnd.apple.numbers", "application/x-iwork-numbers-sffnumbers"].contains(mimeType)
             if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
                 pdfDocument = document
                 if storesLocally {
@@ -603,6 +609,20 @@ struct MacRemotePDFPreviewView: View {
             } else if isMarkdown {
                 markdown = String(data: data, encoding: .utf8)
                     ?? String(data: data, encoding: .utf16)
+            } else if isNumbers {
+                do {
+                    let directory = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("NF-NumbersQuickLook", isDirectory: true)
+                        .appendingPathComponent(request.id.uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let name = fileExtension == "numbers" ? title : "\(title).numbers"
+                    title = name
+                    let url = directory.appendingPathComponent(Self.safeFileName(name))
+                    try data.write(to: url, options: .atomic)
+                    numbersPreviewURL = url
+                } catch {
+                    errorMessage = "Numbers 미리보기를 준비하지 못했습니다. 기본 앱에서 열거나 원본 파일을 저장해 주세요."
+                }
             }
         } catch {
             errorMessage = "네트워크 연결과 파일 형식을 확인해 주세요."
@@ -657,6 +677,36 @@ struct MacRemotePDFPreviewView: View {
         alert.messageText = title
         alert.informativeText = error.localizedDescription
         alert.runModal()
+    }
+}
+
+private struct MacNumbersQuickLookView: NSViewRepresentable {
+    let fileURL: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view: QLPreviewView = QLPreviewView(frame: .zero)
+        view.autostarts = true
+        view.previewItem = fileURL as NSURL
+        return view
+    }
+
+    func updateNSView(_ view: QLPreviewView, context: Context) {
+        if context.coordinator.fileURL != fileURL {
+            context.coordinator.fileURL = fileURL
+            view.previewItem = fileURL as NSURL
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(fileURL: fileURL) }
+
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: Coordinator) {
+        view.close()
+        try? FileManager.default.removeItem(at: coordinator.fileURL.deletingLastPathComponent())
+    }
+
+    final class Coordinator {
+        var fileURL: URL
+        init(fileURL: URL) { self.fileURL = fileURL }
     }
 }
 
