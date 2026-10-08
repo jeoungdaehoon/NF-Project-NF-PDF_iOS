@@ -59,7 +59,6 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
         controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
-        controller.add(context.coordinator, name: "NFPortalMacLinkedDocumentPanel")
         controller.add(context.coordinator, name: "NFPortalMacPDFShare")
 
         let configuration = WKWebViewConfiguration()
@@ -136,7 +135,6 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
             "NFPortalMacSidebarHover",
-            "NFPortalMacLinkedDocumentPanel",
             "NFPortalMacPDFShare",
         ]
             .forEach(controller.removeScriptMessageHandler(forName:))
@@ -192,15 +190,11 @@ struct MacPortalWebView: NSViewRepresentable {
                     setTimeout(function() { window.__nfMacNotifyNavigation(0); }, delay);
                 });
             }
-            if (window.__nfMacNotifyLinkedDocumentPanel) {
-                window.__nfMacNotifyLinkedDocumentPanel(0);
-            }
             """)
             deliverPDFState(to: webView)
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-            model.updateLinkedDocumentPanel(widthFraction: 0)
             model.refreshNavigationState()
             model.applySidebarVisibility()
         }
@@ -720,10 +714,6 @@ struct MacPortalWebView: NSViewRepresentable {
                 } else if let hovering = message.body as? Bool {
                     model.setWebSidebarHover(hovering)
                 }
-            case "NFPortalMacLinkedDocumentPanel":
-                guard let record = message.body as? [String: Any],
-                      let value = record["widthFraction"] as? NSNumber else { return }
-                model.updateLinkedDocumentPanel(widthFraction: CGFloat(truncating: value))
             case "NFPortalMacPDFShare":
                 guard let sourceWebView = message.webView else { return }
                 createPDFForSharing(from: sourceWebView)
@@ -841,6 +831,23 @@ struct MacPortalWebView: NSViewRepresentable {
             var style = document.createElement('style');
             style.id = '__nfMacDesktopHostStyle';
             style.textContent = `
+                #__nfMacBreadcrumbBar {
+                    display: none; position: fixed; z-index: 30;
+                    inset: 0 0 auto 0; height: 26px; box-sizing: border-box;
+                    align-items: center; gap: 8px; padding: 0 14px;
+                    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+                    background: var(--background); color: var(--foreground);
+                    font: 500 12px/26px -apple-system, BlinkMacSystemFont, sans-serif;
+                    transition: left 220ms ease-out;
+                }
+                #__nfMacBreadcrumbBar::-webkit-scrollbar { display: none; }
+                #__nfMacBreadcrumbBar > * { flex-shrink: 0; white-space: nowrap; }
+                #__nfMacBreadcrumbBar a { color: inherit; text-decoration: none; }
+                #__nfMacBreadcrumbBar a:hover { text-decoration: underline; }
+                html[data-nf-mac-sidebar-collapsed="true"] #__nfMacBreadcrumbBar { display: flex; }
+                html[data-nf-mac-sidebar-preview="true"] #__nfMacBreadcrumbBar {
+                    left: calc(var(--nf-mac-sidebar-preview-width, 276px) - 1px);
+                }
                 html[data-nf-desktop-host="true"] .portal-titlebar button[aria-controls="portal-navigation"],
                 html[data-nf-desktop-host="true"] .portal-titlebar button[aria-label="탭바 열기"] {
                     display: none !important;
@@ -929,6 +936,7 @@ struct MacPortalWebView: NSViewRepresentable {
                     left: calc(var(--nf-mac-sidebar-preview-width, 276px) - 1px) !important;
                 }
                 @media (prefers-reduced-motion: reduce) {
+                    #__nfMacBreadcrumbBar,
                     html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] #portal-navigation,
                     html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] #portal-content {
                         transition-duration: 1ms !important;
@@ -1086,6 +1094,35 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         window.__nfMacSidebarHidden = false;
+        function renderBreadcrumbBar(records) {
+            if (!document.body) return;
+            var bar = document.getElementById('__nfMacBreadcrumbBar');
+            if (!bar) {
+                bar = document.createElement('nav');
+                bar.id = '__nfMacBreadcrumbBar';
+                bar.setAttribute('aria-label', '페이지 히스토리');
+                // A body-level web layer sits below slides (240) and calendars (10000).
+                // Never derive its width from the linked-document panel.
+                document.body.appendChild(bar);
+            }
+            var signature = JSON.stringify(records);
+            if (bar.dataset.breadcrumbSignature === signature) return;
+            bar.dataset.breadcrumbSignature = signature;
+            bar.replaceChildren();
+            records.forEach(function(record, index) {
+                if (index) {
+                    var separator = document.createElement('span');
+                    separator.textContent = '›';
+                    separator.setAttribute('aria-hidden', 'true');
+                    bar.appendChild(separator);
+                }
+                var item = document.createElement(record.url ? 'a' : 'span');
+                item.textContent = record.title;
+                if (record.url) item.href = record.url;
+                if (index === records.length - 1) item.setAttribute('aria-current', 'page');
+                bar.appendChild(item);
+            });
+        }
         window.__nfMacSetSidebarContentInset = function(reserved) {
             var requestToken = (window.__nfMacSidebarContentInsetToken || 0) + 1;
             window.__nfMacSidebarContentInsetToken = requestToken;
@@ -1123,6 +1160,7 @@ struct MacPortalWebView: NSViewRepresentable {
             }
         };
         window.__nfMacSetSidebarHidden = function(hidden) {
+            renderBreadcrumbBar(breadcrumbs());
             window.__nfMacSidebarHidden = !!hidden;
             if (hidden) document.documentElement.setAttribute('data-nf-mac-sidebar-collapsed', 'true');
             else document.documentElement.removeAttribute('data-nf-mac-sidebar-collapsed');
@@ -1157,58 +1195,6 @@ struct MacPortalWebView: NSViewRepresentable {
             }));
         };
 
-        var linkedDocumentPanelTimer = null;
-        var lastLinkedDocumentPanelSignature = '';
-        window.__nfMacNotifyLinkedDocumentPanel = function(delay) {
-            clearTimeout(linkedDocumentPanelTimer);
-            linkedDocumentPanelTimer = setTimeout(function() {
-                var panel = document.querySelector('[data-linked-document-panel="true"]');
-                var widthFraction = 0;
-                if (panel) {
-                    var panelStyle = getComputedStyle(panel);
-                    var viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0, 1);
-                    var isVisible = panelStyle.display !== 'none'
-                        && panelStyle.visibility !== 'hidden'
-                        && panel.offsetWidth > 0
-                        && panel.offsetHeight > 0;
-                    // Reserve the full slide width as soon as it mounts. Its entrance animation
-                    // translates it from offscreen, so the visible rect would lag behind the header.
-                    if (isVisible) widthFraction = Math.min(1, panel.offsetWidth / viewportWidth);
-                }
-                var signature = widthFraction.toFixed(4);
-                if (signature === lastLinkedDocumentPanelSignature) return;
-                lastLinkedDocumentPanelSignature = signature;
-                window.webkit.messageHandlers.NFPortalMacLinkedDocumentPanel.postMessage({
-                    widthFraction: widthFraction
-                });
-            }, typeof delay === 'number' ? delay : 40);
-        };
-
-        var linkedDocumentPanelNode = null;
-        var linkedDocumentPanelAttributesObserver = new MutationObserver(function() {
-            window.__nfMacNotifyLinkedDocumentPanel(0);
-        });
-        function watchLinkedDocumentPanel() {
-            var panel = document.querySelector('[data-linked-document-panel="true"]');
-            if (panel === linkedDocumentPanelNode) return;
-            linkedDocumentPanelAttributesObserver.disconnect();
-            linkedDocumentPanelNode = panel;
-            if (panel) linkedDocumentPanelAttributesObserver.observe(panel, {
-                attributes: true,
-                attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'data-linked-document-fullscreen']
-            });
-            window.__nfMacNotifyLinkedDocumentPanel(0);
-        }
-        function installLinkedDocumentPanelObserver() {
-            // React portals attach the slide directly to body. Ignore the many cell and
-            // editor mutations inside it; those are expensive in a large WebKit document.
-            new MutationObserver(watchLinkedDocumentPanel).observe(document.body, { childList: true });
-            watchLinkedDocumentPanel();
-        }
-        if (document.body) installLinkedDocumentPanelObserver();
-        else document.addEventListener('DOMContentLoaded', installLinkedDocumentPanelObserver, { once: true });
-        addEventListener('resize', function() { window.__nfMacNotifyLinkedDocumentPanel(40); });
-
         var timer = null;
         var lastSignature = '';
         window.__nfMacNotifyNavigation = function(delay) {
@@ -1219,6 +1205,8 @@ struct MacPortalWebView: NSViewRepresentable {
                 if (window.__nfMacSidebarHidden) window.__nfMacSetSidebarHidden(true);
                 var style = getComputedStyle(document.body || document.documentElement);
                 var title = currentTitle();
+                var breadcrumbRecords = breadcrumbs();
+                renderBreadcrumbBar(breadcrumbRecords);
                 var resolvedNavigationTitles = navigationTitles();
                 var signature = location.href + '|' + title + '|' + resolvedNavigationTitles.map(function(item) {
                     return item.url + '=' + item.title;
@@ -1228,7 +1216,7 @@ struct MacPortalWebView: NSViewRepresentable {
                 window.webkit.messageHandlers.NFPortalMacNavigation.postMessage({
                     url: location.href,
                     title: title,
-                    breadcrumbs: breadcrumbs(),
+                    breadcrumbs: breadcrumbRecords,
                     navigationTitles: resolvedNavigationTitles,
                     background: style.backgroundColor,
                     foreground: style.color
@@ -1245,7 +1233,6 @@ struct MacPortalWebView: NSViewRepresentable {
         });
         addEventListener('popstate', function() { window.__nfMacNotifyNavigation(40); });
         addEventListener('pageshow', function() { window.__nfMacNotifyNavigation(0); });
-        addEventListener('pageshow', function() { window.__nfMacNotifyLinkedDocumentPanel(0); });
         var navigationObserver = new MutationObserver(function() {
             window.__nfMacNotifyNavigation(60);
         });

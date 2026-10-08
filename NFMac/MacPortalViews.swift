@@ -642,35 +642,10 @@ private struct MacPortalPane: View {
             model.themeBackground
                 .frame(height: 32)
                 .allowsHitTesting(false)
-            if model.sidebarHidden {
-                GeometryReader { geometry in
-                    let sidebarInset = model.isSidebarHoverVisible ? max(model.sidebarHoverWidth, 0) : 0
-                    let linkedDocumentInset = geometry.size.width * model.linkedDocumentPanelWidthFraction
-                    let breadcrumbWidth = max(
-                        geometry.size.width - sidebarInset - linkedDocumentInset,
-                        0
-                    )
-
-                    ZStack(alignment: .topLeading) {
-                        portalWebView
-                            .frame(width: geometry.size.width, height: geometry.size.height)
-
-                        MacBreadcrumbBar(model: model, onActivate: onActivate)
-                            .frame(width: breadcrumbWidth)
-                            .clipped()
-                            .offset(x: sidebarInset)
-                            .animation(
-                                .easeOut(duration: 0.22),
-                                value: model.isSidebarHoverVisible
-                            )
-                    }
-                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-                    .clipped()
-                }
-            } else {
-                portalWebView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            // Breadcrumbs live inside WKWebView so web slides/fullscreen calendars
+            // can cover them without resizing either the breadcrumb or document.
+            portalWebView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(model.themeBackground)
         .overlay(alignment: .topTrailing) {
@@ -1010,32 +985,6 @@ private struct MacPortalTabButton: View {
 
     private var showsCloseButton: Bool {
         isHovering && canClose
-    }
-}
-
-private struct MacBreadcrumbBar: View {
-    @ObservedObject var model: MacPortalBrowserModel
-    let onActivate: () -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(model.breadcrumbs.enumerated()), id: \.offset) { index, item in
-                    if index > 0 { Image(systemName: "chevron.right").font(.caption2) }
-                    Button(item.title) {
-                        onActivate()
-                        model.open(item)
-                    }
-                        .buttonStyle(.plain)
-                        .disabled(item.url == nil)
-                }
-            }
-            .padding(.horizontal, 14)
-        }
-        .font(.system(size: 12, weight: .medium))
-        .foregroundStyle(model.themeForeground)
-        .frame(height: 26)
-        .background(model.themeBackground)
     }
 }
 
