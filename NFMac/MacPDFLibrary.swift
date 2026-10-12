@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Foundation
 import PDFKit
+import PhotosUI
 import QuickLookUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -33,6 +34,8 @@ struct MacLocalPDFDocument: Identifiable, Hashable {
     let fileSize: Int64
     let isFavorite: Bool
     let deletedAt: Date?
+    var folderID: String?
+    var lastOpenedAt: Date?
 
     var isDeleted: Bool { deletedAt != nil }
 }
@@ -50,7 +53,9 @@ final class MacPDFLocalStorageRepository {
         var isFavorite: Bool
         var deletedAt: Date?
         var folderID: String?
+        var lastOpenedAt: Date?
     }
+    struct Folder: Codable, Identifiable { let id: String; var name: String; var parentID: String? }
 
     private let fileManager: FileManager
     private let directoryURL: URL
@@ -168,7 +173,51 @@ final class MacPDFLocalStorageRepository {
             where fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
         }
+        let digest = SHA256.hash(data: Data(document.id.utf8)).map { String(format: "%02x", $0) }.joined()
+        let edits = directoryURL.deletingLastPathComponent().appendingPathComponent("PDFEdits/mac-\(digest)", isDirectory: true)
+        if fileManager.fileExists(atPath: edits.path) { try fileManager.removeItem(at: edits) }
+        MacPDFGoogleDrive.unlink(document.id)
         notifyChange()
+    }
+
+    func updateData(_ document: MacLocalPDFDocument, data: Data) throws {
+        guard PDFDocument(data: data) != nil, var metadata = metadata(for: document.id) else { throw CocoaError(.fileReadCorruptFile) }
+        metadata.modifiedAt = Date(); try write(data: data, metadata: metadata); notifyChange()
+    }
+    func rename(_ document: MacLocalPDFDocument, name: String) throws {
+        guard var metadata = metadata(for: document.id) else { throw CocoaError(.fileNoSuchFile) }
+        metadata.fileName = normalizedPDFFileName(name); metadata.modifiedAt = Date(); try save(metadata); notifyChange()
+    }
+    func recordOpen(_ document: MacLocalPDFDocument) throws {
+        guard var metadata = metadata(for: document.id) else { throw CocoaError(.fileNoSuchFile) }
+        metadata.lastOpenedAt = Date(); try save(metadata)
+    }
+    @discardableResult
+    func duplicate(_ document: MacLocalPDFDocument) throws -> MacLocalPDFDocument {
+        let copied = try createDocument(data: Data(contentsOf: document.localFileURL), fileName: "\((document.fileName as NSString).deletingPathExtension) 복제.pdf")
+        let editsRoot = directoryURL.deletingLastPathComponent().appendingPathComponent("PDFEdits", isDirectory: true)
+        func path(_ id: String) -> URL { editsRoot.appendingPathComponent("mac-" + SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined(), isDirectory: true) }
+        if fileManager.fileExists(atPath: path(document.id).path) { try fileManager.copyItem(at: path(document.id), to: path(copied.id)) }
+        try move(copied, folderID: document.folderID); return copied
+    }
+    func folders() -> [Folder] {
+        ((try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("folder-") && $0.pathExtension == "json" }
+            .compactMap { url in (try? Data(contentsOf: url)).flatMap { try? JSONDecoder().decode(Folder.self, from: $0) } }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+    func createFolder(_ name: String, parentID: String? = nil) throws {
+        let folder = Folder(id: UUID().uuidString.lowercased(), name: name, parentID: parentID)
+        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try JSONEncoder().encode(folder).write(to: directoryURL.appendingPathComponent("folder-\(folder.id).json"), options: .atomic); notifyChange()
+    }
+    func move(_ document: MacLocalPDFDocument, folderID: String?) throws {
+        guard var metadata = metadata(for: document.id) else { throw CocoaError(.fileNoSuchFile) }
+        if let folderID, !folders().contains(where: { $0.id == folderID }) { throw CocoaError(.fileNoSuchFile) }
+        metadata.folderID = folderID; try save(metadata); notifyChange()
+    }
+    func purgeExpiredTrash(now: Date = Date()) throws {
+        for document in documents() { if let deleted = document.deletedAt, now.timeIntervalSince(deleted) >= 7 * 24 * 60 * 60 { try permanentlyDelete(document) } }
     }
 
     private func write(data: Data, metadata: Metadata) throws {
@@ -196,7 +245,9 @@ final class MacPDFLocalStorageRepository {
             modifiedAt: metadata.modifiedAt,
             fileSize: size,
             isFavorite: metadata.isFavorite,
-            deletedAt: metadata.deletedAt
+            deletedAt: metadata.deletedAt,
+            folderID: metadata.folderID,
+            lastOpenedAt: metadata.lastOpenedAt
         )
     }
 
@@ -224,6 +275,7 @@ final class MacPDFLocalStorageRepository {
 private enum MacPDFLibrarySection: String, CaseIterable, Identifiable {
     case all
     case favorites
+    case recent
     case trash
 
     var id: String { rawValue }
@@ -231,6 +283,7 @@ private enum MacPDFLibrarySection: String, CaseIterable, Identifiable {
         switch self {
         case .all: "전체"
         case .favorites: "즐겨찾기"
+        case .recent: "최근 문서"
         case .trash: "휴지통"
         }
     }
@@ -245,6 +298,12 @@ struct MacPDFLibraryView: View {
     @State private var selectedDocument: MacLocalPDFDocument?
     @State private var isImporterPresented = false
     @State private var errorMessage: String?
+    @State private var folders: [MacPDFLocalStorageRepository.Folder] = []
+    @State private var folderID = "all"
+    @State private var isPhotosPresented = false
+    @State private var photos: [PhotosPickerItem] = []
+    @State private var deletion: MacLocalPDFDocument?
+    @State private var showBoard = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -254,10 +313,15 @@ struct MacPDFLibraryView: View {
                 Text("문서")
                     .font(.headline)
                 Spacer()
-                Button {
-                    isImporterPresented = true
+                Menu {
+                    Button("새 PDF", action: createBlank)
+                    Button("파일·Drive에서 가져오기") { isImporterPresented = true }
+                    Button("사진으로 PDF 생성") { isPhotosPresented = true }
+                    Button("링크에서 다운로드", action: importLink)
+                    Button("새 폴더") { if let name = prompt("새 폴더", initial: "") { perform { try repository.createFolder(name, parentID: ["all", "root"].contains(folderID) ? nil : folderID) } } }
+                    Button("문서 연결 보드") { showBoard = true }
                 } label: {
-                    Label("PDF 가져오기", systemImage: "plus")
+                    Label("문서 추가", systemImage: "plus")
                 }
             }
             .padding(14)
@@ -275,6 +339,10 @@ struct MacPDFLibraryView: View {
 
                 TextField("PDF 파일명 검색", text: $searchText)
                     .textFieldStyle(.roundedBorder)
+                Picker("폴더", selection: $folderID) {
+                    Text("모든 폴더").tag("all"); Text("최상위").tag("root")
+                    ForEach(folders) { Text($0.name).tag($0.id) }
+                }.frame(maxWidth: 190)
             }
             .padding(14)
 
@@ -309,8 +377,14 @@ struct MacPDFLibraryView: View {
                     .contextMenu {
                         if document.isDeleted {
                             Button("복원") { perform { try repository.restore(document) } }
-                            Button("영구 삭제", role: .destructive) { perform { try repository.permanentlyDelete(document) } }
+                            Button("영구 삭제", role: .destructive) { deletion = document }
                         } else {
+                            Button("이름 변경") { if let name = prompt("PDF 이름 변경", initial: document.fileName) { perform { try repository.rename(document, name: name) } } }
+                            Button("복제") { perform { _ = try repository.duplicate(document) } }
+                            Menu("폴더로 이동") {
+                                Button("최상위") { perform { try repository.move(document, folderID: nil) } }
+                                ForEach(folders) { folder in Button(folder.name) { perform { try repository.move(document, folderID: folder.id) } } }
+                            }
                             Button(document.isFavorite ? "즐겨찾기 해제" : "즐겨찾기") {
                                 perform { try repository.toggleFavorite(document) }
                             }
@@ -324,15 +398,20 @@ struct MacPDFLibraryView: View {
         }
         .fileImporter(
             isPresented: $isImporterPresented,
-            allowedContentTypes: [.pdf],
+            allowedContentTypes: [.pdf, .image],
             allowsMultipleSelection: true
         ) { result in
             do {
                 for url in try result.get() {
                     let accessing = url.startAccessingSecurityScopedResource()
                     defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    let source = try Data(contentsOf: url, options: [.mappedIfSafe])
+                    let data: Data
+                    if PDFDocument(data: source) != nil { data = source }
+                    else if let image = NSImage(data: source), let page = PDFPage(image: image) { let pdf = PDFDocument(); pdf.insert(page, at: 0); guard let rendered = pdf.dataRepresentation() else { throw CocoaError(.fileReadCorruptFile) }; data = rendered }
+                    else { throw CocoaError(.fileReadCorruptFile) }
                     _ = try repository.createDocument(
-                        data: Data(contentsOf: url, options: [.mappedIfSafe]),
+                        data: data,
                         fileName: url.lastPathComponent
                     )
                 }
@@ -342,7 +421,7 @@ struct MacPDFLibraryView: View {
             }
         }
         .sheet(item: $selectedDocument, onDismiss: reload) { document in
-            MacPDFDocumentView(document: document)
+            MacPDFDocumentView(document: document, onOpen: { selectedDocument = $0 })
                 .frame(minWidth: 820, minHeight: 620)
         }
         .alert("문서 처리 실패", isPresented: Binding(
@@ -353,7 +432,13 @@ struct MacPDFLibraryView: View {
         } message: {
             Text(errorMessage ?? "PDF 문서를 처리하지 못했습니다.")
         }
-        .onAppear(perform: reload)
+        .onAppear { do { try repository.purgeExpiredTrash() } catch { errorMessage = "휴지통 정리 실패: \(error.localizedDescription)" }; reload() }
+        .sheet(isPresented: $showBoard) { MacPDFBoardView().frame(minWidth: 1000, minHeight: 700) }
+        .photosPicker(isPresented: $isPhotosPresented, selection: $photos, maxSelectionCount: 40, matching: .images)
+        .onChange(of: photos) { _, items in Task { await createPhotosPDF(items) } }
+        .confirmationDialog("\(deletion?.fileName ?? "문서")와 편집 데이터를 영구 삭제할까요? 복구할 수 없습니다.", isPresented: Binding(get: { deletion != nil }, set: { if !$0 { deletion = nil } })) {
+            Button("영구 삭제", role: .destructive) { if let document = deletion { perform { try repository.permanentlyDelete(document) } }; deletion = nil }
+        }
         .onReceive(NotificationCenter.default.publisher(for: MacPDFLocalStorageRepository.didChangeNotification)) { _ in reload() }
     }
 
@@ -362,13 +447,45 @@ struct MacPDFLibraryView: View {
             let sectionMatches = switch section {
             case .all: !document.isDeleted
             case .favorites: !document.isDeleted && document.isFavorite
+            case .recent: !document.isDeleted && document.lastOpenedAt != nil
             case .trash: document.isDeleted
             }
-            return sectionMatches && (searchText.isEmpty || document.fileName.localizedCaseInsensitiveContains(searchText))
-        }
+            let folderMatches = folderID == "all" || (folderID == "root" ? document.folderID == nil : document.folderID == folderID)
+            return sectionMatches && folderMatches && (searchText.isEmpty || document.fileName.localizedCaseInsensitiveContains(searchText))
+        }.sorted { section == .recent ? ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast) : $0.modifiedAt > $1.modifiedAt }
     }
 
-    private func reload() { documents = repository.documents() }
+    private func reload() { documents = repository.documents(); folders = repository.folders() }
+    private func prompt(_ title: String, initial: String) -> String? {
+        let alert = NSAlert(); alert.messageText = title; alert.addButton(withTitle: "확인"); alert.addButton(withTitle: "취소")
+        let field = NSTextField(string: initial); field.frame = CGRect(x: 0, y: 0, width: 340, height: 24); alert.accessoryView = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); return value.isEmpty ? nil : value
+    }
+    private func createBlank() {
+        perform { let pdf = PDFDocument(), page = PDFPage(); page.setBounds(CGRect(x: 0, y: 0, width: 595, height: 842), for: .mediaBox); pdf.insert(page, at: 0); guard let data = pdf.dataRepresentation() else { throw CocoaError(.fileWriteUnknown) }; selectedDocument = try repository.createDocument(data: data, fileName: "새 PDF.pdf") }
+    }
+    private func createPhotosPDF(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        do {
+            let pdf = PDFDocument()
+            for item in items { if let data = try await item.loadTransferable(type: Data.self), let image = NSImage(data: data), let page = PDFPage(image: image) { pdf.insert(page, at: pdf.pageCount) } }
+            guard pdf.pageCount > 0, let data = pdf.dataRepresentation() else { throw CocoaError(.fileReadCorruptFile) }
+            selectedDocument = try repository.createDocument(data: data, fileName: "사진 PDF.pdf"); photos = []; reload()
+        } catch { errorMessage = error.localizedDescription }
+    }
+    private func importLink() {
+        guard let value = prompt("PDF 다운로드 URL", initial: "https://"), let url = URL(string: value), url.scheme == "https", url.host != nil else { return }
+        Task {
+            do {
+                var request = URLRequest(url: url)
+                if MacPortalConfig.isPortalURL(url), let cookie = await MacPDFGoogleDrive.cookieHeader(for: url) { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+                selectedDocument = try repository.createDocument(data: data, fileName: response.suggestedFilename ?? "다운로드.pdf", sourceURL: url); reload()
+            } catch { errorMessage = "PDF 다운로드 실패: \(error.localizedDescription)" }
+        }
+    }
 
     private func perform(_ operation: () throws -> Void) {
         do {
@@ -383,6 +500,11 @@ struct MacPDFLibraryView: View {
 private struct MacPDFDocumentView: View {
     @Environment(\.dismiss) private var dismiss
     let document: MacLocalPDFDocument
+    var onOpen: (MacLocalPDFDocument) -> Void = { _ in }
+    @State private var pdf: PDFDocument?
+    @State private var didLoadPDF = false
+    @State private var history: [MacLocalPDFDocument] = []
+    private let repository = MacPDFLocalStorageRepository()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -395,8 +517,21 @@ private struct MacPDFDocumentView: View {
             }
             .padding(12)
             Divider()
-            MacPDFKitView(document: PDFDocument(url: document.localFileURL))
+            if history.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack { ForEach(history.prefix(10)) { item in
+                        Button(item.fileName) { onOpen(item) }.buttonStyle(.borderless)
+                            .padding(6).background(item.id == document.id ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                    } }.padding(6)
+                }
+            }
+            if let pdf {
+                MacPDFWorkspace(document: pdf, identifier: document.id, fileName: document.fileName, onSave: { data in try repository.updateData(document, data: data) })
+                    .id(document.id)
+            } else if didLoadPDF { ContentUnavailableView("PDF 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text("파일이 손상되었거나 삭제되었습니다. 원본 파일을 다시 가져와 주세요.")) }
+            else { ProgressView("PDF를 불러오는 중…") }
         }
+        .task(id: document.id) { didLoadPDF = false; pdf = PDFDocument(url: document.localFileURL); if pdf != nil { try? repository.recordOpen(document) }; didLoadPDF = true; history = repository.documents().filter { !$0.isDeleted && $0.lastOpenedAt != nil }.sorted { ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast) } }
     }
 }
 
@@ -407,6 +542,7 @@ struct MacRemotePDFPreviewView: View {
     let onClose: () -> Void
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
+    @State private var storedPDF: MacLocalPDFDocument?
     @State private var image: NSImage?
     @State private var markdown: String?
     @State private var numbersPreviewURL: URL?
@@ -531,9 +667,23 @@ struct MacRemotePDFPreviewView: View {
             }
             Group {
                 if let pdfDocument {
-                    MacPDFKitView(
+                    MacPDFWorkspace(
                         document: pdfDocument,
-                        isContainerResizing: isContainerResizing
+                        identifier: storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
+                        fileName: title,
+                        sourceURL: request.url,
+                        cookieHeader: request.cookieHeader,
+                        sourceData: attachmentData,
+                        isContainerResizing: isContainerResizing,
+                        onSave: { data in
+                            guard data.count <= 25 * 1024 * 1024 else { throw NSError(domain: "NF", code: 413, userInfo: [NSLocalizedDescriptionKey: "서버 저장은 25MB 이하 PDF만 지원합니다. 큰 문서는 PDF 다운로드로 저장해 주세요."]) }
+                            guard MacPortalConfig.isPortalURL(MacPortalConfig.normalizedPortalURL(request.url)) else { throw NSError(domain: "NF", code: -1, userInfo: [NSLocalizedDescriptionKey: "외부 PDF는 다운로드로 저장해 주세요. 원본 서버에 자동 덮어쓰기하지 않습니다."]) }
+                            var upload = URLRequest(url: request.url); upload.httpMethod = "PATCH"; upload.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
+                            if let cookie = request.cookieHeader { upload.setValue(cookie, forHTTPHeaderField: "Cookie") }
+                            let (_, response) = try await URLSession.shared.upload(for: upload, from: data)
+                            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NSError(domain: "NF", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "서버가 PDF 저장을 거부했습니다. 로그인과 문서 수정 권한을 확인해 주세요."]) }
+                            if storesLocally { _ = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
+                        }
                     )
                 } else if let image {
                     ScrollView([.horizontal, .vertical]) {
@@ -601,7 +751,7 @@ struct MacRemotePDFPreviewView: View {
             if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
                 pdfDocument = document
                 if storesLocally {
-                    _ = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url)
+                    storedPDF = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url)
                     didStoreLocally = true
                 }
             } else if mimeType.hasPrefix("image/") || NSImage(data: data) != nil {
