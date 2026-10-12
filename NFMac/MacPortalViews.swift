@@ -428,8 +428,12 @@ private struct MacPortalWorkspace: View {
         model.onGoogleLogin = authentication.startGoogleLogin
         model.onLogout = authentication.logout
         model.onAuthenticationRequired = authentication.requireLogin
-        model.onOpenPDFDocuments = { isPDFLibraryPresented = true }
+        model.onOpenPDFDocuments = {
+            activePane = model.identifier == secondary.identifier ? .secondary : .primary
+            isPDFLibraryPresented = true
+        }
         model.onPreviewPDFAttachment = { request in
+            activePane = model.identifier == secondary.identifier ? .secondary : .primary
             withAnimation(MacPDFSlidePanelLayout.animation) {
                 remotePDFRequest = request
             }
@@ -508,25 +512,32 @@ private struct MacResizableRemotePDFPanel: View {
     @State private var preferredWidth: CGFloat?
     @State private var resizeStartWidth: CGFloat?
     @State private var isResizing = false
+    @StateObject private var presentation = MacPDFViewerWindowState()
 
     var body: some View {
         GeometryReader { geometry in
-            let topInset: CGFloat = 32
             let panelWidth = MacPDFSlidePanelLayout.width(
                 preferredWidth: preferredWidth,
                 for: geometry.size.width
             )
+            let bounds = MacPDFSlidePanelLayout.frame(preferredWidth: preferredWidth, availableSize: geometry.size)
 
             ZStack(alignment: .leading) {
-                MacRemotePDFPreviewView(
+                MacPDFMovableViewer(presentation: presentation, content: MacRemotePDFPreviewView(
                     request: request,
                     storesLocally: storesLocally,
                     isContainerResizing: isResizing,
-                    onClose: onClose
-                )
+                    onClose: onClose,
+                    isFullscreen: presentation.isFullscreen,
+                    onToggleFullscreen: {
+                        isResizing = false; resizeStartWidth = nil
+                        if presentation.isFullscreen { presentation.exit() }
+                        else { presentation.enterEmbeddedFullscreen(title: request.url.lastPathComponent) }
+                    }
+                ).ignoresSafeArea(.container, edges: .top))
                 .id(request.id)
 
-                MacPDFPanelResizeHandle()
+                if !presentation.isFullscreen { MacPDFPanelResizeHandle()
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
@@ -547,22 +558,17 @@ private struct MacResizableRemotePDFPanel: View {
                                 resizeStartWidth = nil
                                 isResizing = false
                             }
-                    )
+                    ) }
             }
-            .frame(width: panelWidth)
-            .frame(height: max(geometry.size.height - topInset, 0))
+            .frame(width: bounds.width, height: bounds.height)
             .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(MacPDFPanelShape())
+            .clipShape(MacPDFPanelShape(cornerRadius: 12))
             .overlay {
                 MacPDFPanelLeadingBorder()
                     .stroke(Color.primary.opacity(isResizing ? 0.38 : 0.22), lineWidth: 1)
                     .allowsHitTesting(false)
             }
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity,
-                alignment: .bottomTrailing
-            )
+            .position(x: bounds.midX, y: bounds.midY)
         }
         // Measure from the window top, like MacPortalPane. The 32pt inset
         // above reserves the title-bar tabs once, without a second safe-area gap.
@@ -597,8 +603,9 @@ private struct MacPDFPanelResizeHandle: View {
 }
 
 private struct MacPDFPanelShape: Shape {
+    var cornerRadius: CGFloat = 12
     func path(in rect: CGRect) -> Path {
-        let radius = min(12, min(rect.width, rect.height))
+        let radius = min(cornerRadius, min(rect.width, rect.height))
         var path = Path()
         path.move(to: CGPoint(x: radius, y: rect.minY))
         path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))

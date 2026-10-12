@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CryptoKit
 import Foundation
 import PDFKit
@@ -16,6 +17,10 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
 enum MacPDFSlidePanelLayout {
     static let animation = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.52)
     static let resizeHandleWidth: CGFloat = 10
+    static func frame(preferredWidth: CGFloat?, availableSize: CGSize) -> CGRect {
+        let panelWidth = width(preferredWidth: preferredWidth, for: availableSize.width)
+        return CGRect(x: availableSize.width - panelWidth, y: 32, width: panelWidth, height: max(0, availableSize.height - 32))
+    }
 
     static func width(preferredWidth: CGFloat?, for availableWidth: CGFloat) -> CGFloat {
         guard availableWidth.isFinite, availableWidth > 0 else { return 0 }
@@ -291,11 +296,12 @@ private enum MacPDFLibrarySection: String, CaseIterable, Identifiable {
 
 struct MacPDFLibraryView: View {
     @Environment(\.dismiss) private var dismiss
-    private let repository = MacPDFLocalStorageRepository()
+    var repository = MacPDFLocalStorageRepository()
+    var editorDirectory: URL?
     @State private var section: MacPDFLibrarySection = .all
     @State private var searchText = ""
     @State private var documents: [MacLocalPDFDocument] = []
-    @State private var selectedDocument: MacLocalPDFDocument?
+    @StateObject private var documentWindow = MacPDFDocumentWindowController()
     @State private var isImporterPresented = false
     @State private var errorMessage: String?
     @State private var folders: [MacPDFLocalStorageRepository.Folder] = []
@@ -308,7 +314,8 @@ struct MacPDFLibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("닫기", action: dismiss.callAsFunction)
+                Button("닫기") { documentWindow.close(); dismiss() }
+                    .accessibilityIdentifier("pdf.library.close")
                 Spacer()
                 Text("문서")
                     .font(.headline)
@@ -356,7 +363,7 @@ struct MacPDFLibraryView: View {
             } else {
                 List(visibleDocuments) { document in
                     Button {
-                        selectedDocument = document
+                        openDocument(document)
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "doc.richtext")
@@ -374,6 +381,7 @@ struct MacPDFLibraryView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityIdentifier("pdf.library.open.\(document.id)")
                     .contextMenu {
                         if document.isDeleted {
                             Button("복원") { perform { try repository.restore(document) } }
@@ -420,10 +428,8 @@ struct MacPDFLibraryView: View {
                 errorMessage = "PDF 파일을 가져오지 못했습니다."
             }
         }
-        .sheet(item: $selectedDocument, onDismiss: reload) { document in
-            MacPDFDocumentView(document: document, onOpen: { selectedDocument = $0 })
-                .frame(minWidth: 820, minHeight: 620)
-        }
+        .onDisappear { documentWindow.close() }
+        .onExitCommand { documentWindow.close(); dismiss() }
         .alert("문서 처리 실패", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
@@ -456,6 +462,7 @@ struct MacPDFLibraryView: View {
     }
 
     private func reload() { documents = repository.documents(); folders = repository.folders() }
+    private func openDocument(_ document: MacLocalPDFDocument) { documentWindow.open(document, repository: repository, editorDirectory: editorDirectory) }
     private func prompt(_ title: String, initial: String) -> String? {
         let alert = NSAlert(); alert.messageText = title; alert.addButton(withTitle: "확인"); alert.addButton(withTitle: "취소")
         let field = NSTextField(string: initial); field.frame = CGRect(x: 0, y: 0, width: 340, height: 24); alert.accessoryView = field
@@ -463,7 +470,7 @@ struct MacPDFLibraryView: View {
         let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines); return value.isEmpty ? nil : value
     }
     private func createBlank() {
-        perform { let pdf = PDFDocument(), page = PDFPage(); page.setBounds(CGRect(x: 0, y: 0, width: 595, height: 842), for: .mediaBox); pdf.insert(page, at: 0); guard let data = pdf.dataRepresentation() else { throw CocoaError(.fileWriteUnknown) }; selectedDocument = try repository.createDocument(data: data, fileName: "새 PDF.pdf") }
+        perform { let pdf = PDFDocument(), page = PDFPage(); page.setBounds(CGRect(x: 0, y: 0, width: 595, height: 842), for: .mediaBox); pdf.insert(page, at: 0); guard let data = pdf.dataRepresentation() else { throw CocoaError(.fileWriteUnknown) }; openDocument(try repository.createDocument(data: data, fileName: "새 PDF.pdf")) }
     }
     private func createPhotosPDF(_ items: [PhotosPickerItem]) async {
         guard !items.isEmpty else { return }
@@ -471,7 +478,7 @@ struct MacPDFLibraryView: View {
             let pdf = PDFDocument()
             for item in items { if let data = try await item.loadTransferable(type: Data.self), let image = NSImage(data: data), let page = PDFPage(image: image) { pdf.insert(page, at: pdf.pageCount) } }
             guard pdf.pageCount > 0, let data = pdf.dataRepresentation() else { throw CocoaError(.fileReadCorruptFile) }
-            selectedDocument = try repository.createDocument(data: data, fileName: "사진 PDF.pdf"); photos = []; reload()
+            openDocument(try repository.createDocument(data: data, fileName: "사진 PDF.pdf")); photos = []; reload()
         } catch { errorMessage = error.localizedDescription }
     }
     private func importLink() {
@@ -482,7 +489,7 @@ struct MacPDFLibraryView: View {
                 if MacPortalConfig.isPortalURL(url), let cookie = await MacPDFGoogleDrive.cookieHeader(for: url) { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
-                selectedDocument = try repository.createDocument(data: data, fileName: response.suggestedFilename ?? "다운로드.pdf", sourceURL: url); reload()
+                openDocument(try repository.createDocument(data: data, fileName: response.suggestedFilename ?? "다운로드.pdf", sourceURL: url)); reload()
             } catch { errorMessage = "PDF 다운로드 실패: \(error.localizedDescription)" }
         }
     }
@@ -497,22 +504,35 @@ struct MacPDFLibraryView: View {
     }
 }
 
-private struct MacPDFDocumentView: View {
-    @Environment(\.dismiss) private var dismiss
+struct MacPDFDocumentView: View {
     let document: MacLocalPDFDocument
     var onOpen: (MacLocalPDFDocument) -> Void = { _ in }
+    var onClose: () -> Void
+    @ObservedObject var fullscreen: MacPDFViewerWindowState
     @State private var pdf: PDFDocument?
     @State private var didLoadPDF = false
     @State private var history: [MacLocalPDFDocument] = []
-    private let repository = MacPDFLocalStorageRepository()
+    var repository = MacPDFLocalStorageRepository()
+    var editorDirectory: URL?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button("닫기", action: dismiss.callAsFunction)
+                if fullscreen.isFullscreen {
+                    Button { fullscreen.exit() } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
+                        .help("전체화면 종료").accessibilityLabel("PDF 전체화면 종료")
+                        .disabled(fullscreen.isTransitioning)
+                } else { Button("닫기", action: onClose) }
                 Spacer()
                 Text(document.fileName).font(.headline).lineLimit(1)
                 Spacer()
+                if !fullscreen.isFullscreen {
+                    Button { fullscreen.toggle() } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help("전체화면 보기").accessibilityLabel("PDF 전체화면 보기")
+                    .disabled(fullscreen.isTransitioning)
+                }
                 Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([document.localFileURL]) }
             }
             .padding(12)
@@ -525,13 +545,19 @@ private struct MacPDFDocumentView: View {
                     } }.padding(6)
                 }
             }
-            if let pdf {
-                MacPDFWorkspace(document: pdf, identifier: document.id, fileName: document.fileName, onSave: { data in try repository.updateData(document, data: data) })
-                    .id(document.id)
-            } else if didLoadPDF { ContentUnavailableView("PDF 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text("파일이 손상되었거나 삭제되었습니다. 원본 파일을 다시 가져와 주세요.")) }
-            else { ProgressView("PDF를 불러오는 중…") }
+            Group {
+                if let pdf {
+                    MacPDFWorkspace(document: pdf, identifier: document.id, fileName: document.fileName, isFullscreen: fullscreen.isFullscreen, onToggleFullscreen: { fullscreen.toggle() }, editorDirectory: editorDirectory?.appendingPathComponent(document.id), onSave: { data in try repository.updateData(document, data: data) })
+                        .id(document.id)
+                } else if didLoadPDF { ContentUnavailableView("PDF 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text("파일이 손상되었거나 삭제되었습니다. 원본 파일을 다시 가져와 주세요.")) }
+                else { ProgressView("PDF를 불러오는 중…") }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: document.id) { didLoadPDF = false; pdf = PDFDocument(url: document.localFileURL); if pdf != nil { try? repository.recordOpen(document) }; didLoadPDF = true; history = repository.documents().filter { !$0.isDeleted && $0.lastOpenedAt != nil }.sorted { ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast) } }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .ignoresSafeArea(.container, edges: .top)
+        .onExitCommand { if fullscreen.isFullscreen { fullscreen.exit() } else { onClose() } }
     }
 }
 
@@ -540,6 +566,8 @@ struct MacRemotePDFPreviewView: View {
     let storesLocally: Bool
     let isContainerResizing: Bool
     let onClose: () -> Void
+    var isFullscreen = false
+    var onToggleFullscreen: (() -> Void)?
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
     @State private var storedPDF: MacLocalPDFDocument?
@@ -556,21 +584,21 @@ struct MacRemotePDFPreviewView: View {
     @State private var isMoreMenuPresented = false
     @State private var pendingMoreMenuAction: MoreMenuAction?
 
-    private enum MoreMenuAction { case sharePDF, openOriginal, saveOriginal }
+    private enum MoreMenuAction { case sharePDF, openOriginal, saveOriginal, fullscreen }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Button(action: onClose) {
-                    Image(systemName: "chevron.left")
+                Button { if isFullscreen { onToggleFullscreen?() } else { onClose() } } label: {
+                    Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "chevron.left")
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help("뒤로")
-                .accessibilityLabel("첨부 미리보기 닫기")
+                .keyboardShortcut(isFullscreen ? nil : KeyboardShortcut.cancelAction)
+                .help(isFullscreen ? "전체화면 종료" : "뒤로")
+                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : "첨부 미리보기 닫기")
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
@@ -592,6 +620,11 @@ struct MacRemotePDFPreviewView: View {
                 .accessibilityLabel("첨부 파일 더보기")
                 .popover(isPresented: $isMoreMenuPresented, arrowEdge: .top) {
                     VStack(spacing: 0) {
+                        if onToggleFullscreen != nil {
+                            MacAttachmentMenuRow(title: isFullscreen ? "전체화면 종료" : "전체화면 보기", systemImage: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", isEnabled: true) {
+                                pendingMoreMenuAction = .fullscreen; isMoreMenuPresented = false
+                            }
+                        }
                         if markdown != nil {
                             MacAttachmentMenuRow(
                                 title: markdownPreviewController.isSharing ? "PDF 생성 중…" : "PDF 외부 공유하기",
@@ -675,6 +708,8 @@ struct MacRemotePDFPreviewView: View {
                         cookieHeader: request.cookieHeader,
                         sourceData: attachmentData,
                         isContainerResizing: isContainerResizing,
+                        isFullscreen: isFullscreen,
+                        onToggleFullscreen: onToggleFullscreen,
                         onSave: { data in
                             guard data.count <= 25 * 1024 * 1024 else { throw NSError(domain: "NF", code: 413, userInfo: [NSLocalizedDescriptionKey: "서버 저장은 25MB 이하 PDF만 지원합니다. 큰 문서는 PDF 다운로드로 저장해 주세요."]) }
                             guard MacPortalConfig.isPortalURL(MacPortalConfig.normalizedPortalURL(request.url)) else { throw NSError(domain: "NF", code: -1, userInfo: [NSLocalizedDescriptionKey: "외부 PDF는 다운로드로 저장해 주세요. 원본 서버에 자동 덮어쓰기하지 않습니다."]) }
@@ -710,7 +745,9 @@ struct MacRemotePDFPreviewView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
         .task { await load() }
+        .onExitCommand { if isFullscreen { onToggleFullscreen?() } else { onClose() } }
     }
 
     private func runPendingMoreMenuAction() {
@@ -720,6 +757,7 @@ struct MacRemotePDFPreviewView: View {
         case .sharePDF: markdownPreviewController.sharePDF(fileName: title)
         case .openOriginal: openInDefaultApplication()
         case .saveOriginal: saveAttachment()
+        case .fullscreen: onToggleFullscreen?()
         }
     }
 

@@ -8,16 +8,21 @@ import UniformTypeIdentifiers
 struct MacPDFWorkspace: View {
     @StateObject private var state: MacPDFEditorState
     var isContainerResizing = false
-    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, onSave: ((Data) async throws -> Void)? = nil) {
-        let editor = MacPDFEditorState(document: document, identifier: identifier, fileName: fileName, sourceURL: sourceURL, cookieHeader: cookieHeader, sourceData: sourceData)
+    var isFullscreen = false
+    var onToggleFullscreen: (() -> Void)?
+    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, isFullscreen: Bool = false, onToggleFullscreen: (() -> Void)? = nil, editorDirectory: URL? = nil, onSave: ((Data) async throws -> Void)? = nil) {
+        let editor = MacPDFEditorState(document: document, identifier: identifier, fileName: fileName, sourceURL: sourceURL, cookieHeader: cookieHeader, sourceData: sourceData, directory: editorDirectory)
         editor.onSave = onSave; editor.exportOnSave = exportOnSave; _state = StateObject(wrappedValue: editor); self.isContainerResizing = isContainerResizing
+        self.isFullscreen = isFullscreen; self.onToggleFullscreen = onToggleFullscreen
     }
-    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing) }
+    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing, isFullscreen: isFullscreen, onToggleFullscreen: onToggleFullscreen) }
 }
 
 struct MacPDFEditorView: View {
     @ObservedObject var state: MacPDFEditorState
     var isContainerResizing = false
+    var isFullscreen = false
+    var onToggleFullscreen: (() -> Void)?
     @StateObject private var sharing = MacPDFExportController()
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
@@ -108,13 +113,14 @@ struct MacPDFEditorView: View {
                     Toggle("두 페이지 보기", isOn: $state.twoPages)
                     Picker("페이지 이동 버튼 위치", selection: $state.pageControlPosition) { Text("아래").tag("bottom"); Text("왼쪽").tag("left"); Text("오른쪽").tag("right") }
                     Button("화면에 맞춤") { state.canvas?.autoScales = true }
-                    Button("전체화면 전환") { state.canvas?.window?.toggleFullScreen(nil) }
+                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기") { toggleFullscreen() }
                     Button("프레젠테이션") { state.presentation = true }
                 }
                 Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
                 Button("PDF 다운로드") { sharing.download(state) }
                 Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
+                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기") { toggleFullscreen() }
                     Button("문서 연결 보드") { modal = .board }
                     Button("Google Drive에 저장") { Task { await state.syncToGoogleDrive() } }
                     Button("Google Drive 연결 해제") { state.unlinkGoogleDrive() }
@@ -126,6 +132,10 @@ struct MacPDFEditorView: View {
         .onChange(of: state.horizontal) { _, _ in state.configureView() }
         .onChange(of: state.paged) { _, _ in state.configureView() }
         .onChange(of: state.twoPages) { _, _ in state.configureView() }
+    }
+    private func toggleFullscreen() {
+        if let onToggleFullscreen { onToggleFullscreen() }
+        else { state.canvas?.window?.toggleFullScreen(nil) }
     }
     private var floatingToolbar: some View {
         Group {
