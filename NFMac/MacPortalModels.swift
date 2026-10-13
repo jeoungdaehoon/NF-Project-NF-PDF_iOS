@@ -236,6 +236,38 @@ final class MacPortalBrowserModel: ObservableObject {
 
     var currentPage: MacPortalPage? { pages.first { $0.id == activePageID } }
 
+    func canReceiveTransferredPage(_ page: MacPortalPage) -> Bool {
+        MacPortalConfig.isPortalURL(page.url) && !MacPortalConfig.isLoginURL(page.url)
+            && (pages.contains { $0.id == page.id } || pages.count < 14)
+    }
+
+    /// Transfer only on a confirmed drop. Keep full query/fragment URLs, but
+    /// deduplicate by the same route identity used by normal tab navigation.
+    @discardableResult
+    func transferPage(id: String, to target: MacPortalBrowserModel) -> Bool {
+        guard target !== self, let page = pages.first(where: { $0.id == id }),
+              target.canReceiveTransferredPage(page) else { return false }
+        let wasActive = activePageID == id
+        let alreadyDisplayed = target.activePageID == id && target.webView?.url == page.url
+        var moved = page; moved.accessedAt = Date().timeIntervalSince1970
+        target.pages.removeAll { $0.id == id }
+        target.pages.insert(moved, at: 0)
+        target.activePageID = id; target.initialURL = moved.url
+        pages.removeAll { $0.id == id }
+        if pages.isEmpty {
+            pages = [MacPortalPage(url: MacPortalConfig.dashboardURL, title: "대시보드", accessedAt: Date().timeIntervalSince1970)]
+        }
+        if wasActive {
+            activePageID = pages[0].id; initialURL = pages[0].url
+            breadcrumbs = []
+        }
+        persistPages(); target.persistPages()
+        if wasActive { webView?.load(URLRequest(url: initialURL)) }
+        if !alreadyDisplayed { target.webView?.load(URLRequest(url: moved.url)) }
+        if let targetView = target.webView { targetView.window?.makeFirstResponder(targetView) }
+        return true
+    }
+
     func record(url: URL, title: String?, breadcrumbRecords: [[String: Any]] = []) {
         let normalizedURL = MacPortalConfig.normalizedPortalURL(url)
         guard normalizedURL.scheme == "https" || normalizedURL.scheme == "http",

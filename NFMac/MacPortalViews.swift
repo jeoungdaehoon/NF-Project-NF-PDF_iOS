@@ -2,7 +2,7 @@ import AppKit
 import AuthenticationServices
 import SwiftUI
 
-private enum MacPortalTitlebarPalette {
+enum MacPortalTitlebarPalette {
     static let backgroundNSColor = NSColor(
         srgbRed: 40.0 / 255.0,
         green: 40.0 / 255.0,
@@ -338,6 +338,7 @@ private struct MacPortalWorkspace: View {
     @ObservedObject var authentication: MacAuthenticationModel
     @StateObject private var primary = MacPortalBrowserModel(identifier: "primary")
     @StateObject private var secondary = MacPortalBrowserModel(identifier: "secondary")
+    @StateObject private var tabTransfer = MacPortalTabTransfer()
     @State private var isSplit = false
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
@@ -353,6 +354,8 @@ private struct MacPortalWorkspace: View {
                 onSidebarNavigate: navigateFromSharedSidebar
             )
             .frame(minWidth: 480)
+            .background(MacPortalTabDropRegion(transfer: tabTransfer, pane: primary.identifier))
+            .overlay { if tabTransfer.targetPane == primary.identifier { MacPortalTabDropHighlight() } }
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(
@@ -369,6 +372,8 @@ private struct MacPortalWorkspace: View {
                     onSidebarNavigate: navigateFromSharedSidebar
                 )
                 .frame(minWidth: 480)
+                .background(MacPortalTabDropRegion(transfer: tabTransfer, pane: secondary.identifier))
+                .overlay { if tabTransfer.targetPane == secondary.identifier { MacPortalTabDropHighlight() } }
             }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -401,9 +406,15 @@ private struct MacPortalWorkspace: View {
             .frame(width: 0, height: 0)
         }
         .onAppear {
+            tabTransfer.configure(primary: primary, secondary: secondary)
             configureCallbacks(for: primary)
             configureCallbacks(for: secondary)
             refreshPDFLibraryState()
+        }
+        .onDisappear { tabTransfer.cancel(animated: false) }
+        .onChange(of: tabTransfer.completedPane) { _, pane in
+            guard let pane else { return }
+            activePane = pane == secondary.identifier ? .secondary : .primary
         }
         .onReceive(NotificationCenter.default.publisher(for: MacPDFLocalStorageRepository.didChangeNotification)) { _ in
             refreshPDFLibraryState()
@@ -453,6 +464,7 @@ private struct MacPortalWorkspace: View {
     }
 
     private func toggleSplit() {
+        tabTransfer.cancel(animated: false)
         if isSplit {
             activePane = .primary
             isSplit = false
@@ -478,6 +490,7 @@ private struct MacPortalWorkspace: View {
     private var primaryToolbar: some View {
         MacPortalToolbar(
             model: primary,
+            tabTransfer: tabTransfer,
             preferences: preferences,
             isSplit: isSplit,
             sidebarHidden: primary.sidebarHidden,
@@ -492,6 +505,7 @@ private struct MacPortalWorkspace: View {
     private var secondaryToolbar: some View {
         MacPortalToolbar(
             model: secondary,
+            tabTransfer: tabTransfer,
             preferences: preferences,
             isSplit: true,
             sidebarHidden: primary.sidebarHidden,
@@ -795,8 +809,9 @@ private struct MacPortalFindBar: View {
     }
 }
 
-private struct MacPortalToolbar: View {
+struct MacPortalToolbar: View {
     @ObservedObject var model: MacPortalBrowserModel
+    @ObservedObject var tabTransfer: MacPortalTabTransfer
     @ObservedObject var preferences: MacPortalPreferences
     let isSplit: Bool
     let sidebarHidden: Bool
@@ -867,6 +882,9 @@ private struct MacPortalToolbar: View {
                     ForEach(model.pages) { page in
                         MacPortalTabButton(
                             page: page,
+                            pane: model.identifier,
+                            tabTransfer: tabTransfer,
+                            allowsTabMove: isSplit,
                             isSelected: page.id == model.activePageID,
                             selectedBackground: model.themeBackground,
                             selectedForeground: model.themeForeground,
@@ -878,6 +896,14 @@ private struct MacPortalToolbar: View {
                             onClose: { model.close(page) }
                         )
                     }
+                }
+                .animation(.easeInOut(duration: 0.22), value: model.pages.map(\.id))
+            }
+            .background(MacPortalTabDropRegion(transfer: tabTransfer, pane: model.identifier, strip: true))
+            .overlay(alignment: .leading) {
+                if tabTransfer.targetPane == model.identifier {
+                    RoundedRectangle(cornerRadius: 2).fill(MacPortalTitlebarPalette.foreground.opacity(0.5)).frame(width: 3, height: 24)
+                        .padding(.leading, 2).allowsHitTesting(false).transition(.opacity)
                 }
             }
             Spacer(minLength: 4)
@@ -927,6 +953,9 @@ private struct MacPortalToolbar: View {
 
 private struct MacPortalTabButton: View {
     let page: MacPortalPage
+    let pane: String
+    @ObservedObject var tabTransfer: MacPortalTabTransfer
+    let allowsTabMove: Bool
     let isSelected: Bool
     let selectedBackground: Color
     let selectedForeground: Color
@@ -937,15 +966,10 @@ private struct MacPortalTabButton: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Button(action: onSelect) {
-                Text(page.title)
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .offset(x: showsCloseButton ? 0 : 11.5)
-            }
-            .help(page.url.absoluteString)
+            MacPortalTabPressLabel(page: page, pane: pane, transfer: tabTransfer, enabled: allowsTabMove,
+                                   foreground: NSColor(isSelected ? selectedForeground : MacPortalTitlebarPalette.foreground), onSelect: onSelect)
+                .fixedSize(horizontal: true, vertical: false).frame(height: 28)
+                .offset(x: showsCloseButton ? 0 : 11.5)
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -958,6 +982,8 @@ private struct MacPortalTabButton: View {
             .opacity(showsCloseButton ? 1 : 0)
             .scaleEffect(showsCloseButton ? 1 : 0.85)
             .accessibilityHidden(!showsCloseButton)
+            .allowsHitTesting(showsCloseButton)
+            .accessibilityIdentifier("portal.tab.close.\(pane).\(page.id)")
         }
         .offset(y: -2)
         .padding(.trailing, 3)
@@ -983,7 +1009,10 @@ private struct MacPortalTabButton: View {
             }
         }
         .buttonStyle(.plain)
+        .opacity(tabTransfer.pageID == page.id && tabTransfer.sourcePane == pane ? 0.3 : 1)
+        .transition(.opacity.combined(with: .scale(scale: 0.94)))
         .onHover { hovering in
+            guard tabTransfer.pageID == nil else { return }
             withAnimation(.easeInOut(duration: 0.18)) {
                 isHovering = hovering
             }
@@ -992,6 +1021,19 @@ private struct MacPortalTabButton: View {
 
     private var showsCloseButton: Bool {
         isHovering && canClose
+    }
+}
+
+struct MacPortalTabDropHighlight: View {
+    var body: some View {
+        ZStack(alignment: .top) {
+            MacPortalTitlebarPalette.background.opacity(0.10)
+            RoundedRectangle(cornerRadius: 8).stroke(MacPortalTitlebarPalette.foreground.opacity(0.35), lineWidth: 2).padding(3)
+            Text("놓으면 이 화면으로 탭 이동").font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MacPortalTitlebarPalette.foreground)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(MacPortalTitlebarPalette.background.opacity(0.85), in: Capsule()).padding(.top, 44)
+        }.allowsHitTesting(false).transition(.opacity)
     }
 }
 
