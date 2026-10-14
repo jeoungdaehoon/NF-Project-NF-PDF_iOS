@@ -603,9 +603,10 @@ struct MacRemotePDFPreviewView: View {
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
                 if didStoreLocally {
-                    Label("로컬 저장됨", systemImage: "checkmark.circle.fill")
+                    Label("Mac 복사본 보관됨", systemImage: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
+                        .help("Mac에 보관된 복사본입니다. 서버 반영 여부는 편집기의 저장 상태에서 확인하세요.")
                 }
                 Button {
                     isMoreMenuPresented.toggle()
@@ -711,13 +712,9 @@ struct MacRemotePDFPreviewView: View {
                         isFullscreen: isFullscreen,
                         onToggleFullscreen: onToggleFullscreen,
                         onSave: { data in
-                            guard data.count <= 25 * 1024 * 1024 else { throw NSError(domain: "NF", code: 413, userInfo: [NSLocalizedDescriptionKey: "서버 저장은 25MB 이하 PDF만 지원합니다. 큰 문서는 PDF 다운로드로 저장해 주세요."]) }
-                            guard MacPortalConfig.isPortalURL(MacPortalConfig.normalizedPortalURL(request.url)) else { throw NSError(domain: "NF", code: -1, userInfo: [NSLocalizedDescriptionKey: "외부 PDF는 다운로드로 저장해 주세요. 원본 서버에 자동 덮어쓰기하지 않습니다."]) }
-                            var upload = URLRequest(url: request.url); upload.httpMethod = "PATCH"; upload.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
-                            if let cookie = request.cookieHeader { upload.setValue(cookie, forHTTPHeaderField: "Cookie") }
-                            let (_, response) = try await URLSession.shared.upload(for: upload, from: data)
-                            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw NSError(domain: "NF", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "서버가 PDF 저장을 거부했습니다. 로그인과 문서 수정 권한을 확인해 주세요."]) }
-                            if storesLocally { _ = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
+                            try await MacPDFRemoteSave.shared.save(source: request.url, data: data)
+                            // A local cache failure must not turn a confirmed server save into an upload failure.
+                            if storesLocally { _ = try? repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
                         }
                     )
                 } else if let image {
@@ -763,7 +760,8 @@ struct MacRemotePDFPreviewView: View {
 
     private func load() async {
         do {
-            var urlRequest = URLRequest(url: request.url)
+            var urlRequest = URLRequest(url: request.url, cachePolicy: .reloadIgnoringLocalCacheData)
+            urlRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
             if let cookieHeader = request.cookieHeader {
                 urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }

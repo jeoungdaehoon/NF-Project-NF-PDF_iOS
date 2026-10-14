@@ -197,6 +197,7 @@ final class MacPDFEditorState: ObservableObject {
     private var saveTask: Task<Void, Never>?
     private var baseChanged = false
     private var pendingDocumentSave = false
+    private var editRevision: UInt = 0
     private var neonTasks: [UUID: Task<Void, Never>] = [:]
     private var paletteOptions: [String: MacPDFStyle] = [:]
     private var toolOptions: [String: MacPDFStyle] = [:]
@@ -255,6 +256,7 @@ final class MacPDFEditorState: ObservableObject {
     private func didChange() {
         selection = selection.intersection(Set(objects.map(\.id)))
         pendingDocumentSave = true
+        editRevision &+= 1
         undoCount = undoStack.count; redoCount = redoStack.count
         canvas?.refreshAnnotations()
         let stored = persist()
@@ -560,14 +562,26 @@ final class MacPDFEditorState: ObservableObject {
     }
     func save() async {
         guard !isSaving else { return }
-        canvas?.finishTextEditing(); guard persist() else { return }; guard let base = basePDFData() else { error = "PDF를 생성하지 못했습니다."; return }
+        error = nil
+        canvas?.finishTextEditing()
+        guard document.pageCount > 0 else { error = "저장할 PDF 페이지가 없습니다. 원본 파일은 변경하지 않았습니다."; status = "저장 실패"; return }
+        guard persist() else { status = "저장 실패"; return }
         guard let onSave else { pendingDocumentSave = false; status = "로컬 편집 저장됨"; return }
+        // Never silently replace an edited server PDF with the unedited base.
+        let data = sourceURL == nil && !exportOnSave ? basePDFData() : exportPDF()
+        guard let data, let pdf = PDFDocument(data: data), pdf.pageCount > 0 else {
+            error = "편집 PDF를 생성하지 못해 저장을 중단했습니다. 원본 파일은 변경하지 않았습니다."
+            status = "저장 실패"; return
+        }
+        let savedRevision = editRevision
+        status = sourceURL == nil ? "Mac에 저장 중…" : "첨부 서버에 저장·확인 중…"
         isSaving = true; defer { isSaving = false }
         do {
-            let data = sourceURL == nil && !exportOnSave ? base : (exportPDF() ?? base)
             try await onSave(data)
             if sourceURL != nil { sourceHashes.insert(Self.hash(data)); persist() }
-            pendingDocumentSave = false; status = "저장 완료"
+            pendingDocumentSave = editRevision != savedRevision
+            status = sourceURL == nil ? "Mac에 저장 완료" : "첨부 서버 저장 확인 완료"
+            if pendingDocumentSave { status += " · 이후 편집은 미저장" }
         }
         catch { self.error = "PDF 저장 실패: \(error.localizedDescription)"; status = "저장 실패" }
     }

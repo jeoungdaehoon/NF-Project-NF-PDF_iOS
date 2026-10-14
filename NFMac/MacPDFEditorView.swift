@@ -117,6 +117,7 @@ struct MacPDFEditorView: View {
                     Button("프레젠테이션") { state.presentation = true }
                 }
                 Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
+                    .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
                 Button("PDF 다운로드") { sharing.download(state) }
                 Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
