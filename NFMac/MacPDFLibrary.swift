@@ -731,6 +731,9 @@ struct MacRemotePDFPreviewView: View {
                         isContainerResizing: isContainerResizing,
                         isFullscreen: isFullscreen,
                         onToggleFullscreen: onToggleFullscreen,
+                        onExitPaneExpansion: isPaneExpanded && !isFullscreen ? onTogglePaneExpanded : nil,
+                        isPaneExpanded: isPaneExpanded,
+                        onTogglePaneExpanded: onTogglePaneExpanded,
                         editorDirectory: editorDirectory,
                         onSave: { data in
                             try await MacPDFRemoteSave.shared.save(source: request.url, data: data)

@@ -606,11 +606,12 @@ struct MacResizableRemotePDFPanel: View {
             }
             .frame(width: bounds.width, height: bounds.height)
             .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(MacPDFPanelShape(cornerRadius: expanded || presentation.isFullscreen ? 0 : 12))
-            .overlay {
+            .clipped()
+            .overlay(alignment: .leading) {
                 if !expanded {
-                    MacPDFPanelLeadingBorder()
-                        .stroke(Color.primary.opacity(isResizing ? 0.38 : 0.22), lineWidth: 1)
+                    Rectangle()
+                        .fill(Color.primary.opacity(isResizing ? 0.38 : 0.22))
+                        .frame(width: 1)
                         .allowsHitTesting(false)
                 }
             }
@@ -648,34 +649,6 @@ private struct MacPDFPanelResizeHandle: View {
         }
         .accessibilityLabel("PDF 보기 너비 조절")
         .accessibilityHint("가로로 드래그하여 PDF 보기 너비를 변경합니다.")
-    }
-}
-
-private struct MacPDFPanelShape: Shape {
-    var cornerRadius: CGFloat = 12
-    func path(in rect: CGRect) -> Path {
-        let radius = min(cornerRadius, min(rect.width, rect.height))
-        var path = Path()
-        path.move(to: CGPoint(x: radius, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: radius))
-        path.addQuadCurve(to: CGPoint(x: radius, y: rect.minY), control: CGPoint(x: rect.minX, y: rect.minY))
-        path.closeSubpath()
-        return path
-    }
-}
-
-private struct MacPDFPanelLeadingBorder: Shape {
-    func path(in rect: CGRect) -> Path {
-        let radius = min(12, min(rect.width, rect.height))
-        let inset: CGFloat = 0.5
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + inset, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX + inset, y: radius))
-        path.addQuadCurve(to: CGPoint(x: radius, y: rect.minY + inset), control: CGPoint(x: rect.minX + inset, y: rect.minY + inset))
-        return path
     }
 }
 

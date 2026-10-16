@@ -80,12 +80,30 @@ private struct PaneFixture: View {
         }
         let normal = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size)
         try check(hasFrame(normal), "initial viewer uses normal resizable slide bounds")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-pane-square.png"))
+            let scale = CGFloat(bitmap.pixelsWide) / host.bounds.width
+            let corner = bitmap.colorAt(x: Int((normal.minX + 2) * scale), y: Int((normal.minY + 2) * scale))?.usingColorSpace(.deviceRGB)
+            let header = bitmap.colorAt(x: Int((normal.minX + 24) * scale), y: Int((normal.minY + 2) * scale))?.usingColorSpace(.deviceRGB)
+            try check(corner != nil && header != nil && abs(corner!.redComponent - header!.redComponent) < 0.02 && abs(corner!.greenComponent - header!.greenComponent) < 0.02 && abs(corner!.blueComponent - header!.blueComponent) < 0.02,
+                "top-left PDF viewer corner is square and fully filled, not rounded/cut out")
+        }
+        try check(find("pdf.expandPane") != nil && find("pdf.download") != nil, "PDF toolbar exposes split-pane shortcut beside download")
+        if let shortcut = find("pdf.expandPane") as? NSButton, let download = find("pdf.download") as? NSButton {
+            let shortcutFrame = shortcut.convert(shortcut.bounds, to: nil), downloadFrame = download.convert(download.bounds, to: nil)
+            try check(shortcutFrame.maxX < downloadFrame.minX && downloadFrame.minX - shortcutFrame.maxX <= 14, "split-pane icon is immediately left of PDF download")
+        } else { try check(false, "toolbar controls must be native accessible buttons") }
+        try press("pdf.expandPane"); pump(0.4)
+        try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "toolbar shortcut fills the source split pane directly")
+        try press("pdf.expandPane"); pump(0.4)
+        try check(hasFrame(normal) && state.closeCount == 0, "toolbar shortcut toggles back without closing the document")
         try press("attachment.viewer.more"); pump(0.2)
         try check(find("attachment.viewer.expandPane") != nil || popupHost(height: 116) != nil, "popup has separate pane and monitor fullscreen actions")
         try press("attachment.viewer.expandPane"); pump(0.5)
         let expanded = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)
         try check(hasFrame(expanded) && expanded.minX == 900 && expanded.minY == 32, "fills only the source right pane, below the tab bar")
-        try check(!window.styleMask.contains(.fullScreen) && app.windows.filter({ $0.isVisible && $0.sheetParent == nil }).count == 1, "pane action never creates a monitor-fullscreen window")
+        try check(!window.styleMask.contains(.fullScreen) && canvas.window === window && !app.windows.contains(where: { $0 !== window && $0.isVisible && $0.styleMask.contains(.fullScreen) }), "pane action keeps the PDF in the same normal window, never a monitor-fullscreen window")
         try check(canvas.editor === editor && editor.objects.map(\.id) == objectIDs && editor.undoCount == undoCount, "same PDF canvas, edits and undo history survive expansion")
         if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
             host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -96,15 +114,18 @@ private struct PaneFixture: View {
         try press("attachment.viewer.back"); pump(0.5)
         try check(hasFrame(normal) && state.closeCount == 0, "exit button restores original slide size without closing")
         try press("attachment.viewer.more"); pump(0.2); try press("attachment.viewer.expandPane"); pump(0.4)
+        try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "viewer is expanded before keyboard exit")
         let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate,
             windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
-        window.makeFirstResponder(canvas); window.sendEvent(escape); pump(0.4)
+        window.makeKeyAndOrderFront(nil); pump(0.15); window.makeFirstResponder(canvas)
+        app.postEvent(escape, atStart: false); pump(0.4)
         try check(hasFrame(normal) && state.closeCount == 0, "Escape exits pane expansion instead of closing PDF")
         state.pane = CGRect(x: 0, y: 0, width: 650, height: host.bounds.height); pump(0.2)
         try press("attachment.viewer.more"); pump(0.2); try press("attachment.viewer.expandPane"); pump(0.4)
         try check(hasFrame(CGRect(x: 0, y: 32, width: 650, height: host.bounds.height - 32)), "left source pane uses its own bounds, never the right pane")
         state.pane = nil; pump(0.4)
         try check(hasFrame(normal), "closing split restores normal slide without reloading PDF")
+        try check(find("pdf.expandPane") == nil, "toolbar pane shortcut is hidden when no split pane exists")
         try press("attachment.viewer.more"); pump(0.2)
         try check(find("attachment.viewer.expandPane") == nil && popupHost(height: 90) != nil, "pane expansion action is absent outside split mode")
         window.sendEvent(escape); pump(0.2)
@@ -137,20 +158,19 @@ private struct PaneFixture: View {
         return NSApp.windows.filter(\.isVisible).compactMap(\.contentView).compactMap { walk($0, 0) }.first
     }
     @MainActor static func press(_ identifier: String) throws {
+        // Prefer real clicks: cached AX elements can outlive dismissed popovers.
+        if ["attachment.viewer.more", "attachment.viewer.back"].contains(identifier),
+           let view = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap({ descendants($0) })
+            .first(where: { String(describing: type(of: $0)).contains("NSHostingView") && String(describing: type(of: $0)).contains("MacRemotePDFPreviewView") }) {
+            click(CGPoint(x: identifier.hasSuffix("more") ? view.bounds.width - 29 : 29, y: view.isFlipped ? 24 : view.bounds.height - 24), in: view)
+            return
+        }
+        if identifier == "attachment.viewer.expandPane", let view = popupHost(height: 116) {
+            click(CGPoint(x: view.bounds.midX, y: view.isFlipped ? 19 : view.bounds.height - 19), in: view)
+            return
+        }
         let selector = NSSelectorFromString("accessibilityPerformPress")
         guard let control = find(identifier), control.responds(to: selector) else {
-            // macOS 15 may omit AX children of the nested NSHostingView. Send
-            // real window mouse events to the production control in that case.
-            if ["attachment.viewer.more", "attachment.viewer.back"].contains(identifier),
-               let view = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap({ descendants($0) })
-                .first(where: { String(describing: type(of: $0)).contains("NSHostingView") && String(describing: type(of: $0)).contains("MacRemotePDFPreviewView") }) {
-                click(CGPoint(x: identifier.hasSuffix("more") ? view.bounds.width - 29 : 29, y: view.isFlipped ? 24 : view.bounds.height - 24), in: view)
-                return
-            }
-            if identifier == "attachment.viewer.expandPane", let view = popupHost(height: 116) {
-                click(CGPoint(x: view.bounds.midX, y: view.isFlipped ? 19 : view.bounds.height - 19), in: view)
-                return
-            }
             for (index, window) in NSApp.windows.filter(\.isVisible).enumerated() {
                 print("DEBUG window \(index) \(window.frame)")
                 if let view = window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
@@ -161,12 +181,16 @@ private struct PaneFixture: View {
             fflush(stdout)
             throw NSError(domain: "PDFPane", code: 101, userInfo: [NSLocalizedDescriptionKey: "Missing control: \(identifier)"])
         }
+        if let button = control as? NSButton {
+            guard button.isEnabled else { throw NSError(domain: "PDFPane", code: 103) }
+            button.performClick(nil); return
+        }
         typealias Action = @convention(c) (AnyObject, Selector) -> Bool
         let perform = unsafeBitCast(control.method(for: selector), to: Action.self)
         guard perform(control, selector) else { throw NSError(domain: "PDFPane", code: 102) }
     }
     @MainActor static func popupHost(height: CGFloat) -> NSView? {
-        for window in NSApp.windows where window.isVisible && window.frame.width < 300 {
+        for window in NSApp.windows.sorted(by: { $0.windowNumber > $1.windowNumber }) where window.isVisible && window.frame.width < 300 {
             guard let content = window.contentView else { continue }
             for view in descendants(content) {
                 if String(describing: type(of: view)).contains("NSHostingView"),

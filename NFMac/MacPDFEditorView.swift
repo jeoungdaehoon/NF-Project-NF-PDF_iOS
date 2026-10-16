@@ -10,12 +10,17 @@ struct MacPDFWorkspace: View {
     var isContainerResizing = false
     var isFullscreen = false
     var onToggleFullscreen: (() -> Void)?
-    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, isFullscreen: Bool = false, onToggleFullscreen: (() -> Void)? = nil, editorDirectory: URL? = nil, onSave: ((Data) async throws -> Void)? = nil) {
+    var onExitPaneExpansion: (() -> Void)?
+    var isPaneExpanded = false
+    var onTogglePaneExpanded: (() -> Void)?
+    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, isFullscreen: Bool = false, onToggleFullscreen: (() -> Void)? = nil, onExitPaneExpansion: (() -> Void)? = nil, isPaneExpanded: Bool = false, onTogglePaneExpanded: (() -> Void)? = nil, editorDirectory: URL? = nil, onSave: ((Data) async throws -> Void)? = nil) {
         let editor = MacPDFEditorState(document: document, identifier: identifier, fileName: fileName, sourceURL: sourceURL, cookieHeader: cookieHeader, sourceData: sourceData, directory: editorDirectory)
         editor.onSave = onSave; editor.exportOnSave = exportOnSave; _state = StateObject(wrappedValue: editor); self.isContainerResizing = isContainerResizing
         self.isFullscreen = isFullscreen; self.onToggleFullscreen = onToggleFullscreen
+        self.onExitPaneExpansion = onExitPaneExpansion
+        self.isPaneExpanded = isPaneExpanded; self.onTogglePaneExpanded = onTogglePaneExpanded
     }
-    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing, isFullscreen: isFullscreen, onToggleFullscreen: onToggleFullscreen) }
+    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing, isFullscreen: isFullscreen, onToggleFullscreen: onToggleFullscreen, onExitPaneExpansion: onExitPaneExpansion, isPaneExpanded: isPaneExpanded, onTogglePaneExpanded: onTogglePaneExpanded) }
 }
 
 struct MacPDFEditorView: View {
@@ -23,6 +28,9 @@ struct MacPDFEditorView: View {
     var isContainerResizing = false
     var isFullscreen = false
     var onToggleFullscreen: (() -> Void)?
+    var onExitPaneExpansion: (() -> Void)?
+    var isPaneExpanded = false
+    var onTogglePaneExpanded: (() -> Void)?
     @StateObject private var sharing = MacPDFExportController()
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
@@ -38,7 +46,7 @@ struct MacPDFEditorView: View {
                 if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 160); Divider() }
                 GeometryReader { geometry in
                     ZStack(alignment: .bottom) {
-                        MacPDFCanvas(state: state, isContainerResizing: isContainerResizing)
+                        MacPDFCanvas(state: state, isContainerResizing: isContainerResizing, onExitPaneExpansion: onExitPaneExpansion)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !state.presentation {
                             floatingToolbar
@@ -118,7 +126,12 @@ struct MacPDFEditorView: View {
                 }
                 Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
                     .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
-                Button("PDF 다운로드") { sharing.download(state) }
+                if let onTogglePaneExpanded, !isFullscreen {
+                    MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
+                    .frame(width: 22, height: 22)
+                    .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
+                }
+                MacPDFActionButton(title: "PDF 다운로드", identifier: "pdf.download") { sharing.download(state) }.frame(width: 90, height: 22)
                 Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
                     Button(isFullscreen ? "전체화면 종료" : "전체화면 보기") { toggleFullscreen() }
@@ -163,7 +176,8 @@ struct MacPDFEditorView: View {
     private var toolButtons: some View {
         ForEach(MacPDFTool.allCases) { tool in
             MacPDFActionButton(title: "", symbol: tool.symbol, identifier: "pdf.tool.\(tool.rawValue)", accessibilityTitle: tool.title) { state.selectTool(tool) }
-                .frame(width: 32, height: 30).background(state.tool == tool ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool.title).accessibilityLabel(tool.title)
+                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool) ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
+                .accessibilityValue(tool == .connector ? (state.connectorEnabled ? "켜짐" : "꺼짐") : (state.tool == tool ? "선택됨" : ""))
         }
     }
     private var options: some View {
@@ -206,7 +220,7 @@ struct MacPDFEditorView: View {
                 }
                 if state.tool == .text { MacPDFActionButton(title: "텍스트 박스 추가", identifier: "pdf.add.text") { state.addVisibleObject(.text) }.frame(height: 30) }
                 if state.tool == .text || state.selected?.kind == .text { textOptions }
-                if state.tool == .connector || state.selected?.kind == .connector { connectorOptions }
+                if state.connectorEnabled || state.selected?.kind == .connector { connectorOptions }
                 if !state.selection.isEmpty { selectedOptions }
                 Divider()
                 if state.tool == .image {
@@ -241,10 +255,14 @@ struct MacPDFEditorView: View {
     }
     private var connectorOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("연결선", selection: styleBinding(\.connectorRoute, field: "connectorRoute")) { Text("직선").tag("straight"); Text("꺾인선").tag("elbow"); Text("곡선").tag("curve") }
-            Toggle("화살표", isOn: styleBinding(\.arrow, field: "arrow")); Toggle("점선", isOn: styleBinding(\.dashed, field: "dashed"))
-            Text("연결 도구에서 시작 객체와 끝 객체를 차례로 클릭하세요. 같은 페이지의 도형·텍스트·이미지를 연결할 수 있습니다.").font(.caption)
+            Picker("연결선", selection: connectionStyleBinding(\.connectorRoute, field: "connectorRoute")) { Text("직선").tag("straight"); Text("꺾인선").tag("elbow"); Text("곡선").tag("curve") }
+            Toggle("화살표", isOn: connectionStyleBinding(\.arrow, field: "arrow")); Toggle("점선", isOn: connectionStyleBinding(\.dashed, field: "dashed"))
+            ColorPicker("연결선 색상", selection: Binding(get: { Color(nsColor: state.connectionStyle.stroke.color) }, set: { value in var next = state.connectionStyle; next.stroke = .init(NSColor(value)); state.setConnectionStyle(next, field: "stroke") }), supportsOpacity: true)
+            Slider(value: connectionStyleBinding(\.width, field: "width"), in: 0.5...12) { Text("연결선 두께") }
+            Text("연결점을 켠 뒤 아이템을 선택하세요. 상하좌우 화살표를 다른 아이템으로 드래그하고, 대상이 강조되면 놓아 연결합니다. 다른 도구를 선택해도 연결점은 켜진 상태로 유지됩니다.").font(.caption)
             if state.selected?.kind == .connector {
+                Text("선 중간의 원형 점을 드래그하면 양 끝 연결을 유지하면서 경로를 조정합니다.").font(.caption)
+                Button("중간 경로 초기화") { state.updateSelected { $0.connectorOffset = nil } }
                 Picker("시작 연결점", selection: Binding(get: { state.selected.map { anchorIndex($0.sourceAnchor) } ?? 0 }, set: { index in state.updateSelected { $0.sourceAnchor = anchor(index) } })) { anchorLabels }
                 Picker("끝 연결점", selection: Binding(get: { state.selected.map { anchorIndex($0.targetAnchor) } ?? 1 }, set: { index in state.updateSelected { $0.targetAnchor = anchor(index) } })) { anchorLabels }
                 Button("연결 해제", role: .destructive) { state.deleteSelected() }
@@ -252,6 +270,9 @@ struct MacPDFEditorView: View {
         }
     }
     private var anchorLabels: some View { Group { Text("왼쪽").tag(0); Text("오른쪽").tag(1); Text("위").tag(2); Text("아래").tag(3) } }
+    private func connectionStyleBinding<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
+        Binding(get: { state.connectionStyle[keyPath: key] }, set: { value in var next = state.connectionStyle; next[keyPath: key] = value; state.setConnectionStyle(next, field: field) })
+    }
     private func anchor(_ index: Int) -> MacPDFPoint { MacPDFPoint([CGPoint(x: 0, y: 0.5), CGPoint(x: 1, y: 0.5), CGPoint(x: 0.5, y: 1), CGPoint(x: 0.5, y: 0)][index]) }
     private func anchorIndex(_ p: MacPDFPoint) -> Int { p.x == 0 ? 0 : p.x == 1 ? 1 : p.y == 1 ? 2 : 3 }
     private var selectedOptions: some View {

@@ -5,18 +5,21 @@ import SwiftUI
 struct MacPDFCanvas: NSViewRepresentable {
     @ObservedObject var state: MacPDFEditorState
     var isContainerResizing = false
+    var onExitPaneExpansion: (() -> Void)?
     func makeNSView(context: Context) -> MacPDFEditingView {
         let view = MacPDFEditingView(); view.editor = state; state.canvas = view
+        view.onExitPaneExpansion = onExitPaneExpansion
         view.document = state.document; view.minScaleFactor = 0.1; view.maxScaleFactor = 10
         view.displayMode = .singlePageContinuous; view.displaysPageBreaks = true; view.autoScales = true
         view.installObservers(); view.refreshAnnotations(); return view
     }
     func updateNSView(_ view: MacPDFEditingView, context: Context) {
+        view.onExitPaneExpansion = onExitPaneExpansion
         if view.document !== state.document { view.finishTextEditing(); view.document = state.document; view.refreshAnnotations() }
         if isContainerResizing { view.autoScales = false }
         state.configureView(); view.updateInteractionOverlay()
     }
-    static func dismantleNSView(_ view: MacPDFEditingView, coordinator: ()) { view.finishTextEditing(); view.removeObservers() }
+    static func dismantleNSView(_ view: MacPDFEditingView, coordinator: ()) { view.onExitPaneExpansion = nil; view.finishTextEditing(); view.removeObservers() }
 }
 
 /// Route the PDF surface through one editor. Native text inputs and SwiftUI
@@ -24,10 +27,34 @@ struct MacPDFCanvas: NSViewRepresentable {
 /// editing gestures before our tool handlers see them.
 final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     weak var editor: MacPDFEditorState?
+    var onExitPaneExpansion: (() -> Void)?
     private var observers: [NSObjectProtocol] = []
     private var start: CGPoint?, dragPage: PDFPage?
     private var beforeDrag: [MacPDFObject] = [], samples: [MacPDFPoint] = []
-    private var draft: MacPDFObject?, resizeHandle: Int?, connectorSource: UUID?
+    private var draft: MacPDFObject?, resizeHandle: Int?
+    struct ConnectionHandle { let anchor: MacPDFPoint; let center: CGPoint; let direction: CGVector }
+    private struct ConnectionDrag {
+        let source: UUID, page: Int, anchor: MacPDFPoint, style: MacPDFStyle
+        var end: CGPoint
+        var target: UUID?
+        var targetAnchor = MacPDFPoint(CGPoint(x: 0, y: 0.5))
+    }
+    private var connectionDrag: ConnectionDrag?
+    private struct RouteDrag {
+        let id: UUID, page: Int, mouseOrigin: CGPoint, controlOrigin: CGPoint
+        let before: [MacPDFObject]
+    }
+    private var routeDrag: RouteDrag?
+    private var connectionPortsPath: CGPath?, connectionGlyphsPath: CGPath?
+    private var connectionPreviewPath: CGPath?, connectionTargetPath: CGPath?
+    var connectionTargetID: UUID? { connectionDrag?.target }
+    var hasConnectionPreview: Bool { connectionDrag != nil }
+    var connectorRouteHandle: CGPoint? {
+        guard let editor, !editor.isTextEditing, editor.selection.count == 1,
+              let object = editor.selected, object.kind == .connector,
+              let p = MacPDFObjectRenderer.connectorControlPoint(object, objects: editor.objects), let page = document?.page(at: object.page) else { return nil }
+        return convert(p, from: page)
+    }
     private var rotating = false, moving = false, activeTool = MacPDFTool.view
     private var panStart: CGPoint?, panOrigin: CGPoint?, commandStart: (CGFloat, CGFloat)?
     private var textView: NSTextView?, editingTextID: UUID?
@@ -140,6 +167,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             path.move(to: CGPoint(x: remove.x - 3, y: remove.y + 3)); path.addLine(to: CGPoint(x: remove.x + 3, y: remove.y - 3))
         }
         CATransaction.begin(); CATransaction.setDisableActions(true); interactionLayer.frame = bounds; interactionLayer.path = path; CATransaction.commit()
+        updateConnectionOverlay()
         if let object = editor.selected, let page = document?.page(at: object.page) {
             let objectBounds = object.kind == .connector ? (MacPDFObjectRenderer.connectorPath(object, objects: editor.objects)?.boundingBoxOfPath ?? object.bounds) : object.bounds
             let rect = convert(selectionBounds() ?? objectBounds, from: page).standardized
@@ -169,37 +197,138 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             return object.bounds.insetBy(dx: -4 / scaleFactor, dy: -4 / scaleFactor).contains(p)
         }
     }
-    func cancelGesture() { draft = nil; start = nil; dragPage = nil; samples = []; moving = false; rotating = false; resizeHandle = nil; connectorSource = nil; panStart = nil; panOrigin = nil; refreshAnnotations() }
+    static let connectionAnchors = [CGPoint(x: 0, y: 0.5), CGPoint(x: 1, y: 0.5), CGPoint(x: 0.5, y: 1), CGPoint(x: 0.5, y: 0)]
+    private func isConnectable(_ object: MacPDFObject) -> Bool { [.shape, .text, .image].contains(object.kind) && !object.isTransient }
+    var connectionHandles: [ConnectionHandle] {
+        guard let editor, editor.connectorEnabled, !editor.isTextEditing, editor.selection.count == 1,
+              let object = editor.selected, isConnectable(object), let page = document?.page(at: object.page) else { return [] }
+        let center = convert(CGPoint(x: object.bounds.midX, y: object.bounds.midY), from: page)
+        return Self.connectionAnchors.map { anchor in
+            let p = convert(MacPDFObjectRenderer.anchor(object, MacPDFPoint(anchor)), from: page)
+            let length = max(0.001, hypot(p.x - center.x, p.y - center.y))
+            let direction = CGVector(dx: (p.x - center.x) / length, dy: (p.y - center.y) / length)
+            return ConnectionHandle(anchor: MacPDFPoint(anchor), center: CGPoint(x: p.x + direction.dx * 40, y: p.y + direction.dy * 40), direction: direction)
+        }
+    }
+    private func updateConnectionOverlay() {
+        let ports = CGMutablePath(), glyphs = CGMutablePath(), preview = CGMutablePath(), targetPath = CGMutablePath()
+        for handle in connectionHandles {
+            let p = handle.center, d = handle.direction
+            ports.addEllipse(in: CGRect(x: p.x - 11, y: p.y - 11, width: 22, height: 22))
+            let tip = CGPoint(x: p.x + d.dx * 6, y: p.y + d.dy * 6)
+            glyphs.move(to: CGPoint(x: p.x - d.dx * 5, y: p.y - d.dy * 5)); glyphs.addLine(to: tip)
+            glyphs.move(to: CGPoint(x: tip.x - d.dx * 5 - d.dy * 4, y: tip.y - d.dy * 5 + d.dx * 4))
+            glyphs.addLine(to: tip); glyphs.addLine(to: CGPoint(x: tip.x - d.dx * 5 + d.dy * 4, y: tip.y - d.dy * 5 - d.dx * 4))
+        }
+        if let drag = connectionDrag, let editor, let source = editor.objects.first(where: { $0.id == drag.source }), let page = document?.page(at: drag.page) {
+            let a = MacPDFObjectRenderer.anchor(source, drag.anchor), b = drag.end
+            let path = MacPDFObjectRenderer.connectionPath(from: a, to: b, route: drag.style.connectorRoute)
+            // PDF-to-view conversion includes zoom and page rotation.
+            let origin = convert(CGPoint.zero, from: page), x = convert(CGPoint(x: 1, y: 0), from: page), y = convert(CGPoint(x: 0, y: 1), from: page)
+            var transform = CGAffineTransform(a: x.x - origin.x, b: x.y - origin.y, c: y.x - origin.x, d: y.y - origin.y, tx: origin.x, ty: origin.y)
+            if let converted = path.copy(using: &transform) { preview.addPath(converted) }
+            let end = convert(b, from: page)
+            let previous = drag.style.connectorRoute == "straight" ? a : CGPoint(x: (a.x + b.x) / 2, y: b.y)
+            let prior = convert(previous, from: page), angle = atan2(end.y - prior.y, end.x - prior.x)
+            preview.move(to: CGPoint(x: end.x - 10 * cos(angle - 0.45), y: end.y - 10 * sin(angle - 0.45)))
+            preview.addLine(to: end); preview.addLine(to: CGPoint(x: end.x - 10 * cos(angle + 0.45), y: end.y - 10 * sin(angle + 0.45)))
+            if let target = editor.objects.first(where: { $0.id == drag.target }) {
+                let corners = MacPDFObjectRenderer.corners(target).map { convert($0, from: page) }
+                if let first = corners.first { targetPath.move(to: first); corners.dropFirst().forEach { targetPath.addLine(to: $0) }; targetPath.closeSubpath() }
+            }
+        }
+        connectionPortsPath = ports; connectionGlyphsPath = glyphs
+        connectionPreviewPath = preview; connectionTargetPath = targetPath
+        drawingOverlay.needsDisplay = true
+    }
+    // Draw through the same native overlay as editable objects, above PDFKit's
+    // page layers, so the handles/hover feedback remain visible at every zoom.
+    func drawConnectionOverlay(in context: CGContext) {
+        context.saveGState(); defer { context.restoreGState() }
+        context.setStrokeColor(NSColor.systemBlue.cgColor); context.setLineWidth(2); context.setLineJoin(.round); context.setLineCap(.round)
+        if let path = connectionTargetPath, !path.isEmpty {
+            context.saveGState()
+            context.setFillColor(NSColor.systemBlue.withAlphaComponent(0.15).cgColor)
+            context.setShadow(offset: .zero, blur: 6, color: NSColor.systemBlue.withAlphaComponent(0.65).cgColor)
+            context.addPath(path); context.drawPath(using: .fillStroke); context.restoreGState()
+        }
+        if let path = connectionPreviewPath { context.addPath(path); context.strokePath() }
+        if let path = connectionPortsPath { context.setFillColor(NSColor.white.cgColor); context.addPath(path); context.drawPath(using: .fillStroke) }
+        if let path = connectionGlyphsPath { context.addPath(path); context.strokePath() }
+        if let p = connectorRouteHandle, let color = editor?.selected?.style.stroke.color {
+            let circle = CGRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)
+            context.setLineWidth(2); context.setStrokeColor(NSColor.white.cgColor)
+            context.setFillColor(color.withAlphaComponent(1).cgColor)
+            context.fillEllipse(in: circle); context.strokeEllipse(in: circle)
+        }
+    }
+    private func updateRouteDrag(_ event: NSEvent) {
+        guard let drag = routeDrag, let editor, let page = document?.page(at: drag.page),
+              let index = editor.objects.firstIndex(where: { $0.id == drag.id }),
+              let (a, b) = MacPDFObjectRenderer.endpoints(editor.objects[index], objects: editor.objects) else { return }
+        let mouse = convert(convert(event.locationInWindow, from: nil), to: page), box = page.bounds(for: .cropBox)
+        let point = CGPoint(x: min(box.maxX, max(box.minX, drag.controlOrigin.x + mouse.x - drag.mouseOrigin.x)),
+                            y: min(box.maxY, max(box.minY, drag.controlOrigin.y + mouse.y - drag.mouseOrigin.y)))
+        editor.objects[index].connectorOffset = MacPDFPoint(CGPoint(x: point.x - (a.x + b.x) / 2, y: point.y - (a.y + b.y) / 2))
+        refreshAnnotations()
+    }
+    private func updateConnectionDrag(_ event: NSEvent) {
+        guard var drag = connectionDrag, let editor, let page = document?.page(at: drag.page) else { return }
+        let viewPoint = convert(event.locationInWindow, from: nil), point = convert(viewPoint, to: page)
+        drag.end = point; drag.target = nil
+        if bounds.contains(viewPoint), self.page(for: viewPoint, nearest: false) === page,
+           let target = editor.pageObjects(drag.page).reversed().first(where: { $0.id != drag.source && isConnectable($0) && objectContains($0, point: point) }) {
+            let anchor = Self.connectionAnchors.min { lhs, rhs in
+                let a = MacPDFObjectRenderer.anchor(target, MacPDFPoint(lhs)), b = MacPDFObjectRenderer.anchor(target, MacPDFPoint(rhs))
+                return hypot(a.x - point.x, a.y - point.y) < hypot(b.x - point.x, b.y - point.y)
+            }!
+            drag.target = target.id; drag.targetAnchor = MacPDFPoint(anchor)
+            drag.end = MacPDFObjectRenderer.anchor(target, drag.targetAnchor)
+        }
+        connectionDrag = drag; updateConnectionOverlay()
+    }
+    private func objectContains(_ object: MacPDFObject, point: CGPoint) -> Bool {
+        let dx = point.x - object.bounds.midX, dy = point.y - object.bounds.midY
+        let local = CGPoint(x: object.bounds.midX + dx * cos(-object.rotation) - dy * sin(-object.rotation), y: object.bounds.midY + dx * sin(-object.rotation) + dy * cos(-object.rotation))
+        return object.bounds.contains(local)
+    }
+    func cancelGesture() {
+        if let drag = routeDrag, let editor, let original = drag.before.first(where: { $0.id == drag.id }), let index = editor.objects.firstIndex(where: { $0.id == drag.id }) { editor.objects[index] = original }
+        routeDrag = nil; draft = nil; start = nil; dragPage = nil; samples = []; moving = false; rotating = false; resizeHandle = nil; connectionDrag = nil; panStart = nil; panOrigin = nil; refreshAnnotations()
+    }
     override func mouseDown(with event: NSEvent) {
         guard let editor else { super.mouseDown(with: event); return }
         if event.modifierFlags.contains(.command), editor.tool == .view { commandStart = (event.locationInWindow.x, scaleFactor); return }
         finishTextEditing(); window?.makeFirstResponder(self); activeTool = editor.tool; editor.menuVisible = false
-        if editor.tool == .view || event.modifierFlags.contains(.option) {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        if !event.modifierFlags.contains(.option), let handle = connectorRouteHandle,
+           hypot(handle.x - viewPoint.x, handle.y - viewPoint.y) <= 12,
+           let object = editor.selected, let control = MacPDFObjectRenderer.connectorControlPoint(object, objects: editor.objects), let page = document?.page(at: object.page) {
+            routeDrag = RouteDrag(id: object.id, page: object.page, mouseOrigin: convert(viewPoint, to: page), controlOrigin: control, before: editor.objects)
+            return
+        }
+        if !event.modifierFlags.contains(.option), let source = editor.selected,
+           let handle = connectionHandles.first(where: { hypot($0.center.x - viewPoint.x, $0.center.y - viewPoint.y) <= 13 }) {
+            connectionDrag = ConnectionDrag(source: source.id, page: source.page, anchor: handle.anchor, style: editor.connectionStyle, end: MacPDFObjectRenderer.anchor(source, handle.anchor))
+            updateConnectionOverlay(); return
+        }
+        let pickedLocation = location(event)
+        let connectionPick = editor.connectorEnabled && pickedLocation.map { page, point in hit(point, page: document?.index(for: page) ?? -1) != nil } == true
+        if (editor.tool == .view && !connectionPick) || event.modifierFlags.contains(.option) {
             panStart = convert(event.locationInWindow, from: nil); panOrigin = documentView?.enclosingScrollView?.contentView.bounds.origin; NSCursor.closedHand.set(); return
         }
         guard let (page, point) = location(event), let document else { editor.selection = []; return }
         editor.currentPage = document.index(for: page); start = point; dragPage = page; beforeDrag = editor.objects
         resizeHandle = nil; rotating = false; moving = false; samples = [MacPDFPoint(point, pressure: pressure(event))]
-        if [.select, .text, .image, .shape, .lasso, .connector].contains(activeTool), let rect = selectionBounds(), editor.selected?.page == editor.currentPage {
+        if editor.connectorEnabled || [.select, .text, .image, .shape, .lasso].contains(activeTool), let rect = selectionBounds(), editor.selected?.page == editor.currentPage {
             let scale = max(scaleFactor, 0.1), remove = CGPoint(x: rect.minX - 18 / max(scaleFactor, 0.1), y: rect.maxY + 18 / max(scaleFactor, 0.1))
             if hypot(remove.x - point.x, remove.y - point.y) < 10 / scale { editor.deleteSelected(); start = nil; return }
             rotating = hypot(rect.midX - point.x, rect.maxY + 24 / scale - point.y) < 10 / scale
             resizeHandle = Self.handles(rect).firstIndex { hypot($0.x - point.x, $0.y - point.y) < 10 / scale }
             if rotating || resizeHandle != nil || (editor.selection.count > 1 && rect.contains(point)) { moving = true; return }
         }
-        if activeTool == .lasso { editor.selection = []; updateInteractionOverlay(); return }
-        if activeTool == .connector {
-            if let picked = hit(point, page: editor.currentPage), picked.kind == .connector { editor.selectObjects([picked.id], showMenu: true); start = nil; return }
-            guard let picked = hit(point, page: editor.currentPage), [.shape, .text, .image].contains(picked.kind) else { connectorSource = nil; start = nil; return }
-            if let source = connectorSource, source != picked.id, let first = editor.objects.first(where: { $0.id == source && $0.page == picked.page }) {
-                let right = first.bounds.midX <= picked.bounds.midX
-                var object = MacPDFObject(page: picked.page, kind: .connector, bounds: page.bounds(for: .cropBox), style: editor.style, sourceID: source, targetID: picked.id)
-                object.sourceAnchor = MacPDFPoint(CGPoint(x: right ? 1 : 0, y: 0.5)); object.targetAnchor = MacPDFPoint(CGPoint(x: right ? 0 : 1, y: 0.5))
-                editor.add(object); connectorSource = nil; editor.menuVisible = true
-            } else { connectorSource = picked.id; editor.selection = [picked.id]; refreshAnnotations() }
-            start = nil; return
-        }
-        if [.select, .text, .image, .shape].contains(activeTool) {
+        if activeTool == .lasso && !connectionPick { editor.selection = []; updateInteractionOverlay(); return }
+        if connectionPick || [.select, .text, .image, .shape].contains(activeTool) {
             if let picked = hit(point, page: editor.currentPage) {
                 if event.modifierFlags.contains(.shift) { if editor.selection.contains(picked.id) { editor.selection.remove(picked.id) } else { editor.selection.insert(picked.id) } }
                 else if !editor.selection.contains(picked.id) { editor.selection = [picked.id] }
@@ -213,6 +342,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         else if [.pen, .highlighter, .neon].contains(activeTool) { editor.selection = []; updateInkDraft(editor, page: editor.currentPage) }
     }
     override func mouseDragged(with event: NSEvent) {
+        if routeDrag != nil { updateRouteDrag(event); return }
+        if connectionDrag != nil { updateConnectionDrag(event); return }
         if let (x, scale) = commandStart { autoScales = false; scaleFactor = min(10, max(0.1, scale * CGFloat(pow(2, Double((event.locationInWindow.x - x) / 240))))); return }
         if let origin = panOrigin, let initial = panStart, let scroll = documentView?.enclosingScrollView {
             let p = convert(event.locationInWindow, from: nil)
@@ -264,6 +395,24 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
     }
     override func mouseUp(with event: NSEvent) {
+        if let drag = routeDrag, let editor {
+            // A click without a drag must not create a bend/undo entry.
+            let original = drag.before.first(where: { $0.id == drag.id })
+            let edited = editor.objects.first(where: { $0.id == drag.id })
+            if original != edited { updateRouteDrag(event); editor.commitObjects(from: drag.before) }
+            routeDrag = nil; editor.menuVisible = true; refreshAnnotations(); return
+        }
+        if connectionDrag != nil {
+            updateConnectionDrag(event)
+            if let drag = connectionDrag, let editor, editor.connectorEnabled,
+               let target = drag.target, let page = document?.page(at: drag.page),
+               editor.objects.contains(where: { $0.id == drag.source && $0.page == drag.page }) {
+                var object = MacPDFObject(page: drag.page, kind: .connector, bounds: page.bounds(for: .cropBox), style: drag.style, sourceID: drag.source, targetID: target)
+                object.sourceAnchor = drag.anchor; object.targetAnchor = drag.targetAnchor
+                editor.add(object); editor.selectObjects([object.id], showMenu: true)
+            }
+            connectionDrag = nil; refreshAnnotations(); return
+        }
         if commandStart != nil { commandStart = nil; return }
         if panStart != nil { panStart = nil; panOrigin = nil; NSCursor.openHand.set(); return }
         guard let editor, start != nil else { return }
@@ -402,6 +551,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     override func magnify(with event: NSEvent) { finishTextEditing(); autoScales = false; scaleFactor = min(10, max(0.1, scaleFactor * (1 + event.magnification))); updateInteractionOverlay() }
     override func keyDown(with event: NSEvent) {
         guard let editor else { super.keyDown(with: event); return }
+        if routeDrag != nil, event.keyCode == 53 { cancelGesture(); return }
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         if event.modifierFlags.contains(.command) {
             switch key {
@@ -415,7 +565,12 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             }; return
         }
         if event.keyCode == 51 || event.keyCode == 117 { editor.deleteSelected(); return }
-        if event.keyCode == 53 { cancelGesture(); editor.selection = []; editor.menuVisible = false; editor.optionsTool = nil; editor.tool = .view; finishTextEditing(); refreshAnnotations(); return }
+        if event.keyCode == 53 {
+            cancelGesture(); editor.selection = []; editor.menuVisible = false; editor.optionsTool = nil; editor.tool = .view
+            finishTextEditing(); refreshAnnotations()
+            if let exit = onExitPaneExpansion { DispatchQueue.main.async(execute: exit) }
+            return
+        }
         super.keyDown(with: event)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

@@ -63,6 +63,22 @@ struct MacPDFEditorRegression {
         let context = NSGraphicsContext(bitmapImageRep: bitmap)!.cgContext
         for shapeType in MacPDFShape.allCases { var object = shape; object.shape = shapeType; MacPDFObjectRenderer.draw(object, objects: state.objects, context: context) }
         for route in ["straight", "elbow", "curve"] { var object = connector; object.style.connectorRoute = route; object.style.dashed = true; MacPDFObjectRenderer.draw(object, objects: state.objects, context: context) }
+        // Middle-route offsets are optional in old archives and shared by the
+        // on-screen renderer, hit testing and flattened PDF export.
+        let oldConnector = try JSONDecoder().decode(MacPDFObject.self, from: JSONEncoder().encode(connector))
+        try check(oldConnector.connectorOffset == nil, "old connector archives decode without a middle offset")
+        for route in ["straight", "elbow", "curve"] {
+            var routed = connector; routed.style.connectorRoute = route; routed.style.dashed = true
+            routed.connectorOffset = MacPDFPoint(CGPoint(x: 35, y: 65))
+            let objects = [shape, text, routed], control = MacPDFObjectRenderer.connectorControlPoint(routed, objects: objects)!
+            let path = MacPDFObjectRenderer.connectorPath(routed, objects: objects)!
+            try check(path.copy(strokingWithWidth: 4, lineCap: .round, lineJoin: .round, miterLimit: 10).contains(control), "\(route) route passes through its middle grip")
+            let endpoints = MacPDFObjectRenderer.endpoints(routed, objects: objects)!
+            try check(endpoints.0 == MacPDFObjectRenderer.anchor(shape, routed.sourceAnchor) && endpoints.1 == MacPDFObjectRenderer.anchor(text, routed.targetAnchor), "\(route) middle offset preserves endpoint anchors")
+            let decoded = try JSONDecoder().decode(MacPDFObject.self, from: JSONEncoder().encode(routed))
+            try check(decoded == routed, "\(route) middle-route offset survives archive encoding")
+            MacPDFObjectRenderer.draw(routed, objects: objects, context: context)
+        }
         for points in [[], [MacPDFPoint(CGPoint(x: 20, y: 20))], transient.points] { var object = transient; object.points = points; MacPDFObjectRenderer.draw(object, objects: [], context: context); object.style.pressure = true; MacPDFObjectRenderer.draw(object, objects: [], context: context) }
         try check(bitmap.representation(using: .png, properties: [:]) != nil, "all drawing paths complete")
         let remoteDirectory = root.appendingPathComponent("remote")

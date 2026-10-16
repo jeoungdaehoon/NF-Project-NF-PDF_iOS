@@ -22,5 +22,6 @@ final class MacPDFDrawingOverlay: NSView {
             if let draft = canvas.drawingDraft, draft.page == index { MacPDFObjectRenderer.draw(draft, objects: editor.objects, context: context) }
             context.restoreGState()
         }
+        canvas.drawConnectionOverlay(in: context)
     }
 }

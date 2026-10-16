@@ -25,7 +25,9 @@ struct MacPDFObjectMenu: View {
     let onImageAction: (MacPDFImageAction) -> Void
     var body: some View {
         let image = state.selection.count == 1 && state.selected?.kind == .image
-        let rect = MacPDFMenuLayout.frame(object: state.selectionViewRect, viewport: canvasSize, preferredWidth: image ? 560 : 390)
+        // Keep the bubble clear of the four drag-to-connect handles.
+        let menuAnchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
+        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize, preferredWidth: image ? 560 : 390)
         let viewport = CGRect(origin: .zero, size: canvasSize)
         Group {
             if state.selectionViewRect.intersects(viewport) {

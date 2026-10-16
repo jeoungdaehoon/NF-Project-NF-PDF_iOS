@@ -19,13 +19,47 @@ enum MacPDFObjectRenderer {
     }
     static func connectorPath(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPath? {
         guard let (a, b) = endpoints(object, objects: objects) else { return nil }
+        let control = object.connectorOffset.map { CGPoint(x: (a.x + b.x) / 2 + CGFloat($0.x), y: (a.y + b.y) / 2 + CGFloat($0.y)) }
+        return connectionPath(from: a, to: b, route: object.style.connectorRoute, control: control)
+    }
+    static func connectorControlPoint(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPoint? {
+        guard let (a, b) = endpoints(object, objects: objects) else { return nil }
+        return CGPoint(x: (a.x + b.x) / 2 + CGFloat(object.connectorOffset?.x ?? 0), y: (a.y + b.y) / 2 + CGFloat(object.connectorOffset?.y ?? 0))
+    }
+    static func connectionPath(from a: CGPoint, to b: CGPoint, route: String, control: CGPoint? = nil) -> CGPath {
         let path = CGMutablePath(); path.move(to: a)
-        switch object.style.connectorRoute {
+        if let c = control {
+            switch route {
+            case "elbow":
+                // Both coordinates of the middle grip can move, without ever
+                // detaching either endpoint or turning orthogonal legs diagonal.
+                path.addLine(to: CGPoint(x: c.x, y: a.y)); path.addLine(to: c)
+                path.addLine(to: CGPoint(x: b.x, y: c.y)); path.addLine(to: b)
+            case "curve":
+                // Quadratic control chosen so t=0.5 passes through the grip.
+                path.addQuadCurve(to: b, control: CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2))
+            default: path.addLine(to: c); path.addLine(to: b)
+            }
+            return path
+        }
+        switch route {
         case "elbow": path.addLine(to: CGPoint(x: (a.x + b.x) / 2, y: a.y)); path.addLine(to: CGPoint(x: (a.x + b.x) / 2, y: b.y)); path.addLine(to: b)
         case "curve": path.addCurve(to: b, control1: CGPoint(x: (a.x + b.x) / 2, y: a.y), control2: CGPoint(x: (a.x + b.x) / 2, y: b.y))
         default: path.addLine(to: b)
         }
         return path
+    }
+    static func connectorArrowPrevious(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPoint? {
+        guard let (a, b) = endpoints(object, objects: objects) else { return nil }
+        if object.connectorOffset != nil, let c = connectorControlPoint(object, objects: objects) {
+            switch object.style.connectorRoute {
+            case "elbow": return abs(c.y - b.y) > 0.001 ? CGPoint(x: b.x, y: c.y) : c
+            case "curve": return CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2)
+            default: return c
+            }
+        }
+        let prior = object.style.connectorRoute == "straight" ? a : CGPoint(x: (a.x + b.x) / 2, y: b.y)
+        return hypot(prior.x - b.x, prior.y - b.y) > 0.001 ? prior : a
     }
     static func shapePath(_ type: MacPDFShape, bounds: CGRect) -> CGPath {
         let path = CGMutablePath()
@@ -111,7 +145,7 @@ enum MacPDFObjectRenderer {
             guard let path = connectorPath(object, objects: objects), let (a, b) = endpoints(object, objects: objects) else { return }
             context.addPath(path); context.strokePath()
             if style.arrow {
-                let previous = style.connectorRoute == "straight" ? a : CGPoint(x: (a.x + b.x) / 2, y: b.y)
+                let previous = connectorArrowPrevious(object, objects: objects) ?? a
                 let angle = atan2(b.y - previous.y, b.x - previous.x), length = max(9, style.width * 4)
                 context.setLineDash(phase: 0, lengths: []); context.move(to: CGPoint(x: b.x - length * cos(angle - 0.45), y: b.y - length * sin(angle - 0.45))); context.addLine(to: b); context.addLine(to: CGPoint(x: b.x - length * cos(angle + 0.45), y: b.y - length * sin(angle + 0.45))); context.strokePath()
             }

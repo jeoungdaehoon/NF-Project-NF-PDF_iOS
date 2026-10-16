@@ -49,6 +49,7 @@ import SwiftUI
         }
         let pdf = PDFDocument(), page = PDFPage(); page.setBounds(CGRect(x: 0, y: 0, width: 600, height: 1600), for: .mediaBox); pdf.insert(page, at: 0)
         let state = MacPDFEditorState(document: pdf, identifier: "ui", fileName: "fixture.pdf", directory: root)
+        state.connectionStyle = MacPDFStyle()
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 1100, height: 780), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: MacPDFEditorView(state: state)); window.contentView = host; window.orderFront(nil); host.layoutSubtreeIfNeeded(); settle()
@@ -136,11 +137,128 @@ import SwiftUI
         gesture([rotate, destination]); try check(abs(state.objects.first { $0.id == a.id }!.rotation) > 0.2, "lasso group rotation handle rotates objects")
         state.undo()
         try press("pdf.tool.connector"); state.optionsTool = nil; settle()
-        gesture([view.convert(CGPoint(x: a.bounds.midX, y: a.bounds.midY), from: page)])
-        gesture([view.convert(CGPoint(x: b.bounds.midX, y: b.bounds.midY), from: page)])
-        try check(state.selected?.kind == .connector && state.menuVisible, "two native object clicks create connector and its bubble")
+        try check(state.connectorEnabled && state.tool == .lasso, "connector toggle does not replace the active drawing tool")
+        try press("pdf.tool.select"); settle()
+        try check(state.connectorEnabled && state.tool == .select, "selecting another tool keeps connector mode enabled")
+        let source = MacPDFObject(page: 0, kind: .shape, bounds: CGRect(x: visible.midX - 180, y: visible.midY + 60, width: 90, height: 70))
+        let target = MacPDFObject(page: 0, kind: .text, bounds: CGRect(x: visible.midX + 100, y: visible.midY + 60, width: 90, height: 70), text: "Target")
+        state.add(source); state.add(target); state.selection = []; state.menuVisible = false; settle()
+        gesture([view.convert(CGPoint(x: source.bounds.midX, y: source.bounds.midY), from: page)])
+        try check(state.selection == [source.id] && view.connectionHandles.count == 4, "selected object displays four outward arrow handles")
+        func overlayColor(at point: CGPoint) -> NSColor? {
+            guard let bitmap = view.renderedEditsImage() else { return nil }
+            let sx = CGFloat(bitmap.pixelsWide) / view.bounds.width, sy = CGFloat(bitmap.pixelsHigh) / view.bounds.height
+            return bitmap.colorAt(x: Int(point.x * sx), y: Int((view.isFlipped ? point.y : view.bounds.height - point.y) * sy))?.usingColorSpace(.deviceRGB)
+        }
+        let paintedHandle = overlayColor(at: view.connectionHandles[0].center)
+        try check(paintedHandle != nil && paintedHandle!.blueComponent > paintedHandle!.redComponent + 0.1, "connector arrows are visibly painted, not only hit-test regions")
+        gesture([view.convert(CGPoint(x: target.bounds.midX, y: target.bounds.midY), from: page)])
+        try check(!state.objects.contains { $0.kind == .connector }, "clicking two objects no longer creates a connection")
+        gesture([view.convert(CGPoint(x: source.bounds.midX, y: source.bounds.midY), from: page)])
+        state.menuVisible = false; settle()
+        func dispatch(_ type: NSEvent.EventType, _ point: CGPoint) {
+            let event = NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0.6)!
+            app.postEvent(event, atStart: false)
+            while let next = app.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) { app.sendEvent(next) }
+            settle()
+        }
+        let sourcePort = view.connectionHandles.first { $0.anchor.x == 1 }!
+        let targetPoint = view.convert(CGPoint(x: target.bounds.minX + 4, y: target.bounds.midY), from: page)
+        let connectionUndo = state.undoCount
+        dispatch(.leftMouseDown, sourcePort.center)
+        dispatch(.leftMouseDragged, targetPoint)
+        try check(view.hasConnectionPreview && view.connectionTargetID == target.id, "drag shows a live arrow and highlights its target")
+        let highlighted = overlayColor(at: view.convert(CGPoint(x: target.bounds.minX + 10, y: target.bounds.minY + 10), from: page))
+        try check(highlighted != nil && highlighted!.alphaComponent > 0.05 && highlighted!.blueComponent > highlighted!.redComponent, "target activation is visibly painted")
+        try check(!state.objects.contains { $0.kind == .connector } && state.undoCount == connectionUndo, "drag preview does not create or save a connection before release")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-connector-drag.png")) }
+        dispatch(.leftMouseUp, targetPoint)
+        try check(state.selected?.kind == .connector && state.menuVisible && !view.hasConnectionPreview && view.connectionTargetID == nil, "release creates connection and clears transient target highlight")
+        let connected = state.selected!
+        try check(connected.sourceID == source.id && connected.targetID == target.id && connected.sourceAnchor.x == 1 && connected.targetAnchor.x == 0 && connected.style.arrow,
+            "connection attaches to the dragged source edge and nearest target edge")
+        try check(state.undoCount == connectionUndo + 1, "one completed drag is one undo operation")
+        state.undo(); try check(!state.objects.contains { $0.id == connected.id }, "undo removes completed connection")
+        state.redo(); try check(state.objects.contains { $0 == connected }, "redo restores the same anchors and connection")
+        state.selectObjects([source.id], showMenu: false); settle()
+        let blankDrop = view.convert(CGPoint(x: visible.midX, y: visible.midY - 250), from: page)
+        let objectsBeforeCancel = state.objects, undoBeforeCancel = state.undoCount
+        let bottomPort = view.connectionHandles.first { $0.anchor.y == 0 }!
+        dispatch(.leftMouseDown, bottomPort.center); dispatch(.leftMouseDragged, targetPoint)
+        dispatch(.leftMouseDragged, blankDrop)
+        try check(view.hasConnectionPreview && view.connectionTargetID == nil, "leaving target clears its activation highlight")
+        dispatch(.leftMouseUp, blankDrop)
+        try check(state.objects == objectsBeforeCancel && state.undoCount == undoBeforeCancel && !view.hasConnectionPreview, "dropping on empty space cancels without an undo entry")
+        let leftPort = view.connectionHandles.first { $0.anchor.x == 0 }!
+        gesture([leftPort.center, view.convert(CGPoint(x: source.bounds.midX, y: source.bounds.midY), from: page)])
+        try check(state.objects == objectsBeforeCancel, "dropping back onto source never creates a self-connection")
+        for anchor in MacPDFEditingView.connectionAnchors {
+            state.selectObjects([source.id], showMenu: false); settle()
+            let handle = view.connectionHandles.first { $0.anchor.cgPoint == anchor }!
+            gesture([handle.center, targetPoint])
+            try check(state.selected?.kind == .connector && state.selected?.sourceAnchor.cgPoint == anchor, "drag-to-connect works from edge \(anchor)")
+            state.undo()
+        }
+        state.selectObjects([source.id], showMenu: false); settle()
+        let sourceStyleBefore = state.selected!.style
+        var nextConnectionStyle = state.connectionStyle; nextConnectionStyle.connectorRoute = "elbow"
+        state.setConnectionStyle(nextConnectionStyle, field: "connectorRoute")
+        try check(state.selected!.style == sourceStyleBefore && state.connectionStyle.connectorRoute == "elbow", "connector settings do not change the selected source item")
+        let topPort = view.connectionHandles.first { $0.anchor.y == 1 }!
+        gesture([topPort.center, targetPoint])
+        try check(state.selected?.kind == .connector && state.selected?.style.connectorRoute == "elbow", "new connection uses independent connector styling")
+        state.undo()
+        state.selectObjects([target.id], showMenu: false); settle()
+        try check(view.connectionHandles.count == 4, "text items also expose four connector handles")
+        state.selectObjects([inserted.id], showMenu: false); settle()
+        try check(view.connectionHandles.count == 4, "image items also expose four connector handles")
+        state.selectObjects([connected.id], showMenu: true); settle()
         var connectorStyle = state.style; connectorStyle.dashed = true; state.setStyle(connectorStyle, field: "dashed")
         try check(state.selected?.style.dashed == true, "connector style changes apply immediately")
+        state.menuVisible = false; settle()
+        let routeOrigin = MacPDFObjectRenderer.connectorControlPoint(state.selected!, objects: state.objects)!
+        let routeHandle = view.connectorRouteHandle!
+        let gripColor = overlayColor(at: routeHandle)
+        try check(gripColor != nil && gripColor!.blueComponent > gripColor!.redComponent, "selected dashed connector paints its circular middle grip")
+        let beforeBend = state.selected!, beforeBendObjects = state.objects, beforeBendUndo = state.undoCount
+        gesture([routeHandle])
+        try check(state.objects == beforeBendObjects && state.undoCount == beforeBendUndo, "clicking middle grip without moving does not change the route")
+        state.menuVisible = false; settle()
+        let bendPoint = CGPoint(x: routeOrigin.x + 35, y: routeOrigin.y + 45)
+        let bendViewPoint = view.convert(bendPoint, from: page)
+        dispatch(.leftMouseDown, view.connectorRouteHandle!)
+        dispatch(.leftMouseDragged, bendViewPoint)
+        try check(state.undoCount == beforeBendUndo && state.selected?.connectorOffset != nil, "middle grip previews route change without adding undo entries during drag")
+        dispatch(.leftMouseUp, bendViewPoint)
+        let bent = state.selected!
+        try check(abs(bent.connectorOffset!.x - 35) < 0.5 && abs(bent.connectorOffset!.y - 45) < 0.5 && state.undoCount == beforeBendUndo + 1, "middle grip moves route in both axes as one undo operation")
+        try check(bent.sourceID == beforeBend.sourceID && bent.targetID == beforeBend.targetID && bent.sourceAnchor == beforeBend.sourceAnchor && bent.targetAnchor == beforeBend.targetAnchor && bent.style.dashed,
+            "route adjustment preserves attached endpoints and dashed style")
+        state.undo(); try check(state.objects.first { $0.id == connected.id }?.connectorOffset == nil, "undo restores original route")
+        state.redo(); state.selectObjects([connected.id], showMenu: false); settle()
+        try check(state.selected?.connectorOffset == bent.connectorOffset, "redo restores adjusted route")
+        for delta in [CGPoint(x: -20, y: 0), CGPoint(x: 20, y: 0), CGPoint(x: 0, y: 20), CGPoint(x: 0, y: -20)] {
+            state.menuVisible = false; settle()
+            let oldPoint = MacPDFObjectRenderer.connectorControlPoint(state.selected!, objects: state.objects)!
+            let targetPoint = CGPoint(x: oldPoint.x + delta.x, y: oldPoint.y + delta.y)
+            gesture([view.connectorRouteHandle!, view.convert(targetPoint, from: page)])
+            let changed = MacPDFObjectRenderer.connectorControlPoint(state.selected!, objects: state.objects)!
+            try check(hypot(changed.x - targetPoint.x, changed.y - targetPoint.y) < 0.5, "middle grip adjusts route in direction \(delta)")
+        }
+        state.menuVisible = false; settle()
+        let beforeCancelRoute = state.selected!, beforeCancelUndo = state.undoCount
+        dispatch(.leftMouseDown, view.connectorRouteHandle!)
+        dispatch(.leftMouseDragged, view.convert(CGPoint(x: bendPoint.x + 40, y: bendPoint.y + 40), from: page))
+        try check(state.selected != beforeCancelRoute && state.undoCount == beforeCancelUndo, "route drag is active before Escape cancellation")
+        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+        // This off-screen, prohibited-activation fixture has no key window for
+        // NSApplication keyboard routing. Dispatch through its actual NSWindow.
+        window.makeFirstResponder(view); window.sendEvent(escape); settle()
+        try check(state.selected == beforeCancelRoute && state.undoCount == beforeCancelUndo, "Escape cancels middle-route drag without changing selection or history")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-connector-middle-grip.png")) }
+        try press("pdf.tool.connector")
+        try check(!state.connectorEnabled && view.connectionHandles.isEmpty, "pressing connector toggle again disables handles")
         try press("pdf.tool.highlighter"); state.optionsTool = nil; settle()
         let markerStart = CGPoint(x: view.bounds.midX + 100, y: view.bounds.midY + 120)
         gesture([markerStart, CGPoint(x: markerStart.x + 100, y: markerStart.y)])
