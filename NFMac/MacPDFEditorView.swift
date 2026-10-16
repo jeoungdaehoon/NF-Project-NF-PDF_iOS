@@ -104,6 +104,7 @@ struct MacPDFEditorView: View {
         .accessibilityIdentifier("pdf.editor")
     }
     private var header: some View {
+        HStack(spacing: 0) {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 Button { state.showPages.toggle() } label: { Image(systemName: "sidebar.left") }.help("페이지 목록")
@@ -126,11 +127,6 @@ struct MacPDFEditorView: View {
                 }
                 Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
                     .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
-                if let onTogglePaneExpanded, !isFullscreen {
-                    MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
-                    .frame(width: 22, height: 22)
-                    .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
-                }
                 MacPDFActionButton(title: "PDF 다운로드", identifier: "pdf.download") { sharing.download(state) }.frame(width: 90, height: 22)
                 Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
@@ -142,6 +138,16 @@ struct MacPDFEditorView: View {
                     Button("편집 도구 설정 초기화") { showReset = true }
                 }
             }.buttonStyle(.borderless).padding(10)
+        }
+        .frame(maxWidth: .infinity)
+        if let onTogglePaneExpanded, !isFullscreen {
+            // Keep the pane action pinned to the right, even when the other
+            // toolbar controls need horizontal scrolling in a narrow pane.
+            MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
+                .frame(width: 22, height: 22)
+                .padding(.horizontal, 10)
+                .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
+        }
         }
         .onChange(of: state.horizontal) { _, _ in state.configureView() }
         .onChange(of: state.paged) { _, _ in state.configureView() }

@@ -89,10 +89,17 @@ private struct PaneFixture: View {
             try check(corner != nil && header != nil && abs(corner!.redComponent - header!.redComponent) < 0.02 && abs(corner!.greenComponent - header!.greenComponent) < 0.02 && abs(corner!.blueComponent - header!.blueComponent) < 0.02,
                 "top-left PDF viewer corner is square and fully filled, not rounded/cut out")
         }
-        try check(find("pdf.expandPane") != nil && find("pdf.download") != nil, "PDF toolbar exposes split-pane shortcut beside download")
+        try check(find("pdf.expandPane") != nil && find("pdf.download") != nil, "PDF toolbar exposes split-pane shortcut and download")
+        func shortcutIsPinnedRight() -> Bool {
+            guard let shortcut = find("pdf.expandPane") as? NSButton else { return false }
+            let frame = shortcut.convert(shortcut.bounds, to: nil), canvasFrame = canvas.convert(canvas.bounds, to: nil)
+            let rightInset = canvasFrame.maxX - frame.maxX
+            print("Toolbar shortcut right inset: \(rightInset), button: \(frame), canvas: \(canvasFrame)")
+            return (8...18).contains(rightInset)
+        }
         if let shortcut = find("pdf.expandPane") as? NSButton, let download = find("pdf.download") as? NSButton {
             let shortcutFrame = shortcut.convert(shortcut.bounds, to: nil), downloadFrame = download.convert(download.bounds, to: nil)
-            try check(shortcutFrame.maxX < downloadFrame.minX && downloadFrame.minX - shortcutFrame.maxX <= 14, "split-pane icon is immediately left of PDF download")
+            try check(shortcutFrame.minX > downloadFrame.maxX && shortcutIsPinnedRight(), "split-pane icon is pinned to the far right of the PDF toolbar")
         } else { try check(false, "toolbar controls must be native accessible buttons") }
         try press("pdf.expandPane"); pump(0.4)
         try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "toolbar shortcut fills the source split pane directly")
@@ -111,6 +118,7 @@ private struct PaneFixture: View {
         }
         state.pane = CGRect(x: 1050, y: 0, width: 550, height: host.bounds.height); pump(0.3)
         try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "expanded viewer follows resized split divider")
+        try check(shortcutIsPinnedRight(), "pane shortcut remains pinned right in a narrow resized pane")
         try press("attachment.viewer.back"); pump(0.5)
         try check(hasFrame(normal) && state.closeCount == 0, "exit button restores original slide size without closing")
         try press("attachment.viewer.more"); pump(0.2); try press("attachment.viewer.expandPane"); pump(0.4)
