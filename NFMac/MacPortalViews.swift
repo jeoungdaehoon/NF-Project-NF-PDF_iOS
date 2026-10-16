@@ -317,9 +317,16 @@ private struct MacNoteFreeMark: View {
     }
 }
 
-private enum MacPortalPaneSelection {
+private enum MacPortalPaneSelection: Hashable {
     case primary
     case secondary
+}
+
+private struct MacPortalPaneFramesPreferenceKey: PreferenceKey {
+    static var defaultValue: [MacPortalPaneSelection: CGRect] = [:]
+    static func reduce(value: inout [MacPortalPaneSelection: CGRect], nextValue: () -> [MacPortalPaneSelection: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
 }
 
 private struct MacPrimaryPaneWidthPreferenceKey: PreferenceKey {
@@ -343,6 +350,8 @@ private struct MacPortalWorkspace: View {
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
     @State private var remotePDFRequest: MacPDFRemoteRequest?
+    @State private var remotePDFPane: MacPortalPaneSelection = .primary
+    @State private var paneFrames: [MacPortalPaneSelection: CGRect] = [:]
     @State private var primaryPaneWidth: CGFloat = 0
     @State private var titlebarLeadingInset: CGFloat = 0
 
@@ -362,6 +371,7 @@ private struct MacPortalWorkspace: View {
                         key: MacPrimaryPaneWidthPreferenceKey.self,
                         value: proxy.size.width
                     )
+                    .preference(key: MacPortalPaneFramesPreferenceKey.self, value: [.primary: proxy.frame(in: .named("portal.workspace"))])
                 }
             }
 
@@ -374,9 +384,16 @@ private struct MacPortalWorkspace: View {
                 .frame(minWidth: 480)
                 .background(MacPortalTabDropRegion(transfer: tabTransfer, pane: secondary.identifier))
                 .overlay { if tabTransfer.targetPane == secondary.identifier { MacPortalTabDropHighlight() } }
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: MacPortalPaneFramesPreferenceKey.self, value: [.secondary: proxy.frame(in: .named("portal.workspace"))])
+                    }
+                }
             }
         }
+        .coordinateSpace(name: "portal.workspace")
         .ignoresSafeArea(.container, edges: .top)
+        .onPreferenceChange(MacPortalPaneFramesPreferenceKey.self) { paneFrames = $0 }
         .onPreferenceChange(MacPrimaryPaneWidthPreferenceKey.self) { width in
             if width > 0, abs(primaryPaneWidth - width) > 0.5 {
                 primaryPaneWidth = width
@@ -424,7 +441,8 @@ private struct MacPortalWorkspace: View {
                 MacResizableRemotePDFPanel(
                     request: request,
                     storesLocally: preferences.pdfLocalStorageEnabled,
-                    onClose: closeRemotePDFPreview
+                    onClose: closeRemotePDFPreview,
+                    paneBounds: isSplit ? paneFrames[remotePDFPane] : nil
                 )
                 .transition(.move(edge: .trailing))
             }
@@ -445,6 +463,7 @@ private struct MacPortalWorkspace: View {
         }
         model.onPreviewPDFAttachment = { request in
             activePane = model.identifier == secondary.identifier ? .secondary : .primary
+            remotePDFPane = activePane
             withAnimation(MacPDFSlidePanelLayout.animation) {
                 remotePDFRequest = request
             }
@@ -518,14 +537,17 @@ private struct MacPortalWorkspace: View {
     }
 }
 
-private struct MacResizableRemotePDFPanel: View {
+struct MacResizableRemotePDFPanel: View {
     let request: MacPDFRemoteRequest
     let storesLocally: Bool
     let onClose: () -> Void
+    var paneBounds: CGRect?
+    var editorDirectory: URL?
 
     @State private var preferredWidth: CGFloat?
     @State private var resizeStartWidth: CGFloat?
     @State private var isResizing = false
+    @State private var isPaneExpanded = false
     @StateObject private var presentation = MacPDFViewerWindowState()
 
     var body: some View {
@@ -534,7 +556,9 @@ private struct MacResizableRemotePDFPanel: View {
                 preferredWidth: preferredWidth,
                 for: geometry.size.width
             )
-            let bounds = MacPDFSlidePanelLayout.frame(preferredWidth: preferredWidth, availableSize: geometry.size)
+            let expanded = isPaneExpanded && paneBounds != nil
+            let bounds = MacPDFSlidePanelLayout.frame(preferredWidth: preferredWidth, availableSize: geometry.size,
+                                                     expandedPane: expanded ? paneBounds : nil)
 
             ZStack(alignment: .leading) {
                 MacPDFMovableViewer(presentation: presentation, content: MacRemotePDFPreviewView(
@@ -547,11 +571,17 @@ private struct MacResizableRemotePDFPanel: View {
                         isResizing = false; resizeStartWidth = nil
                         if presentation.isFullscreen { presentation.exit() }
                         else { presentation.enterEmbeddedFullscreen(title: request.url.lastPathComponent) }
-                    }
+                    },
+                    isPaneExpanded: expanded,
+                    onTogglePaneExpanded: paneBounds == nil ? nil : {
+                        isResizing = false; resizeStartWidth = nil
+                        withAnimation(.easeInOut(duration: 0.22)) { isPaneExpanded.toggle() }
+                    },
+                    editorDirectory: editorDirectory
                 ).ignoresSafeArea(.container, edges: .top))
                 .id(request.id)
 
-                if !presentation.isFullscreen { MacPDFPanelResizeHandle()
+                if !presentation.isFullscreen && !expanded { MacPDFPanelResizeHandle()
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
@@ -576,17 +606,22 @@ private struct MacResizableRemotePDFPanel: View {
             }
             .frame(width: bounds.width, height: bounds.height)
             .background(Color(nsColor: .windowBackgroundColor))
-            .clipShape(MacPDFPanelShape(cornerRadius: 12))
+            .clipShape(MacPDFPanelShape(cornerRadius: expanded || presentation.isFullscreen ? 0 : 12))
             .overlay {
-                MacPDFPanelLeadingBorder()
-                    .stroke(Color.primary.opacity(isResizing ? 0.38 : 0.22), lineWidth: 1)
-                    .allowsHitTesting(false)
+                if !expanded {
+                    MacPDFPanelLeadingBorder()
+                        .stroke(Color.primary.opacity(isResizing ? 0.38 : 0.22), lineWidth: 1)
+                        .allowsHitTesting(false)
+                }
             }
             .position(x: bounds.midX, y: bounds.midY)
         }
         // Measure from the window top, like MacPortalPane. The 32pt inset
         // above reserves the title-bar tabs once, without a second safe-area gap.
         .ignoresSafeArea(.container, edges: .top)
+        .onChange(of: paneBounds == nil) { _, unavailable in
+            if unavailable { isPaneExpanded = false }
+        }
     }
 }
 

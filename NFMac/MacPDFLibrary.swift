@@ -17,7 +17,12 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
 enum MacPDFSlidePanelLayout {
     static let animation = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.52)
     static let resizeHandleWidth: CGFloat = 10
-    static func frame(preferredWidth: CGFloat?, availableSize: CGSize) -> CGRect {
+    static func frame(preferredWidth: CGFloat?, availableSize: CGSize, expandedPane: CGRect? = nil) -> CGRect {
+        if let expandedPane {
+            let content = CGRect(x: 0, y: 32, width: max(0, availableSize.width), height: max(0, availableSize.height - 32))
+            let bounds = content.intersection(expandedPane)
+            if !bounds.isNull, !bounds.isEmpty { return bounds }
+        }
         let panelWidth = width(preferredWidth: preferredWidth, for: availableSize.width)
         return CGRect(x: availableSize.width - panelWidth, y: 32, width: panelWidth, height: max(0, availableSize.height - 32))
     }
@@ -568,6 +573,9 @@ struct MacRemotePDFPreviewView: View {
     let onClose: () -> Void
     var isFullscreen = false
     var onToggleFullscreen: (() -> Void)?
+    var isPaneExpanded = false
+    var onTogglePaneExpanded: (() -> Void)?
+    var editorDirectory: URL?
     private let repository = MacPDFLocalStorageRepository()
     @State private var pdfDocument: PDFDocument?
     @State private var storedPDF: MacLocalPDFDocument?
@@ -589,16 +597,17 @@ struct MacRemotePDFPreviewView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Button { if isFullscreen { onToggleFullscreen?() } else { onClose() } } label: {
-                    Image(systemName: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "chevron.left")
+                Button { exitOrClose() } label: {
+                    Image(systemName: isFullscreen || isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "chevron.left")
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: 30, height: 30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(isFullscreen ? nil : KeyboardShortcut.cancelAction)
-                .help(isFullscreen ? "전체화면 종료" : "뒤로")
-                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : "첨부 미리보기 닫기")
+                .help(isFullscreen ? "모니터 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : "뒤로")
+                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : "첨부 미리보기 닫기")
+                .accessibilityIdentifier("attachment.viewer.back")
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
@@ -619,12 +628,23 @@ struct MacRemotePDFPreviewView: View {
                 .buttonStyle(.plain)
                 .help("더보기")
                 .accessibilityLabel("첨부 파일 더보기")
+                .accessibilityIdentifier("attachment.viewer.more")
                 .popover(isPresented: $isMoreMenuPresented, arrowEdge: .top) {
                     VStack(spacing: 0) {
+                        if onTogglePaneExpanded != nil, !isFullscreen {
+                            MacAttachmentMenuRow(title: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", systemImage: "rectangle.split.2x1", isEnabled: true) {
+                                isMoreMenuPresented = false
+                                // Embedded hosting views can keep a dismissed popover's
+                                // content alive, so do not depend on its onDisappear.
+                                DispatchQueue.main.async { onTogglePaneExpanded?() }
+                            }
+                            .accessibilityIdentifier("attachment.viewer.expandPane")
+                        }
                         if onToggleFullscreen != nil {
-                            MacAttachmentMenuRow(title: isFullscreen ? "전체화면 종료" : "전체화면 보기", systemImage: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", isEnabled: true) {
+                            MacAttachmentMenuRow(title: isFullscreen ? "모니터 전체화면 종료" : "모니터 전체화면 보기", systemImage: isFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", isEnabled: true) {
                                 pendingMoreMenuAction = .fullscreen; isMoreMenuPresented = false
                             }
+                            .accessibilityIdentifier("attachment.viewer.fullscreen")
                         }
                         if markdown != nil {
                             MacAttachmentMenuRow(
@@ -711,6 +731,7 @@ struct MacRemotePDFPreviewView: View {
                         isContainerResizing: isContainerResizing,
                         isFullscreen: isFullscreen,
                         onToggleFullscreen: onToggleFullscreen,
+                        editorDirectory: editorDirectory,
                         onSave: { data in
                             try await MacPDFRemoteSave.shared.save(source: request.url, data: data)
                             // A local cache failure must not turn a confirmed server save into an upload failure.
@@ -744,7 +765,13 @@ struct MacRemotePDFPreviewView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .task { await load() }
-        .onExitCommand { if isFullscreen { onToggleFullscreen?() } else { onClose() } }
+        .onExitCommand { exitOrClose() }
+    }
+
+    private func exitOrClose() {
+        if isFullscreen { onToggleFullscreen?() }
+        else if isPaneExpanded { onTogglePaneExpanded?() }
+        else { onClose() }
     }
 
     private func runPendingMoreMenuAction() {
