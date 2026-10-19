@@ -214,8 +214,10 @@ struct MacPDFEditorView: View {
                     }
                     Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }.help("현재 색상을 팔레트에 추가")
                 } }
-                Text("두께 \(state.style.width, specifier: "%.1f")")
-                Slider(value: styleBinding(\.width, field: "width"), in: 0...48)
+                if state.tool != .text {
+                    Text("두께 \(state.style.width, specifier: "%.1f")")
+                    Slider(value: styleBinding(\.width, field: "width"), in: 0...48)
+                }
                 }
                 if [.pen, .highlighter, .neon].contains(state.tool) {
                     Toggle("필압 사용 (지원 입력 장치)", isOn: styleBinding(\.pressure, field: "pressure"))
@@ -252,6 +254,7 @@ struct MacPDFEditorView: View {
     private var textOptions: some View {
         VStack(alignment: .leading, spacing: 10) {
             ColorPicker("텍스트 박스 테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { var style = state.style; style.textBorder = MacPDFRGBA(NSColor($0)); if style.width == 0 { style.width = 1 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true)
+            MacPDFTextBoxControls(state: state)
             Picker("글꼴", selection: styleBinding(\.fontName, field: "fontName")) { ForEach(NSFontManager.shared.availableFonts.sorted(), id: \.self) { Text($0).tag($0) } }
             Stepper("글자 크기 \(Int(state.style.fontSize))", value: styleBinding(\.fontSize, field: "fontSize"), in: 6...144)
             HStack { Toggle("굵게", isOn: styleBinding(\.bold, field: "bold")); Toggle("기울임", isOn: styleBinding(\.italic, field: "italic")) }

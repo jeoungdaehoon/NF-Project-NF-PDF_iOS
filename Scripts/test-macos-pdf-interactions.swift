@@ -40,6 +40,7 @@ import SwiftUI
             }
             if let button = object as? NSButton {
                 try check(button.isEnabled, "native button enabled \(identifier)")
+                if identifier == "pdf.text.box" { button.scrollToVisible(button.bounds); settle() }
                 button.performClick(nil); settle(); return
             }
             typealias Press = @convention(c) (AnyObject, Selector) -> Bool
@@ -195,6 +196,24 @@ import SwiftUI
         try check((text.attributedString().attribute(.foregroundColor, at: 4, effectiveRange: nil) as? NSColor) == before, "unselected text retains prior formatting")
         try press("pdf.text.bold"); try check(text.selectedRange() == NSRange(location: 0, length: 2) && window.firstResponder === text, "format button preserves selection and restores input focus")
         view.textUndo(redo: false); view.textUndo(redo: true)
+        try press("pdf.text.box")
+        guard let closeBox = find(host, "pdf.text.box.close") as? NSButton else { throw CocoaError(.validationMissingMandatoryProperty) }
+        try check(closeBox.window === window, "text border settings panel is open in the editor without stealing a native window")
+        let wasDashed = state.style.dashed
+        // SwiftUI's primitive-control AX elements are absent in this off-screen
+        // fixture. Dispatch a real click relative to the panel's native close
+        // button, not an absolute screen position or a direct model mutation.
+        let closeFrame = closeBox.convert(closeBox.bounds, to: host)
+        let togglePoint = CGPoint(x: closeFrame.minX - 190, y: closeFrame.midY + (host.isFlipped ? 84 : -84))
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = NSEvent.mouseEvent(with: type, location: host.convert(togglePoint, to: nil), modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+            app.postEvent(event, atStart: false)
+        }
+        while let event = app.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }; settle()
+        try check(state.style.dashed != wasDashed && (text as? MacPDFTextInput)?.boxStyle.dashed == state.style.dashed, "actual text border toggle updates live native input")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-text-box-popup-test.png")) }
+        try press("pdf.text.box.close")
+        try check(window.firstResponder === text && state.isTextEditing, "closing box settings preserves text input focus")
         try press("pdf.text.done"); try check(!state.isTextEditing && state.selected?.text == "한글 ABC", "text done commits Korean text and rich formatting")
         try press("pdf.object.edit"); try check(view.activeTextView?.string == "한글 ABC", "reselect and edit retain text")
         view.finishTextEditing(); state.selection = []; state.menuVisible = false
@@ -268,10 +287,14 @@ import SwiftUI
         let highlighted = overlayColor(at: view.convert(CGPoint(x: target.bounds.minX + 10, y: target.bounds.minY + 10), from: page))
         try check(highlighted != nil && highlighted!.alphaComponent > 0.05 && highlighted!.blueComponent > highlighted!.redComponent, "target activation is visibly painted")
         try check(!state.objects.contains { $0.kind == .connector } && state.undoCount == connectionUndo, "drag preview does not create or save a connection before release")
+        let previewGeometry = view.connectionPreviewObject.flatMap { MacPDFConnectorGeometry.make($0, objects: state.objects) }
+        try check(previewGeometry != nil, "live target preview resolves object-aware boundary geometry")
         if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-connector-drag.png")) }
         dispatch(.leftMouseUp, targetPoint)
         try check(state.selected?.kind == .connector && state.menuVisible && !view.hasConnectionPreview && view.connectionTargetID == nil, "release creates connection and clears transient target highlight")
         let connected = state.selected!
+        let committedGeometry = MacPDFConnectorGeometry.make(connected, objects: state.objects)!
+        try check(committedGeometry.points == previewGeometry!.points && committedGeometry.targetAnchor == previewGeometry!.targetAnchor, "release preserves exact preview route, border clearance and arrow direction")
         try check(connected.sourceID == source.id && connected.targetID == target.id && connected.sourceAnchor.x == 1 && connected.targetAnchor.x == 0 && connected.style.arrow,
             "connection attaches to the dragged source edge and nearest target edge")
         try check(state.undoCount == connectionUndo + 1, "one completed drag is one undo operation")

@@ -74,6 +74,7 @@ private struct MenuTail: Shape {
 
 struct MacPDFTextAssistant: View {
     @ObservedObject var state: MacPDFEditorState
+    @State private var boxOptionsVisible = false
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
@@ -88,15 +89,45 @@ struct MacPDFTextAssistant: View {
                 ColorPicker("문자", selection: color(\.stroke, "stroke"), supportsOpacity: true).fixedSize()
                 ColorPicker("배경", selection: color(\.fill, "fill"), supportsOpacity: true).fixedSize()
                 ColorPicker("테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { value in var style = state.style; style.textBorder = .init(NSColor(value)); style.width = max(1, style.width); state.setStyle(style, field: "textBorder") }), supportsOpacity: true).fixedSize()
+                MacPDFActionButton(title: "테두리 설정", identifier: "pdf.text.box") { boxOptionsVisible.toggle() }.frame(width: 80, height: 28)
                 Menu("정렬") { Button("왼쪽") { set(\.alignment, 0, "alignment") }; Button("가운데") { set(\.alignment, 2, "alignment") }; Button("오른쪽") { set(\.alignment, 1, "alignment") } }
                 Button { state.canvas?.toggleTextLink() } label: { Image(systemName: "link") }.help("선택 URL 링크 적용·해제")
                 MacPDFActionButton(title: "완료", identifier: "pdf.text.done") { state.canvas?.finishTextEditing(); state.menuVisible = true }.frame(width: 42, height: 28)
             }.buttonStyle(.borderless).padding(10)
         }.frame(height: 48).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
+            .overlay(alignment: .topTrailing) {
+                if boxOptionsVisible {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack { Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") { boxOptionsVisible = false }.frame(width: 42, height: 24) }
+                        MacPDFTextBoxControls(state: state)
+                    }.padding(14).frame(width: 260).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
+                }
+            }
     }
     private func set<T>(_ key: WritableKeyPath<MacPDFStyle, T>, _ value: T, _ field: String) { var style = state.style; style[keyPath: key] = value; state.setStyle(style, field: field) }
     private func color(_ key: WritableKeyPath<MacPDFStyle, MacPDFRGBA>, _ field: String) -> Binding<Color> { Binding(get: { Color(nsColor: state.style[keyPath: key].color) }, set: { set(key, .init(NSColor($0)), field) }) }
     private func format(_ title: String, _ key: WritableKeyPath<MacPDFStyle, Bool>, _ field: String) -> some View {
         MacPDFActionButton(title: title, identifier: "pdf.text.\(field)") { set(key, !state.style[keyPath: key], field) }.frame(width: 24, height: 26).background(state.style[keyPath: key] ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+/// Shared by the input assistant and the text tool's detail palette.
+struct MacPDFTextBoxControls: View {
+    @ObservedObject var state: MacPDFEditorState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("텍스트 박스 테두리").font(.headline)
+            Stepper("두께 \(state.style.width, specifier: "%.1f") pt", value: value(\.width, field: "width"), in: 0...12, step: 0.5)
+                .accessibilityIdentifier("pdf.text.border.width")
+            Toggle("점선", isOn: value(\.dashed, field: "dashed"))
+                .accessibilityIdentifier("pdf.text.border.dashed")
+            Text("모서리 라운드 \(state.style.textCornerRadius ?? 0, specifier: "%.0f") pt")
+            Slider(value: Binding(get: { state.style.textCornerRadius ?? 0 }, set: { radius in var style = state.style; style.textCornerRadius = radius; state.setStyle(style, field: "textCornerRadius") }), in: 0...48, step: 1)
+                .accessibilityLabel("텍스트 박스 모서리 라운드").accessibilityIdentifier("pdf.text.border.radius")
+            Text("두께 0은 테두리 없음, 라운드 0은 직각입니다.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func value<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
+        Binding(get: { state.style[keyPath: key] }, set: { value in var style = state.style; style[keyPath: key] = value; state.setStyle(style, field: field) })
     }
 }

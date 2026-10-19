@@ -79,6 +79,7 @@ struct MacPDFPoint: Codable, Equatable {
 }
 
 struct MacPDFStyle: Codable, Equatable {
+    static var connectorDefault: Self { var style = Self(); style.width = 1.5; style.roundCap = false; return style }
     var stroke = MacPDFRGBA(.systemBlue)
     var fill = MacPDFRGBA(.clear)
     var width: Double = 2.4
@@ -92,6 +93,7 @@ struct MacPDFStyle: Codable, Equatable {
     var dashed = false, arrow = true
     var connectorRoute = "straight"
     var textBorder: MacPDFRGBA?
+    var textCornerRadius: Double?
     mutating func apply(_ field: String, from other: MacPDFStyle) {
         switch field {
         case "stroke": stroke = other.stroke
@@ -111,6 +113,7 @@ struct MacPDFStyle: Codable, Equatable {
         case "arrow": arrow = other.arrow
         case "connectorRoute": connectorRoute = other.connectorRoute
         case "textBorder": textBorder = other.textBorder; width = max(1, width)
+        case "textCornerRadius": textCornerRadius = other.textCornerRadius
         default: break
         }
     }
@@ -162,7 +165,7 @@ final class MacPDFEditorState: ObservableObject {
     @Published var neonType = MacPDFNeonType.line
     // A persistent interaction toggle, not a mutually exclusive drawing tool.
     @Published var connectorEnabled = false
-    @Published var connectionStyle = MacPDFStyle()
+    @Published var connectionStyle = MacPDFStyle.connectorDefault
     @Published var shape = MacPDFShape.rectangle
     @Published var style = MacPDFStyle()
     @Published var eraserSize: Double = 24
@@ -236,7 +239,9 @@ final class MacPDFEditorState: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.palette"), let saved = try? JSONDecoder().decode([MacPDFRGBA].self, from: data), !saved.isEmpty { palette = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.paletteOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { paletteOptions = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.toolOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { toolOptions = saved }
-        connectionStyle = toolOptions[MacPDFTool.connector.rawValue] ?? MacPDFStyle()
+        connectionStyle = toolOptions[MacPDFTool.connector.rawValue] ?? .connectorDefault
+        // Upgrade the previous generic pen-width default, not existing PDF objects.
+        if connectionStyle.width == MacPDFStyle().width { connectionStyle.width = MacPDFStyle.connectorDefault.width }
         neonType = UserDefaults.standard.string(forKey: "nf.mac.pdf.neonType").flatMap(MacPDFNeonType.init(rawValue:)) ?? .line
         paletteLocked = UserDefaults.standard.bool(forKey: "nf.mac.pdf.paletteLocked")
         alwaysShowPalette = UserDefaults.standard.bool(forKey: "nf.mac.pdf.alwaysShowPalette")
@@ -447,6 +452,7 @@ final class MacPDFEditorState: ObservableObject {
                 if object.kind == .text {
                     let text = MacPDFTextFormatting.attributed(object)
                     object.textRTF = MacPDFTextFormatting.apply(field: field, style: object.style, to: text, range: NSRange(location: 0, length: text.length)).rtf(from: NSRange(location: 0, length: text.length), documentAttributes: [:])
+                    if let page = document.page(at: object.page) { object.bounds = MacPDFTextLayout.fittedBounds(MacPDFTextFormatting.attributed(object), minimum: object.bounds, style: object.style, page: page.bounds(for: .cropBox)) }
                 }
             }
         }
@@ -576,7 +582,7 @@ final class MacPDFEditorState: ObservableObject {
         optionsTool = [.shape, .text, .image, .connector].contains(next) || alwaysShowPalette ? next : nil
         canvas?.refreshAnnotations()
     }
-    func resetSettings() { style = MacPDFStyle(); connectionStyle = MacPDFStyle(); neonType = .line; eraserSize = 24; toolbarOffset = .zero; toolbarScale = 1; verticalToolbar = false; paletteLocked = false; alwaysShowPalette = false; paletteDetached = false; paletteOffset = .zero; paletteSize = CGSize(width: 350, height: 450); pageControlPosition = "bottom"; paletteOptions = [:]; toolOptions = [:]; optionsTool = nil; editingPaletteIndex = nil; menuVisible = false; palette = [.init(.black), .init(.systemBlue), .init(.systemRed), .init(.systemOrange), .init(.systemGreen)]; rememberSettings() }
+    func resetSettings() { style = MacPDFStyle(); connectionStyle = .connectorDefault; neonType = .line; eraserSize = 24; toolbarOffset = .zero; toolbarScale = 1; verticalToolbar = false; paletteLocked = false; alwaysShowPalette = false; paletteDetached = false; paletteOffset = .zero; paletteSize = CGSize(width: 350, height: 450); pageControlPosition = "bottom"; paletteOptions = [:]; toolOptions = [:]; optionsTool = nil; editingPaletteIndex = nil; menuVisible = false; palette = [.init(.black), .init(.systemBlue), .init(.systemRed), .init(.systemOrange), .init(.systemGreen)]; rememberSettings() }
 
     func basePDFData() -> Data? {
         var removed: [(PDFPage, PDFAnnotation)] = []

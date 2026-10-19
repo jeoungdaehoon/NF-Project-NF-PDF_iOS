@@ -18,48 +18,102 @@ enum MacPDFObjectRenderer {
         return (anchor(source, connector.sourceAnchor), anchor(target, connector.targetAnchor))
     }
     static func connectorPath(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPath? {
-        guard let (a, b) = endpoints(object, objects: objects) else { return nil }
-        let control = object.connectorOffset.map { CGPoint(x: (a.x + b.x) / 2 + CGFloat($0.x), y: (a.y + b.y) / 2 + CGFloat($0.y)) }
-        return connectionPath(from: a, to: b, route: object.style.connectorRoute, control: control)
+        MacPDFConnectorGeometry.make(object, objects: objects)?.path()
     }
     static func connectorControlPoint(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPoint? {
-        guard let (a, b) = endpoints(object, objects: objects) else { return nil }
-        return CGPoint(x: (a.x + b.x) / 2 + CGFloat(object.connectorOffset?.x ?? 0), y: (a.y + b.y) / 2 + CGFloat(object.connectorOffset?.y ?? 0))
+        MacPDFConnectorGeometry.make(object, objects: objects)?.controlPoint
     }
-    static func connectionPath(from a: CGPoint, to b: CGPoint, route: String, control: CGPoint? = nil) -> CGPath {
+    static func connectionPath(from a: CGPoint, to b: CGPoint, route: String, control: CGPoint? = nil, endInset: CGFloat = 0) -> CGPath {
         let path = CGMutablePath(); path.move(to: a)
+        let previous = connectionArrowPrevious(from: a, to: b, route: route, control: control)
+        let distance = hypot(b.x - previous.x, b.y - previous.y)
+        let inset = min(endInset, distance * 0.3)
+        let end = distance > 0.001 ? CGPoint(x: b.x - (b.x - previous.x) / distance * inset, y: b.y - (b.y - previous.y) / distance * inset) : b
+        func lines(_ points: [CGPoint]) {
+            var points = points
+            while let last = points.last, hypot(last.x - b.x, last.y - b.y) < 0.001 { points.removeLast() }
+            points.forEach { path.addLine(to: $0) }; path.addLine(to: end)
+        }
         if let c = control {
             switch route {
             case "elbow":
                 // Both coordinates of the middle grip can move, without ever
                 // detaching either endpoint or turning orthogonal legs diagonal.
-                path.addLine(to: CGPoint(x: c.x, y: a.y)); path.addLine(to: c)
-                path.addLine(to: CGPoint(x: b.x, y: c.y)); path.addLine(to: b)
+                lines([CGPoint(x: c.x, y: a.y), c, CGPoint(x: b.x, y: c.y)])
             case "curve":
                 // Quadratic control chosen so t=0.5 passes through the grip.
-                path.addQuadCurve(to: b, control: CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2))
-            default: path.addLine(to: c); path.addLine(to: b)
+                path.addQuadCurve(to: end, control: CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2))
+            default: lines([c])
             }
             return path
         }
         switch route {
-        case "elbow": path.addLine(to: CGPoint(x: (a.x + b.x) / 2, y: a.y)); path.addLine(to: CGPoint(x: (a.x + b.x) / 2, y: b.y)); path.addLine(to: b)
-        case "curve": path.addCurve(to: b, control1: CGPoint(x: (a.x + b.x) / 2, y: a.y), control2: CGPoint(x: (a.x + b.x) / 2, y: b.y))
-        default: path.addLine(to: b)
+        case "elbow": lines([CGPoint(x: (a.x + b.x) / 2, y: a.y), CGPoint(x: (a.x + b.x) / 2, y: b.y)])
+        case "curve": path.addCurve(to: end, control1: CGPoint(x: (a.x + b.x) / 2, y: a.y), control2: CGPoint(x: (a.x + b.x) / 2, y: b.y))
+        default: path.addLine(to: end)
         }
         return path
     }
     static func connectorArrowPrevious(_ object: MacPDFObject, objects: [MacPDFObject]) -> CGPoint? {
-        guard let (a, b) = endpoints(object, objects: objects) else { return nil }
-        if object.connectorOffset != nil, let c = connectorControlPoint(object, objects: objects) {
-            switch object.style.connectorRoute {
-            case "elbow": return abs(c.y - b.y) > 0.001 ? CGPoint(x: b.x, y: c.y) : c
-            case "curve": return CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2)
-            default: return c
-            }
+        MacPDFConnectorGeometry.make(object, objects: objects)?.previous
+    }
+    static func connectionArrowPrevious(from a: CGPoint, to b: CGPoint, route: String, control c: CGPoint? = nil) -> CGPoint {
+        let candidates: [CGPoint]
+        switch route {
+        case "elbow":
+            if let c { candidates = [CGPoint(x: b.x, y: c.y), c, CGPoint(x: c.x, y: a.y), a] }
+            else { candidates = [CGPoint(x: (a.x + b.x) / 2, y: b.y), CGPoint(x: (a.x + b.x) / 2, y: a.y), a] }
+        case "curve":
+            if let c { candidates = [CGPoint(x: 2 * c.x - (a.x + b.x) / 2, y: 2 * c.y - (a.y + b.y) / 2), a] }
+            else { candidates = [CGPoint(x: (a.x + b.x) / 2, y: b.y), CGPoint(x: (a.x + b.x) / 2, y: a.y), a] }
+        default: candidates = [c, a].compactMap { $0 }
         }
-        let prior = object.style.connectorRoute == "straight" ? a : CGPoint(x: (a.x + b.x) / 2, y: b.y)
-        return hypot(prior.x - b.x, prior.y - b.y) > 0.001 ? prior : a
+        return candidates.first { hypot($0.x - b.x, $0.y - b.y) > 0.001 } ?? a
+    }
+    static func connectionArrowhead(tip: CGPoint, previous: CGPoint, width: CGFloat) -> CGPath? {
+        let distance = hypot(tip.x - previous.x, tip.y - previous.y)
+        guard distance > 0.001 else { return nil }
+        let dx = (tip.x - previous.x) / distance, dy = (tip.y - previous.y) / distance
+        let length = min(max(6, width * 5), distance * 0.8), halfWidth = length * 0.5
+        let base = CGPoint(x: tip.x - dx * length, y: tip.y - dy * length)
+        let path = CGMutablePath(); path.move(to: tip)
+        path.addLine(to: CGPoint(x: base.x - dy * halfWidth, y: base.y + dx * halfWidth))
+        path.addLine(to: CGPoint(x: base.x + dy * halfWidth, y: base.y - dx * halfWidth)); path.closeSubpath()
+        return path
+    }
+    // Shared by the live drag preview, editable overlay and flattened PDF export.
+    static func drawConnection(from a: CGPoint, to b: CGPoint, style: MacPDFStyle, control: CGPoint? = nil, context: CGContext) {
+        context.saveGState(); defer { context.restoreGState() }
+        context.setStrokeColor(style.stroke.color.cgColor); context.setFillColor(style.stroke.color.cgColor)
+        context.setLineWidth(style.width); context.setLineCap(.butt); context.setLineJoin(.miter)
+        context.setLineDash(phase: 0, lengths: style.dashed ? [style.width * 3, style.width * 2] : [])
+        let previous = connectionArrowPrevious(from: a, to: b, route: style.connectorRoute, control: control)
+        let head = style.arrow ? connectionArrowhead(tip: b, previous: previous, width: style.width) : nil
+        // End the shaft inside the filled head, not through its pointed tip.
+        context.addPath(connectionPath(from: a, to: b, route: style.connectorRoute, control: control, endInset: head == nil ? 0 : style.width)); context.strokePath()
+        if let head { context.addPath(head); context.fillPath() }
+    }
+    static func drawConnector(_ object: MacPDFObject, objects: [MacPDFObject], context: CGContext) {
+        guard let geometry = MacPDFConnectorGeometry.make(object, objects: objects) else { return }
+        context.saveGState(); defer { context.restoreGState() }
+        let extent = geometry.points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }.insetBy(dx: -10000, dy: -10000)
+        // Keep both connected boxes and their borders intact regardless of object
+        // z-order, line width, route grip position or overlapping source bounds.
+        for protected in geometry.protectedObjects {
+            let padding = max(0, protected.style.width) * 0.5 + 0.75
+            let bounds = protected.bounds.insetBy(dx: -padding, dy: -padding)
+            var transform = CGAffineTransform(translationX: protected.bounds.midX, y: protected.bounds.midY)
+            transform = transform.rotated(by: protected.rotation).translatedBy(x: -protected.bounds.midX, y: -protected.bounds.midY)
+            let excluded = CGPath(rect: bounds, transform: &transform)
+            let clip = CGMutablePath(); clip.addRect(extent); clip.addPath(excluded)
+            context.addPath(clip); context.clip(using: .evenOdd)
+        }
+        let style = object.style
+        context.setStrokeColor(style.stroke.color.cgColor); context.setFillColor(style.stroke.color.cgColor)
+        context.setLineWidth(style.width); context.setLineCap(.butt); context.setLineJoin(.miter)
+        context.setLineDash(phase: 0, lengths: style.dashed ? [style.width * 3, style.width * 2] : [])
+        context.addPath(geometry.path(endInset: style.arrow ? style.width : 0)); context.strokePath()
+        if style.arrow, let head = connectionArrowhead(tip: geometry.tip, previous: geometry.previous, width: style.width) { context.addPath(head); context.fillPath() }
     }
     static func shapePath(_ type: MacPDFShape, bounds: CGRect) -> CGPath {
         let path = CGMutablePath()
@@ -126,7 +180,7 @@ enum MacPDFObjectRenderer {
         case .shape:
             context.addPath(shapePath(object.shape, bounds: object.bounds)); context.drawPath(using: .fillStroke)
         case .text:
-            context.fill(object.bounds); context.setStrokeColor((style.textBorder?.color ?? .clear).cgColor); if style.width > 0 { context.stroke(object.bounds) }
+            MacPDFTextLayout.drawBox(in: context, bounds: object.bounds, style: style)
             let font = NSFont(name: style.fontName, size: style.fontSize) ?? NSFont.systemFont(ofSize: style.fontSize)
             let manager = NSFontManager.shared
             var traits: NSFontTraitMask = []
@@ -136,7 +190,7 @@ enum MacPDFObjectRenderer {
             let attributes: [NSAttributedString.Key: Any] = [.font: chosen, .foregroundColor: style.stroke.color, .paragraphStyle: paragraph, .underlineStyle: style.underline ? 1 : 0, .strikethroughStyle: style.strike ? 1 : 0]
             let attributed = object.textRTF.flatMap { try? NSAttributedString(data: $0, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) }
                 ?? NSAttributedString(string: object.text, attributes: attributes)
-            let frame = CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(attributed), CFRange(location: 0, length: 0), CGPath(rect: object.bounds.insetBy(dx: 4, dy: 4), transform: nil), nil)
+            let frame = CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(attributed), CFRange(location: 0, length: 0), CGPath(rect: MacPDFTextLayout.contentRect(object.bounds, style: style), transform: nil), nil)
             context.textMatrix = .identity; CTFrameDraw(frame, context)
         case .image:
             guard let data = object.imageData, let image = NSImage(data: data), let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
@@ -151,13 +205,7 @@ enum MacPDFObjectRenderer {
                 CTFrameDraw(CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(text), CFRange(location: 0, length: 0), path, nil), context)
             }
         case .connector:
-            guard let path = connectorPath(object, objects: objects), let (a, b) = endpoints(object, objects: objects) else { return }
-            context.addPath(path); context.strokePath()
-            if style.arrow {
-                let previous = connectorArrowPrevious(object, objects: objects) ?? a
-                let angle = atan2(b.y - previous.y, b.x - previous.x), length = max(9, style.width * 4)
-                context.setLineDash(phase: 0, lengths: []); context.move(to: CGPoint(x: b.x - length * cos(angle - 0.45), y: b.y - length * sin(angle - 0.45))); context.addLine(to: b); context.addLine(to: CGPoint(x: b.x - length * cos(angle + 0.45), y: b.y - length * sin(angle + 0.45))); context.strokePath()
-            }
+            drawConnector(object, objects: objects, context: context)
         }
     }
 }

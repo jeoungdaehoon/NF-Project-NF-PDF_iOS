@@ -47,9 +47,15 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     private var routeDrag: RouteDrag?
     private var connectionPortsPath: CGPath?, connectionGlyphsPath: CGPath?
-    private var connectionPreviewPath: CGPath?, connectionTargetPath: CGPath?
+    private var connectionTargetPath: CGPath?
     var connectionTargetID: UUID? { connectionDrag?.target }
     var hasConnectionPreview: Bool { connectionDrag != nil }
+    var connectionPreviewObject: MacPDFObject? {
+        guard let drag = connectionDrag, let target = drag.target else { return nil }
+        var object = MacPDFObject(page: drag.page, kind: .connector, bounds: .zero, style: drag.style, sourceID: drag.source, targetID: target)
+        object.sourceAnchor = drag.anchor; object.targetAnchor = drag.targetAnchor
+        return object
+    }
     var connectorRouteHandle: CGPoint? {
         guard let editor, !editor.isTextEditing, editor.selection.count == 1,
               let object = editor.selected, object.kind == .connector,
@@ -62,6 +68,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     private var commandHeld = false
     private var textView: NSTextView?, editingTextID: UUID?
     private var textBeforeEditing: [MacPDFObject] = [], editingTextScale: CGFloat = 1
+    private var textEditingBaseBounds: CGRect?
+    private var sizingTextEditor = false
     private var initialFitPending = true, mouseTracking: NSTrackingArea?
     private let interactionLayer = CAShapeLayer()
     private let drawingOverlay = MacPDFDrawingOverlay()
@@ -209,7 +217,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     func updateInteractionOverlay() {
         guard let editor else { return }
         drawingOverlay.frame = bounds; drawingOverlay.needsDisplay = true
-        if let textView, let id = editingTextID, let object = editor.objects.first(where: { $0.id == id }), let page = document?.page(at: object.page) { textView.frame = convert(object.bounds, from: page) }
+        synchronizeTextLayout()
         let path = CGMutablePath()
         if !commandHeld, editor.tool == .eraser, editor.optionsTool == .eraser || lastMousePoint != nil {
             let p = lastMousePoint ?? CGPoint(x: bounds.midX, y: bounds.midY), size = editor.eraserSize
@@ -274,7 +282,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
     }
     private func updateConnectionOverlay() {
-        let ports = CGMutablePath(), glyphs = CGMutablePath(), preview = CGMutablePath(), targetPath = CGMutablePath()
+        let ports = CGMutablePath(), glyphs = CGMutablePath(), targetPath = CGMutablePath()
         for handle in connectionHandles {
             let p = handle.center, d = handle.direction
             ports.addEllipse(in: CGRect(x: p.x - 11, y: p.y - 11, width: 22, height: 22))
@@ -283,25 +291,14 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             glyphs.move(to: CGPoint(x: tip.x - d.dx * 5 - d.dy * 4, y: tip.y - d.dy * 5 + d.dx * 4))
             glyphs.addLine(to: tip); glyphs.addLine(to: CGPoint(x: tip.x - d.dx * 5 + d.dy * 4, y: tip.y - d.dy * 5 - d.dx * 4))
         }
-        if let drag = connectionDrag, let editor, let source = editor.objects.first(where: { $0.id == drag.source }), let page = document?.page(at: drag.page) {
-            let a = MacPDFObjectRenderer.anchor(source, drag.anchor), b = drag.end
-            let path = MacPDFObjectRenderer.connectionPath(from: a, to: b, route: drag.style.connectorRoute)
-            // PDF-to-view conversion includes zoom and page rotation.
-            let origin = convert(CGPoint.zero, from: page), x = convert(CGPoint(x: 1, y: 0), from: page), y = convert(CGPoint(x: 0, y: 1), from: page)
-            var transform = CGAffineTransform(a: x.x - origin.x, b: x.y - origin.y, c: y.x - origin.x, d: y.y - origin.y, tx: origin.x, ty: origin.y)
-            if let converted = path.copy(using: &transform) { preview.addPath(converted) }
-            let end = convert(b, from: page)
-            let previous = drag.style.connectorRoute == "straight" ? a : CGPoint(x: (a.x + b.x) / 2, y: b.y)
-            let prior = convert(previous, from: page), angle = atan2(end.y - prior.y, end.x - prior.x)
-            preview.move(to: CGPoint(x: end.x - 10 * cos(angle - 0.45), y: end.y - 10 * sin(angle - 0.45)))
-            preview.addLine(to: end); preview.addLine(to: CGPoint(x: end.x - 10 * cos(angle + 0.45), y: end.y - 10 * sin(angle + 0.45)))
+        if let drag = connectionDrag, let editor, let page = document?.page(at: drag.page) {
             if let target = editor.objects.first(where: { $0.id == drag.target }) {
                 let corners = MacPDFObjectRenderer.corners(target).map { convert($0, from: page) }
                 if let first = corners.first { targetPath.move(to: first); corners.dropFirst().forEach { targetPath.addLine(to: $0) }; targetPath.closeSubpath() }
             }
         }
         connectionPortsPath = ports; connectionGlyphsPath = glyphs
-        connectionPreviewPath = preview; connectionTargetPath = targetPath
+        connectionTargetPath = targetPath
         drawingOverlay.needsDisplay = true
     }
     // Draw through the same native overlay as editable objects, above PDFKit's
@@ -315,7 +312,16 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             context.setShadow(offset: .zero, blur: 6, color: NSColor.systemBlue.withAlphaComponent(0.65).cgColor)
             context.addPath(path); context.drawPath(using: .fillStroke); context.restoreGState()
         }
-        if let path = connectionPreviewPath { context.addPath(path); context.strokePath() }
+        if let drag = connectionDrag, let editor, let source = editor.objects.first(where: { $0.id == drag.source }), let page = document?.page(at: drag.page) {
+            // Shared PDF-coordinate renderer keeps preview width, color and
+            // filled head identical to the committed connection at every zoom.
+            let origin = convert(CGPoint.zero, from: page), x = convert(CGPoint(x: 1, y: 0), from: page), y = convert(CGPoint(x: 0, y: 1), from: page)
+            context.saveGState()
+            context.concatenate(CGAffineTransform(a: x.x - origin.x, b: x.y - origin.y, c: y.x - origin.x, d: y.y - origin.y, tx: origin.x, ty: origin.y))
+            if let preview = connectionPreviewObject { MacPDFObjectRenderer.drawConnector(preview, objects: editor.objects, context: context) }
+            else { MacPDFObjectRenderer.drawConnection(from: MacPDFObjectRenderer.anchor(source, drag.anchor), to: drag.end, style: drag.style, context: context) }
+            context.restoreGState()
+        }
         if let path = connectionPortsPath { context.setFillColor(NSColor.white.cgColor); context.addPath(path); context.drawPath(using: .fillStroke) }
         if let path = connectionGlyphsPath { context.addPath(path); context.strokePath() }
         if let p = connectorRouteHandle, let color = editor?.selected?.style.stroke.color {
@@ -559,20 +565,47 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     func beginTextEditing(_ object: MacPDFObject) {
         guard let page = document?.page(at: object.page) else { return }
         finishTextEditing(); editingTextID = object.id; textBeforeEditing = editor?.objects ?? []; editingTextScale = max(scaleFactor, 0.1)
-        let view = NSTextView(frame: convert(object.bounds, from: page)); view.isRichText = true; view.isEditable = true; view.isSelectable = true; view.allowsUndo = true
-        view.drawsBackground = true; view.backgroundColor = object.style.fill.color; view.textContainerInset = CGSize(width: 4, height: 4)
-        view.wantsLayer = true; view.layer?.borderWidth = object.style.width * editingTextScale; view.layer?.borderColor = object.style.textBorder?.color.cgColor
+        textEditingBaseBounds = object.bounds
+        let view = MacPDFTextInput(frame: convert(object.bounds, from: page)); view.isRichText = true; view.isEditable = true; view.isSelectable = true; view.allowsUndo = true
+        view.drawsBackground = false; view.isVerticallyResizable = false; view.isHorizontallyResizable = false
+        view.textContainer?.lineFragmentPadding = 0; view.textContainer?.widthTracksTextView = true; view.textContainer?.heightTracksTextView = false
+        view.boxStyle = object.style; view.pdfScale = editingTextScale
         view.textStorage?.setAttributedString(scaledText(MacPDFTextFormatting.attributed(object), scale: editingTextScale))
         view.delegate = self; addSubview(view); textView = view; editor?.isTextEditing = true; editor?.menuVisible = false
         refreshAnnotations(); window?.makeFirstResponder(view); view.selectAll(nil)
     }
     func finishTextEditing() {
         guard let id = editingTextID, let view = textView, let editor else { return }
+        synchronizeTextLayout()
         let normalized = scaledText(view.attributedString(), scale: 1 / editingTextScale)
         let rtf = normalized.rtf(from: NSRange(location: 0, length: normalized.length), documentAttributes: [:])
-        editingTextID = nil; textView = nil; view.delegate = nil; view.removeFromSuperview(); editor.isTextEditing = false
+        editingTextID = nil; textView = nil; textEditingBaseBounds = nil; view.delegate = nil; view.removeFromSuperview(); editor.isTextEditing = false
         if let index = editor.objects.firstIndex(where: { $0.id == id }) { editor.objects[index].text = normalized.string; editor.objects[index].textRTF = rtf }
         editor.commitObjects(from: textBeforeEditing); textBeforeEditing = []; refreshAnnotations()
+    }
+    func textDidChange(_ notification: Notification) {
+        guard let view = textView, notification.object as AnyObject? === view else { return }
+        synchronizeTextLayout(); updateInteractionOverlay()
+    }
+    private func synchronizeTextLayout() {
+        guard !sizingTextEditor, let view = textView, let id = editingTextID, let editor,
+              let index = editor.objects.firstIndex(where: { $0.id == id }), let minimum = textEditingBaseBounds,
+              let page = document?.page(at: editor.objects[index].page) else { return }
+        sizingTextEditor = true; defer { sizingTextEditor = false }
+        let style = editor.objects[index].style, text = scaledText(view.attributedString(), scale: 1 / editingTextScale)
+        let fitted = MacPDFTextLayout.fittedBounds(text, minimum: minimum, style: style, page: page.bounds(for: .cropBox))
+        if editor.objects[index].bounds != fitted { editor.objects[index].bounds = fitted }
+        let inset = MacPDFTextLayout.inset(style) * editingTextScale
+        let insets = CGSize(width: inset, height: inset), frame = convert(fitted, from: page)
+        if view.textContainerInset != insets { view.textContainerInset = insets }
+        if view.frame != frame { view.frame = frame }
+        let containerSize = CGSize(width: max(1, view.bounds.width - inset * 2), height: 1e7)
+        if view.textContainer?.containerSize != containerSize { view.textContainer?.containerSize = containerSize }
+        if let input = view as? MacPDFTextInput, input.boxStyle != style || input.pdfScale != editingTextScale { input.boxStyle = style; input.pdfScale = editingTextScale; input.needsDisplay = true }
+        if MacPDFTextLayout.requiredHeight(text, width: fitted.width, style: style) > fitted.height + 0.5 {
+            editor.status = "문구가 한 페이지보다 큽니다. 글자 크기를 줄이거나 텍스트 박스를 나눠 주세요."
+        }
+        drawingOverlay.needsDisplay = true
     }
     private func scaledText(_ text: NSAttributedString, scale: CGFloat) -> NSAttributedString {
         let result = NSMutableAttributedString(attributedString: text)
@@ -583,15 +616,14 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     func applyTextFormat(field: String, style: MacPDFStyle) {
         guard let view = textView else { return }
         let selected = view.selectedRange(), text = view.attributedString()
-        if field == "fill" { view.backgroundColor = style.fill.color }
-        if field == "textBorder" || field == "width" { view.layer?.borderWidth = style.width * editingTextScale; view.layer?.borderColor = style.textBorder?.color.cgColor }
-        if selected.length > 0 { replaceEditorText(MacPDFTextFormatting.apply(field: field, style: style, to: text, range: selected, scale: editingTextScale), selection: selected) }
-        else {
+        let boxField = ["fill", "textBorder", "width", "dashed", "textCornerRadius"].contains(field)
+        if !boxField, selected.length > 0 { replaceEditorText(MacPDFTextFormatting.apply(field: field, style: style, to: text, range: selected, scale: editingTextScale), selection: selected) }
+        else if !boxField {
             let sample = NSAttributedString(string: " ", attributes: view.typingAttributes)
             view.typingAttributes = MacPDFTextFormatting.apply(field: field, style: style, to: sample, range: NSRange(location: 0, length: 1), scale: editingTextScale).attributes(at: 0, effectiveRange: nil)
         }
         if let id = editingTextID, let editor, let index = editor.objects.firstIndex(where: { $0.id == id }) { editor.objects[index].style = style }
-        restoreTextFocus()
+        synchronizeTextLayout(); updateInteractionOverlay(); restoreTextFocus()
     }
     func textViewDidChangeSelection(_ notification: Notification) {
         guard let view = textView, notification.object as AnyObject? === view, let editor else { return }
@@ -605,7 +637,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         if let color = attributes[.foregroundColor] as? NSColor { style.stroke = .init(color) }
         style.underline = (attributes[.underlineStyle] as? NSNumber)?.intValue != nil && (attributes[.underlineStyle] as? NSNumber)?.intValue != 0
         style.strike = (attributes[.strikethroughStyle] as? NSNumber)?.intValue != nil && (attributes[.strikethroughStyle] as? NSNumber)?.intValue != 0
-        editor.style = style
+        if editor.style != style { editor.style = style }
     }
     private func replaceEditorText(_ text: NSAttributedString, selection: NSRange) {
         guard let view = textView else { return }
@@ -613,7 +645,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         view.undoManager?.registerUndo(withTarget: self) { target in MainActor.assumeIsolated { target.replaceEditorText(before, selection: priorSelection) } }
         view.textStorage?.setAttributedString(text); view.setSelectedRange(selection); view.didChangeText()
     }
-    func textUndo(redo: Bool) { if redo { textView?.undoManager?.redo() } else { textView?.undoManager?.undo() }; restoreTextFocus() }
+    func textUndo(redo: Bool) { if redo { textView?.undoManager?.redo() } else { textView?.undoManager?.undo() }; synchronizeTextLayout(); updateInteractionOverlay(); restoreTextFocus() }
     func showFontPicker() {
         guard let view = textView else { return }
         NSFontManager.shared.target = self
