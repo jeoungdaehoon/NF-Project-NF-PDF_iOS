@@ -35,7 +35,6 @@ struct MacPDFEditorView: View {
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
     @State private var showReset = false
-    @GestureState private var toolbarDrag = CGSize.zero
     @GestureState private var paletteDrag = CGSize.zero
     private var detachedPaletteVisible: Bool { (state.alwaysShowPalette || state.paletteDetached) && !state.presentation }
     enum Modal: String, Identifiable { case crop, board, imageEditor, systemImageEditor; var id: String { rawValue } }
@@ -49,10 +48,9 @@ struct MacPDFEditorView: View {
                         MacPDFCanvas(state: state, isContainerResizing: isContainerResizing, onExitPaneExpansion: onExitPaneExpansion)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !state.presentation {
-                            floatingToolbar
-                                .scaleEffect(state.toolbarScale, anchor: .bottom)
-                                .offset(clampedToolbarOffset(in: geometry.size))
-                                .padding(.bottom, 14)
+                            MacPDFMovableToolbar(state: state, viewport: geometry.size) { handle, size in
+                                floatingToolbar(handle: handle, availableSize: size)
+                            }
                         } else {
                             Button("프레젠테이션 종료") { state.presentation = false }
                                 .padding(8).background(.regularMaterial, in: Capsule()).padding(10)
@@ -108,8 +106,10 @@ struct MacPDFEditorView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 Button { state.showPages.toggle() } label: { Image(systemName: "sidebar.left") }.help("페이지 목록")
-                Button { state.undo() } label: { Image(systemName: "arrow.uturn.backward") }.disabled(state.undoCount == 0).help("실행 취소 ⌘Z")
-                Button { state.redo() } label: { Image(systemName: "arrow.uturn.forward") }.disabled(state.redoCount == 0).help("다시 실행 ⇧⌘Z")
+                MacPDFActionButton(title: "", symbol: "arrow.uturn.backward", identifier: "pdf.undo", accessibilityTitle: "실행 취소") { state.undo() }
+                    .frame(width: 22, height: 22).disabled(!state.canUndo).help("실행 취소 ⌘Z")
+                MacPDFActionButton(title: "", symbol: "arrow.uturn.forward", identifier: "pdf.redo", accessibilityTitle: "다시 실행") { state.redo() }
+                    .frame(width: 22, height: 22).disabled(!state.canRedo).help("다시 실행 ⇧⌘Z")
                 Menu("페이지") {
                     Button("빈 페이지 추가") { state.pageOperation("add") }
                     Button("현재 페이지 복제") { state.pageOperation("duplicate") }
@@ -140,14 +140,23 @@ struct MacPDFEditorView: View {
             }.buttonStyle(.borderless).padding(10)
         }
         .frame(maxWidth: .infinity)
-        if let onTogglePaneExpanded, !isFullscreen {
-            // Keep the pane action pinned to the right, even when the other
-            // toolbar controls need horizontal scrolling in a narrow pane.
-            MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
-                .frame(width: 22, height: 22)
-                .padding(.horizontal, 10)
-                .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
+        HStack(spacing: 10) {
+            if state.tool == .neon {
+                MacPDFNeonTypePicker(selection: Binding(get: { state.neonType }, set: { state.selectNeonType($0) }))
+                    .frame(width: 150, height: 22)
+                    .help("네온 타입 선택: 라인은 자유롭게, 박스와 화살표는 시작점에서 끝점까지 드래그합니다.")
+                MacPDFActionButton(title: "네온 전체 삭제", identifier: "pdf.clearNeon", accessibilityTitle: "네온 전체 삭제") { if state.tool == .neon { state.clearNeon() } }
+                    .frame(width: 100, height: 22)
+                    .help("이 PDF 뷰어의 임시 네온을 모두 지웁니다. 일반 펜·텍스트·도형·연결선은 유지합니다.")
+            }
+            if let onTogglePaneExpanded, !isFullscreen {
+                // Keep these actions pinned right, even in a narrow pane.
+                MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
+                    .frame(width: 22, height: 22)
+                    .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
+            }
         }
+        .padding(.horizontal, 10)
         }
         .onChange(of: state.horizontal) { _, _ in state.configureView() }
         .onChange(of: state.paged) { _, _ in state.configureView() }
@@ -157,24 +166,19 @@ struct MacPDFEditorView: View {
         if let onToggleFullscreen { onToggleFullscreen() }
         else { state.canvas?.window?.toggleFullScreen(nil) }
     }
-    private var floatingToolbar: some View {
+    private func floatingToolbar(handle: MacPDFToolbarDragHandle, availableSize: CGSize) -> some View {
         Group {
             if state.verticalToolbar {
-                ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 6) { toolbarUtilities; toolButtons } }.frame(width: 42, height: 400)
+                ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 6) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
             } else {
-                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { toolbarUtilities; toolButtons } }.frame(maxWidth: 720, minHeight: 36, maxHeight: 36)
+                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: min(720, max(32, availableSize.width - 16)), height: 36)
             }
         }
         .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14)).shadow(radius: 4)
         .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) { options.frame(width: 350).padding(16) }
     }
-    @ViewBuilder private var toolbarUtilities: some View {
-                Image(systemName: state.paletteLocked ? "lock" : "arrow.up.and.down.and.arrow.left.and.right")
-                    .frame(width: 32, height: 30)
-                    .help("드래그하여 도구창 이동")
-                    .gesture(DragGesture().updating($toolbarDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in
-                        if !state.paletteLocked { state.toolbarOffset.width += value.translation.width; state.toolbarOffset.height += value.translation.height; state.rememberSettings() }
-                    })
+    @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
+                handle.frame(width: 32, height: 30)
                 Button { state.optionsTool = state.optionsTool == state.tool ? nil : state.tool } label: { Image(systemName: "slider.horizontal.3").frame(width: 32, height: 30) }.buttonStyle(.plain).help("도구 상세 설정")
                 Button { state.paletteLocked.toggle() } label: { Image(systemName: state.paletteLocked ? "lock.fill" : "lock.open") }.help("도구창 위치 잠금")
                 Button { state.verticalToolbar.toggle(); state.rememberSettings() } label: { Image(systemName: "rectangle.portrait.rotate") }.help("가로·세로 전환")
@@ -328,10 +332,6 @@ struct MacPDFEditorView: View {
                 .contentShape(Rectangle()).gesture(DragGesture().updating($paletteDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in if !state.paletteLocked { state.paletteOffset.width += value.translation.width; state.paletteOffset.height += value.translation.height; state.rememberSettings() } })
             options
         }.padding(12).frame(width: width, height: height).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
-    }
-    private func clampedToolbarOffset(in size: CGSize) -> CGSize {
-        let halfWidth = state.verticalToolbar ? 50.0 : min(300, size.width / 2)
-        return CGSize(width: min(max(0, size.width / 2 - halfWidth), max(-max(0, size.width / 2 - halfWidth), state.toolbarOffset.width + toolbarDrag.width)), height: min(0, max(-max(0, size.height - 430), state.toolbarOffset.height + toolbarDrag.height)))
     }
     private func chooseImage() { chooseImage(replacing: false) }
     private func styleBinding<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {

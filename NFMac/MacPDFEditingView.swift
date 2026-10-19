@@ -29,6 +29,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     weak var editor: MacPDFEditorState?
     var onExitPaneExpansion: (() -> Void)?
     private var observers: [NSObjectProtocol] = []
+    private var historyKeyMonitor: Any?
     private var start: CGPoint?, dragPage: PDFPage?
     private var beforeDrag: [MacPDFObject] = [], samples: [MacPDFPoint] = []
     private var draft: MacPDFObject?, resizeHandle: Int?
@@ -56,7 +57,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         return convert(p, from: page)
     }
     private var rotating = false, moving = false, activeTool = MacPDFTool.view
+    private var activeNeonType = MacPDFNeonType.line
     private var panStart: CGPoint?, panOrigin: CGPoint?, commandStart: (CGFloat, CGFloat)?
+    private var commandHeld = false
     private var textView: NSTextView?, editingTextID: UUID?
     private var textBeforeEditing: [MacPDFObject] = [], editingTextScale: CGFloat = 1
     private var initialFitPending = true, mouseTracking: NSTrackingArea?
@@ -70,7 +73,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, bounds.contains(convert(point, from: superview)) else { return nil }
-        if let textView {
+        if !commandHeld, let textView {
             let local = textView.convert(point, from: superview)
             if textView.bounds.contains(local) { return textView }
         }
@@ -78,10 +81,37 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     override func updateTrackingAreas() {
         if let mouseTracking { removeTrackingArea(mouseTracking) }
-        mouseTracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self)
+        mouseTracking = NSTrackingArea(rect: .zero, options: [.mouseMoved, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
         addTrackingArea(mouseTracking!); super.updateTrackingAreas()
     }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: editor?.tool == .view ? .openHand : .crosshair) }
+    var editingCursor: NSCursor {
+        if commandHeld { return commandStart == nil ? .openHand : .closedHand }
+        if panStart != nil { return .closedHand }
+        return editor?.tool == .view ? .openHand : .crosshair
+    }
+    private func updateCommandModifier(_ flags: NSEvent.ModifierFlags) {
+        let pressed = flags.contains(.command)
+        guard commandHeld != pressed else { return }
+        commandHeld = pressed
+        window?.invalidateCursorRects(for: self)
+        updateInteractionOverlay()
+    }
+    private func updateHoveredCursor(at location: CGPoint? = nil) {
+        guard let window, window.isKeyWindow, let content = window.contentView else { return }
+        let point = location ?? window.mouseLocationOutsideOfEventStream
+        guard content.hitTest(content.convert(point, from: nil)) === self else { return }
+        editingCursor.set()
+    }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: editingCursor) }
+    override func cursorUpdate(with event: NSEvent) {
+        // Cursor-update events can carry stale modifier flags. Modifier/key
+        // and pointer events own the temporary mode; cursor refreshes only draw it.
+        editingCursor.set()
+    }
+    override func flagsChanged(with event: NSEvent) {
+        updateCommandModifier(event.modifierFlags); updateHoveredCursor()
+        super.flagsChanged(with: event)
+    }
     override func layout() {
         super.layout(); updateInteractionOverlay()
         guard initialFitPending, bounds.width > 20, bounds.height > 20, document != nil else { return }
@@ -97,6 +127,28 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         [.init(x: r.minX, y: r.minY), .init(x: r.midX, y: r.minY), .init(x: r.maxX, y: r.minY), .init(x: r.maxX, y: r.midY), .init(x: r.maxX, y: r.maxY), .init(x: r.midX, y: r.maxY), .init(x: r.minX, y: r.maxY), .init(x: r.minX, y: r.midY)]
     }
     func installObservers() {
+        if historyKeyMonitor == nil {
+            // App menus/WKWebView can consume key equivalents before PDFView
+            // receives them. Intercept only while this canvas owns focus;
+            // native text editors, other panes and windows keep their shortcuts.
+            historyKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+                let handled = MainActor.assumeIsolated {
+                    if event.type == .flagsChanged {
+                        if let self, let window = self.window, window.isKeyWindow, event.window === window {
+                            self.updateCommandModifier(event.modifierFlags); self.updateHoveredCursor()
+                        }
+                        return false
+                    }
+                    guard let self, let window = self.window, window.isKeyWindow,
+                          event.window === window, window.firstResponder === self,
+                          !self.isHiddenOrHasHiddenAncestor,
+                          let redo = self.historyShortcut(event), let editor = self.editor else { return false }
+                    redo ? editor.redo() : editor.undo()
+                    return true
+                }
+                return handled ? nil : event
+            }
+        }
         drawingOverlay.canvas = self; drawingOverlay.frame = bounds; drawingOverlay.autoresizingMask = [.width, .height]
         drawingOverlay.wantsLayer = true; addSubview(drawingOverlay, positioned: .above, relativeTo: nil)
         wantsLayer = true; interactionLayer.fillColor = NSColor.clear.cgColor; interactionLayer.strokeColor = NSColor.systemBlue.cgColor; interactionLayer.lineWidth = 1.5
@@ -116,8 +168,18 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
                 }
             })
         }
+        observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, notification.object as? NSWindow === self.window else { return }
+                self.commandStart = nil; self.updateCommandModifier([])
+            }
+        })
     }
-    func removeObservers() { observers.forEach(NotificationCenter.default.removeObserver); observers = [] }
+    func removeObservers() {
+        observers.forEach(NotificationCenter.default.removeObserver); observers = []
+        if let historyKeyMonitor { NSEvent.removeMonitor(historyKeyMonitor); self.historyKeyMonitor = nil }
+        commandStart = nil; commandHeld = false
+    }
     func visibleInsertion() -> (Int, CGRect) {
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
         guard let document, let page = page(for: center, nearest: true) ?? currentPage else { return (0, .zero) }
@@ -149,7 +211,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         drawingOverlay.frame = bounds; drawingOverlay.needsDisplay = true
         if let textView, let id = editingTextID, let object = editor.objects.first(where: { $0.id == id }), let page = document?.page(at: object.page) { textView.frame = convert(object.bounds, from: page) }
         let path = CGMutablePath()
-        if editor.tool == .eraser, editor.optionsTool == .eraser || lastMousePoint != nil {
+        if !commandHeld, editor.tool == .eraser, editor.optionsTool == .eraser || lastMousePoint != nil {
             let p = lastMousePoint ?? CGPoint(x: bounds.midX, y: bounds.midY), size = editor.eraserSize
             path.addEllipse(in: CGRect(x: p.x - size / 2, y: p.y - size / 2, width: size, height: size))
         }
@@ -176,6 +238,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
     }
     override func mouseMoved(with event: NSEvent) {
+        updateCommandModifier(event.modifierFlags); updateHoveredCursor(at: event.locationInWindow)
         guard editor?.tool == .eraser else { return }
         lastMousePoint = convert(event.locationInWindow, from: nil); updateInteractionOverlay()
     }
@@ -294,12 +357,23 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     func cancelGesture() {
         if let drag = routeDrag, let editor, let original = drag.before.first(where: { $0.id == drag.id }), let index = editor.objects.firstIndex(where: { $0.id == drag.id }) { editor.objects[index] = original }
-        routeDrag = nil; draft = nil; start = nil; dragPage = nil; samples = []; moving = false; rotating = false; resizeHandle = nil; connectionDrag = nil; panStart = nil; panOrigin = nil; refreshAnnotations()
+        routeDrag = nil; draft = nil; start = nil; dragPage = nil; samples = []; moving = false; rotating = false; resizeHandle = nil; connectionDrag = nil; panStart = nil; panOrigin = nil; commandStart = nil; refreshAnnotations()
+    }
+    func clearNeonDraft() {
+        guard draft?.kind == .ink, draft?.isTransient == true else { return }
+        draft = nil; start = nil; dragPage = nil; samples = []; beforeDrag = []
+        refreshAnnotations()
     }
     override func mouseDown(with event: NSEvent) {
         guard let editor else { super.mouseDown(with: event); return }
-        if event.modifierFlags.contains(.command), editor.tool == .view { commandStart = (event.locationInWindow.x, scaleFactor); return }
+        updateCommandModifier(event.modifierFlags)
+        if commandHeld {
+            finishTextEditing(); window?.makeFirstResponder(self); cancelGesture()
+            commandStart = (event.locationInWindow.x, scaleFactor); editingCursor.set()
+            return
+        }
         finishTextEditing(); window?.makeFirstResponder(self); activeTool = editor.tool; editor.menuVisible = false
+        activeNeonType = editor.neonType
         let viewPoint = convert(event.locationInWindow, from: nil)
         if !event.modifierFlags.contains(.option), let handle = connectorRouteHandle,
            hypot(handle.x - viewPoint.x, handle.y - viewPoint.y) <= 12,
@@ -342,9 +416,17 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         else if [.pen, .highlighter, .neon].contains(activeTool) { editor.selection = []; updateInkDraft(editor, page: editor.currentPage) }
     }
     override func mouseDragged(with event: NSEvent) {
+        if let (x, scale) = commandStart {
+            updateCommandModifier(event.modifierFlags)
+            // Keep ownership until mouse-up, even if Command is released, so
+            // a zoom gesture can never fall through into ink/shape editing.
+            guard commandHeld else { editingCursor.set(); return }
+            autoScales = false
+            scaleFactor = min(10, max(0.1, scale * CGFloat(pow(2, Double((event.locationInWindow.x - x) / 240)))))
+            editingCursor.set(); return
+        }
         if routeDrag != nil { updateRouteDrag(event); return }
         if connectionDrag != nil { updateConnectionDrag(event); return }
-        if let (x, scale) = commandStart { autoScales = false; scaleFactor = min(10, max(0.1, scale * CGFloat(pow(2, Double((event.locationInWindow.x - x) / 240))))); return }
         if let origin = panOrigin, let initial = panStart, let scroll = documentView?.enclosingScrollView {
             let p = convert(event.locationInWindow, from: nil)
             let proposed = CGPoint(x: origin.x - (p.x - initial.x), y: origin.y - (p.y - initial.y) * (scroll.contentView.isFlipped == isFlipped ? 1 : -1))
@@ -354,7 +436,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         lastMousePoint = convert(event.locationInWindow, from: nil)
         let point = convert(convert(event.locationInWindow, from: nil), to: page); editor.menuVisible = false
         if moving { transformSelection(to: point, from: start); refreshAnnotations(pageOnly: true); return }
-        if [.pen, .highlighter, .neon].contains(activeTool), let previous = samples.last {
+        if activeTool == .neon, activeNeonType != .line {
+            samples = [samples.first ?? MacPDFPoint(start), MacPDFPoint(point, pressure: pressure(event))]
+        } else if [.pen, .highlighter, .neon].contains(activeTool), let previous = samples.last {
             let steps = max(1, min(2048, Int(ceil(hypot(point.x - previous.x, point.y - previous.y) / 3))))
             for step in 1...steps { let t = Double(step) / Double(steps); samples.append(MacPDFPoint(CGPoint(x: previous.x + (point.x - previous.x) * t, y: previous.y + (point.y - previous.y) * t), pressure: previous.pressure + (pressure(event) - previous.pressure) * t)) }
         } else { samples.append(MacPDFPoint(point, pressure: pressure(event))) }
@@ -395,6 +479,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
     }
     override func mouseUp(with event: NSEvent) {
+        if commandStart != nil {
+            commandStart = nil; updateCommandModifier(event.modifierFlags); editingCursor.set(); return
+        }
         if let drag = routeDrag, let editor {
             // A click without a drag must not create a bend/undo entry.
             let original = drag.before.first(where: { $0.id == drag.id })
@@ -413,8 +500,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             }
             connectionDrag = nil; refreshAnnotations(); return
         }
-        if commandStart != nil { commandStart = nil; return }
-        if panStart != nil { panStart = nil; panOrigin = nil; NSCursor.openHand.set(); return }
+        if panStart != nil { panStart = nil; panOrigin = nil; updateCommandModifier(event.modifierFlags); editingCursor.set(); return }
         guard let editor, start != nil else { return }
         if let draft, [.pen, .highlighter, .neon, .shape].contains(activeTool) {
             self.draft = nil
@@ -441,9 +527,14 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     private func updateInkDraft(_ editor: MacPDFEditorState, page: Int) {
         var style = editor.style
         if activeTool == .highlighter { style.width = max(12, style.width); style.stroke.a = 0.28; style.pressure = false }
-        let padding = style.width * (activeTool == .neon ? 6 : 1)
-        let box = samples.reduce(CGRect.null) { $0.union(CGRect(origin: $1.cgPoint, size: CGSize(width: 0.1, height: 0.1))) }.insetBy(dx: -padding, dy: -padding)
-        draft = MacPDFObject(page: page, kind: .ink, bounds: box, style: style, points: samples, isTransient: activeTool == .neon); refreshAnnotations(pageOnly: true)
+        var points = samples
+        if activeTool == .neon, activeNeonType == .box, let first = samples.first, let last = samples.last {
+            let rect = CGRect(x: first.x, y: first.y, width: last.x - first.x, height: last.y - first.y).standardized
+            points = (Self.corners(rect) + [CGPoint(x: rect.minX, y: rect.minY)]).map { MacPDFPoint($0) }
+        }
+        let padding = activeTool == .neon ? max(style.width * 6, activeNeonType == .arrow ? 12 : 0) : style.width
+        let box = points.reduce(CGRect.null) { $0.union(CGRect(origin: $1.cgPoint, size: CGSize(width: 0.1, height: 0.1))) }.insetBy(dx: -padding, dy: -padding)
+        draft = MacPDFObject(page: page, kind: .ink, bounds: box, style: style, points: points, isTransient: activeTool == .neon, neonType: activeTool == .neon ? activeNeonType : nil); refreshAnnotations(pageOnly: true)
     }
     private func erase(at point: CGPoint, page: Int) {
         guard let editor else { return }
@@ -549,13 +640,24 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     override func scrollWheel(with event: NSEvent) { documentView?.enclosingScrollView?.scrollWheel(with: event); updateInteractionOverlay() }
     override func magnify(with event: NSEvent) { finishTextEditing(); autoScales = false; scaleFactor = min(10, max(0.1, scaleFactor * (1 + event.magnification))); updateInteractionOverlay() }
+    private func historyShortcut(_ event: NSEvent) -> Bool? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command), !flags.contains(.control), !flags.contains(.option) else { return nil }
+        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        // Korean input sources can report "ㅋ" instead of "z" even for ⌘Z.
+        // Keep character-based equivalents for alternate Latin layouts, and
+        // use the physical Z key only when the input source emits non-ASCII.
+        let nonLatinZ = event.keyCode == 6 && key.unicodeScalars.contains { !$0.isASCII }
+        guard key == "z" || nonLatinZ else { return nil }
+        return flags.contains(.shift)
+    }
     override func keyDown(with event: NSEvent) {
         guard let editor else { super.keyDown(with: event); return }
         if routeDrag != nil, event.keyCode == 53 { cancelGesture(); return }
+        if let redo = historyShortcut(event) { redo ? editor.redo() : editor.undo(); return }
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         if event.modifierFlags.contains(.command) {
             switch key {
-            case "z": event.modifierFlags.contains(.shift) ? editor.redo() : editor.undo()
             case "c": editor.copySelected()
             case "x": editor.copySelected(); editor.deleteSelected()
             case "v": editor.paste()
@@ -574,6 +676,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         super.keyDown(with: event)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, let redo = historyShortcut(event), let editor {
+            redo ? editor.redo() : editor.undo(); return true
+        }
         guard window?.firstResponder === self, event.modifierFlags.contains(.command), let key = event.charactersIgnoringModifiers?.lowercased(), ["z", "c", "x", "v", "d", "a"].contains(key) else { return super.performKeyEquivalent(with: event) }
         keyDown(with: event); return true
     }

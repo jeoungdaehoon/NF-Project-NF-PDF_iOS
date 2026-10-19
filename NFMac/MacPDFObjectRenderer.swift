@@ -96,6 +96,15 @@ enum MacPDFObjectRenderer {
             context.setStrokeColor(style.stroke.color.cgColor)
             if object.isTransient, let first = object.points.first {
                 let path = CGMutablePath(); path.move(to: first.cgPoint); object.points.dropFirst().forEach { path.addLine(to: $0.cgPoint) }
+                if object.neonType == .arrow, let end = object.points.last {
+                    let distance = hypot(end.x - first.x, end.y - first.y)
+                    if distance > 0.01 {
+                        let angle = atan2(end.y - first.y, end.x - first.x), length = min(distance * 0.45, max(12, style.width * 5))
+                        path.move(to: CGPoint(x: end.x - length * cos(angle - 0.45), y: end.y - length * sin(angle - 0.45)))
+                        path.addLine(to: end.cgPoint)
+                        path.addLine(to: CGPoint(x: end.x - length * cos(angle + 0.45), y: end.y - length * sin(angle + 0.45)))
+                    }
+                }
                 for (multiplier, opacity) in [(5.2, 0.24), (2.6, 0.64), (1.0, 1.0)] {
                     context.saveGState(); context.setLineWidth(max(0.5, style.width * multiplier)); context.setLineCap(.round)
                     if multiplier == 5.2 { context.setShadow(offset: .zero, blur: max(6, style.width * 2.8), color: style.stroke.color.cgColor) }

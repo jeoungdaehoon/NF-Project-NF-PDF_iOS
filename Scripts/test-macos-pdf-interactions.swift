@@ -50,6 +50,7 @@ import SwiftUI
         let pdf = PDFDocument(), page = PDFPage(); page.setBounds(CGRect(x: 0, y: 0, width: 600, height: 1600), for: .mediaBox); pdf.insert(page, at: 0)
         let state = MacPDFEditorState(document: pdf, identifier: "ui", fileName: "fixture.pdf", directory: root)
         state.connectionStyle = MacPDFStyle()
+        state.neonType = .line
         let window = NSWindow(contentRect: CGRect(x: -10000, y: -10000, width: 1100, height: 780), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: MacPDFEditorView(state: state)); window.contentView = host; window.orderFront(nil); host.layoutSubtreeIfNeeded(); settle()
@@ -69,16 +70,111 @@ import SwiftUI
             while let event = app.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }
             settle()
         }
+        func chooseNeonType(_ type: MacPDFNeonType) throws {
+            guard let picker = find(host, "pdf.neon.type") as? NSSegmentedControl, let action = picker.action else { throw NSError(domain: "PDFUI", code: 2) }
+            try check(picker.segmentCount == 3, "native neon selector exposes line, box and arrow")
+            try check(picker.isEnabled && state.tool == .neon, "neon selector is enabled only after bottom neon tool selection")
+            picker.selectedSegment = MacPDFNeonType.allCases.firstIndex(of: type)!
+            try check(app.sendAction(action, to: picker.target, from: picker), "native neon selector action \(type.rawValue)")
+            settle()
+            try check(state.neonType == type && state.tool == .neon && state.optionsTool == nil, "type selection stays in bottom-selected neon mode without opening a popup")
+        }
+        func neonShortcut(redo: Bool = false) {
+            let flags: NSEvent.ModifierFlags = redo ? [.command, .shift] : [.command]
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: Date.timeIntervalSinceReferenceDate, windowNumber: window.windowNumber, context: nil, characters: redo ? "Z" : "z", charactersIgnoringModifiers: redo ? "Z" : "z", isARepeat: false, keyCode: 6)!
+            window.makeFirstResponder(view); window.sendEvent(event); settle()
+        }
+        func checkHistoryButtons() throws {
+            guard let undo = find(host, "pdf.undo") as? NSButton, let redo = find(host, "pdf.redo") as? NSButton else { throw CocoaError(.fileReadUnknown) }
+            try check(undo.isEnabled == state.canUndo && redo.isEnabled == state.canRedo, "native undo/redo buttons track the active tool's history")
+        }
+        func checkNeonControls(_ enabled: Bool) throws {
+            if !enabled {
+                try check(find(host, "pdf.neon.type") == nil && find(host, "pdf.clearNeon") == nil, "top neon controls are absent outside neon mode (\(state.tool.rawValue))")
+                let before = state.objects, selectedType = state.neonType, currentTool = state.tool
+                state.selectNeonType(selectedType == .arrow ? .line : .arrow)
+                try check(state.objects == before && state.neonType == selectedType && state.tool == currentTool, "hidden top controls cannot change the tool or neon type")
+                return
+            }
+            guard let picker = find(host, "pdf.neon.type") as? NSSegmentedControl, let clear = find(host, "pdf.clearNeon") as? NSButton else { throw NSError(domain: "PDFUI", code: 3) }
+            try check(picker.isEnabled && clear.isEnabled, "top neon controls are visible and enabled in neon mode")
+        }
         try check(view.hitTest(CGPoint(x: view.frame.midX, y: view.frame.midY)) === view, "PDF editing surface owns hit testing")
+        try checkNeonControls(false)
         try press("pdf.tool.pen")
+        try checkNeonControls(false)
         let p = CGPoint(x: view.bounds.midX - 80, y: view.bounds.midY)
         gesture([p, CGPoint(x: p.x + 100, y: p.y + 15)])
         try check(state.objects.count == 1 && state.objects[0].kind == .ink, "NSWindow dispatched pen drag creates ink")
         try press("pdf.tool.pen"); try check(state.optionsTool == .pen, "same-tool press opens options")
         state.optionsTool = nil; settle()
         try press("pdf.tool.neon")
+        try checkNeonControls(true)
         gesture([CGPoint(x: p.x, y: p.y + 70), CGPoint(x: p.x + 100, y: p.y + 75)])
         try check(state.objects.contains { $0.isTransient }, "NSWindow dispatched neon creates transient glowing ink")
+        gesture([CGPoint(x: p.x, y: p.y + 100), CGPoint(x: p.x + 100, y: p.y + 105)])
+        let permanentBeforeClear = state.objects.filter { !$0.isTransient }, historyBeforeClear = (state.undoCount, state.redoCount)
+        try press("pdf.clearNeon")
+        try check(!state.objects.contains { $0.isTransient } && state.objects == permanentBeforeClear, "toolbar clear removes every neon stroke but keeps permanent pen ink")
+        try check(state.tool == .neon && state.undoCount == historyBeforeClear.0 && state.redoCount == historyBeforeClear.1, "clear neon keeps the active tool and document undo history")
+        try press("pdf.clearNeon")
+        try check(state.objects == permanentBeforeClear, "clearing an empty neon layer is harmless")
+        gesture([CGPoint(x: p.x, y: p.y + 70), CGPoint(x: p.x + 100, y: p.y + 75)])
+        try check(state.objects.contains { $0.isTransient }, "neon remains drawable after clearing")
+        try press("pdf.clearNeon")
+        let historyBeforeTypes = (state.undoCount, state.redoCount)
+        for type in [MacPDFNeonType.box, .arrow, .line] {
+            try chooseNeonType(type)
+            let shift = type == .box ? -100.0 : type == .arrow ? 100.0 : 0.0
+            let first = CGPoint(x: p.x + shift, y: p.y + 110), last = CGPoint(x: p.x + shift + 100, y: p.y + 180)
+            gesture([first, CGPoint(x: first.x + 25, y: first.y + 90), last])
+            let object = state.objects.last!
+            try check(object.isTransient && object.kind == .ink && object.neonType == type, "\(type.rawValue) is temporary glowing neon, not a permanent shape")
+            if type == .box {
+                try check(object.points.count == 5 && object.points.first == object.points.last, "box drag creates a closed outline")
+                let points = object.points.map(\.cgPoint)
+                try check(zip(points, points.dropFirst()).allSatisfy { abs($0.x - $1.x) < 0.01 || abs($0.y - $1.y) < 0.01 }, "box edges stay horizontal or vertical")
+            } else if type == .arrow {
+                try check(object.points.count == 2 && object.points.first?.cgPoint == view.convert(first, to: page) && object.points.last?.cgPoint == view.convert(last, to: page), "arrow drag stays straight and points to the release position")
+            } else { try check(object.points.count > 3, "line mode preserves existing freehand input") }
+        }
+        try check(state.undoCount == historyBeforeTypes.0 && state.redoCount == historyBeforeTypes.1, "all neon types stay outside document undo history")
+        let neonStrokes = state.objects.filter(\.isTransient)
+        try checkHistoryButtons()
+        for remaining in stride(from: 2, through: 0, by: -1) {
+            neonShortcut()
+            try check(state.objects.filter(\.isTransient) == Array(neonStrokes.prefix(remaining)), "NSWindow Cmd+Z removes the latest neon stroke (\(remaining) remaining)")
+            try check(state.objects.filter { !$0.isTransient } == permanentBeforeClear, "neon shortcut never undoes permanent ink")
+            try checkHistoryButtons()
+        }
+        neonShortcut()
+        try check(state.objects == permanentBeforeClear && !state.canUndo, "empty neon undo does not fall through to permanent document undo")
+        for restored in 1...3 {
+            neonShortcut(redo: true)
+            try check(state.objects.filter(\.isTransient) == Array(neonStrokes.prefix(restored)), "NSWindow Shift+Cmd+Z restores exact neon geometry/style/type (\(restored) restored)")
+            try checkHistoryButtons()
+        }
+        try press("pdf.undo"); try check(state.objects.filter(\.isTransient).count == 2, "top undo button uses neon history")
+        try press("pdf.redo"); try check(state.objects.filter(\.isTransient) == neonStrokes, "top redo button restores neon without changing canvas focus")
+        try check(state.undoCount == historyBeforeTypes.0 && state.redoCount == historyBeforeTypes.1, "neon keyboard/button history never changes document history counts")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-neon-types.png")) }
+        for tool in [MacPDFTool.view, .select, .pen] {
+            try press("pdf.tool.\(tool.rawValue)"); try checkNeonControls(false)
+        }
+        try check(state.objects.filter(\.isTransient).count == 3, "leaving neon mode keeps visible neon until its usual clear/expiry")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-neon-disabled.png")) }
+        try press("pdf.tool.neon"); try checkNeonControls(true)
+        neonShortcut()
+        gesture([CGPoint(x: p.x, y: p.y + 70), CGPoint(x: p.x + 100, y: p.y + 75)])
+        try check(!state.canRedo && state.objects.filter(\.isTransient).count == 3, "drawing after undo invalidates only neon redo")
+        neonShortcut(redo: true)
+        try check(state.objects.filter(\.isTransient).count == 3, "invalidated neon redo cannot restore the discarded stroke")
+        try press("pdf.clearNeon")
+        try check(state.objects == permanentBeforeClear, "clear-neon button removes line, box and arrow together")
+        try check(!state.canUndo && !state.canRedo, "clear-all resets temporary history so cleared neon cannot return")
+        try checkHistoryButtons()
+        neonShortcut(redo: true); neonShortcut()
+        try check(state.objects == permanentBeforeClear, "shortcuts after clear cannot restore neon or change permanent ink")
         try press("pdf.tool.shape"); try press("pdf.add.shape.rectangle")
         try check(state.selected?.kind == .shape && state.menuVisible, "actual shape add button opens object menu")
         let blank = CGPoint(x: view.bounds.maxX - 25, y: view.bounds.midY)

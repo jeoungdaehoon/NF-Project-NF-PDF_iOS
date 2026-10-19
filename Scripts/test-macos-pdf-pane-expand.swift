@@ -90,6 +90,12 @@ private struct PaneFixture: View {
                 "top-left PDF viewer corner is square and fully filled, not rounded/cut out")
         }
         try check(find("pdf.expandPane") != nil && find("pdf.download") != nil, "PDF toolbar exposes split-pane shortcut and download")
+        try check(find("pdf.neon.type") == nil && find("pdf.clearNeon") == nil, "neon controls are absent outside neon mode in a split viewer")
+        if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-neon-hidden-pane.png"))
+        }
+        try press("pdf.tool.neon"); pump(0.2)
         func shortcutIsPinnedRight() -> Bool {
             guard let shortcut = find("pdf.expandPane") as? NSButton else { return false }
             let frame = shortcut.convert(shortcut.bounds, to: nil), canvasFrame = canvas.convert(canvas.bounds, to: nil)
@@ -101,6 +107,22 @@ private struct PaneFixture: View {
             let shortcutFrame = shortcut.convert(shortcut.bounds, to: nil), downloadFrame = download.convert(download.bounds, to: nil)
             try check(shortcutFrame.minX > downloadFrame.maxX && shortcutIsPinnedRight(), "split-pane icon is pinned to the far right of the PDF toolbar")
         } else { try check(false, "toolbar controls must be native accessible buttons") }
+        func clearNeonIsLeftOfFullscreen() -> Bool {
+            guard let clear = find("pdf.clearNeon") as? NSButton, let expand = find("pdf.expandPane") as? NSButton else { return false }
+            let a = clear.convert(clear.bounds, to: nil), b = expand.convert(expand.bounds, to: nil)
+            return a.maxX < b.minX && (0...18).contains(b.minX - a.maxX) && abs(a.midY - b.midY) < 3
+        }
+        try check(clearNeonIsLeftOfFullscreen(), "clear-neon button sits immediately left of the right-hand pane fullscreen icon")
+        func neonTypeIsLeftOfClear() -> Bool {
+            guard let picker = find("pdf.neon.type") as? NSSegmentedControl, let clear = find("pdf.clearNeon") as? NSButton else { return false }
+            let a = picker.convert(picker.bounds, to: nil), b = clear.convert(clear.bounds, to: nil)
+            return picker.segmentCount == 3 && a.maxX <= b.minX && (0...18).contains(b.minX - a.maxX)
+        }
+        try check(neonTypeIsLeftOfClear(), "neon type selector is immediately left of clear-neon")
+        try check((find("pdf.neon.type") as? NSSegmentedControl)?.isEnabled == true && (find("pdf.clearNeon") as? NSButton)?.isEnabled == true, "bottom neon tool enables both top controls in a split viewer")
+        editor.add(MacPDFObject(page: 0, kind: .ink, bounds: CGRect(x: 80, y: 400, width: 200, height: 30), points: [MacPDFPoint(CGPoint(x: 80, y: 410)), MacPDFPoint(CGPoint(x: 280, y: 420))], isTransient: true))
+        try press("pdf.clearNeon"); pump(0.2)
+        try check(editor.objects.map(\.id) == objectIDs && editor.undoCount == undoCount, "right toolbar clear deletes temporary neon without changing document edits/history")
         try press("pdf.expandPane"); pump(0.4)
         try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "toolbar shortcut fills the source split pane directly")
         try press("pdf.expandPane"); pump(0.4)
@@ -119,6 +141,8 @@ private struct PaneFixture: View {
         state.pane = CGRect(x: 1050, y: 0, width: 550, height: host.bounds.height); pump(0.3)
         try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "expanded viewer follows resized split divider")
         try check(shortcutIsPinnedRight(), "pane shortcut remains pinned right in a narrow resized pane")
+        try check(clearNeonIsLeftOfFullscreen(), "clear-neon button remains next to fullscreen in a narrow split pane")
+        try check(neonTypeIsLeftOfClear(), "neon type selector stays visible beside clear in a narrow split pane")
         try press("attachment.viewer.back"); pump(0.5)
         try check(hasFrame(normal) && state.closeCount == 0, "exit button restores original slide size without closing")
         try press("attachment.viewer.more"); pump(0.2); try press("attachment.viewer.expandPane"); pump(0.4)

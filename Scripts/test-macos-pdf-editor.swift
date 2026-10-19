@@ -51,12 +51,30 @@ struct MacPDFEditorRegression {
         try check(reopened.objects == state.objects && reopened.favorites == state.favorites && reopened.pageCount == state.pageCount, "archive roundtrip")
         let transient = MacPDFObject(page: 0, kind: .ink, bounds: CGRect(x: 10, y: 10, width: 50, height: 50), points: [MacPDFPoint(CGPoint(x: 10, y: 10)), MacPDFPoint(CGPoint(x: 50, y: 50))], isTransient: true)
         state.add(transient); state.persist()
+        for type in [MacPDFNeonType.box, .arrow] {
+            var copy = transient; copy.id = UUID(); copy.neonType = type; state.add(copy)
+        }
+        state.persist()
         let reopenedAgain = MacPDFEditorState(document: pdf, identifier: "fixture", fileName: "fixture.pdf", directory: root.appendingPathComponent("editor"))
         try check(!reopenedAgain.objects.contains { $0.isTransient }, "neon must not persist")
+        try check(state.objects.filter(\.isTransient).count == 3, "line, box and arrow neon can coexist without being stored")
         let export = state.exportPDF()!, exported = PDFDocument(data: export)!
         try check(exported.pageCount == 1 && exported.page(at: 0)!.bounds(for: .mediaBox).size == CGSize(width: 600, height: 800), "PDF export size/page count")
         try check(exported.string?.contains("PDF editor regression") == true, "PDF export contains real text")
         try check(state.document.pageCount == 1 && state.objects.contains { $0.isTransient }, "export does not mutate live edits")
+        let permanentBeforeClear = state.objects.filter { !$0.isTransient }, historyBeforeClear = (state.undoCount, state.redoCount)
+        state.selectObjects([text.id], showMenu: true)
+        let selectionBeforeClear = state.selection, toolBeforeClear = state.tool
+        state.clearNeon()
+        try check(state.objects == permanentBeforeClear && state.selection == selectionBeforeClear && state.menuVisible && state.tool == toolBeforeClear, "clear neon preserves durable objects, active selection, menu and tool")
+        try check(state.undoCount == historyBeforeClear.0 && state.redoCount == historyBeforeClear.1, "clear neon leaves document history unchanged")
+        state.clearNeon(); try check(state.objects == permanentBeforeClear, "clear neon is idempotent")
+        let beforeTypeAttempt = state.neonType, beforeToolAttempt = state.tool
+        state.selectNeonType(beforeTypeAttempt == .box ? .arrow : .box)
+        try check(state.neonType == beforeTypeAttempt && state.tool == beforeToolAttempt && state.objects == permanentBeforeClear, "type selection outside neon mode cannot implicitly activate neon")
+        let otherViewer = MacPDFEditorState(document: pdf, identifier: "other-neon", fileName: "other.pdf", directory: root.appendingPathComponent("other-neon"))
+        otherViewer.add(transient); state.add(transient); state.clearNeon()
+        try check(otherViewer.objects.contains { $0.isTransient } && !state.objects.contains { $0.isTransient }, "clear neon affects only the current PDF viewer")
         for shapeType in MacPDFShape.allCases { try check(!MacPDFObjectRenderer.shapePath(shapeType, bounds: shape.bounds).isEmpty, "shape path \(shapeType)") }
         // Render all object types/styles, including empty/single-point ink.
         let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 600, pixelsHigh: 800, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
@@ -80,6 +98,21 @@ struct MacPDFEditorRegression {
             MacPDFObjectRenderer.draw(routed, objects: objects, context: context)
         }
         for points in [[], [MacPDFPoint(CGPoint(x: 20, y: 20))], transient.points] { var object = transient; object.points = points; MacPDFObjectRenderer.draw(object, objects: [], context: context); object.style.pressure = true; MacPDFObjectRenderer.draw(object, objects: [], context: context) }
+        for type in MacPDFNeonType.allCases {
+            var object = transient; object.neonType = type
+            MacPDFObjectRenderer.draw(object, objects: [], context: context)
+            object.points = [MacPDFPoint(CGPoint(x: 20, y: 20))]
+            MacPDFObjectRenderer.draw(object, objects: [], context: context)
+        }
+        func neonPixels(_ type: MacPDFNeonType) -> Data {
+            let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 180, pixelsHigh: 100, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            let drawing = NSGraphicsContext(bitmapImageRep: image)!.cgContext
+            var object = transient; object.neonType = type; object.style.width = 2
+            object.points = [MacPDFPoint(CGPoint(x: 20, y: 50)), MacPDFPoint(CGPoint(x: 150, y: 50))]
+            MacPDFObjectRenderer.draw(object, objects: [], context: drawing); drawing.flush()
+            return Data(bytes: image.bitmapData!, count: image.bytesPerRow * image.pixelsHigh)
+        }
+        try check(neonPixels(.arrow) != neonPixels(.line), "arrow neon visibly renders an arrowhead, not just a renamed line")
         try check(bitmap.representation(using: .png, properties: [:]) != nil, "all drawing paths complete")
         let remoteDirectory = root.appendingPathComponent("remote")
         let remote = MacPDFEditorState(document: PDFDocument(data: export)!, identifier: "remote", fileName: "remote.pdf", sourceURL: URL(string: "https://example.test/test.pdf"), sourceData: Data([1]), directory: remoteDirectory)
@@ -114,6 +147,15 @@ struct MacPDFEditorRegression {
         input.tool = .pen
         view.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 100, y: 100))); view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 200, y: 100))); view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 200, y: 100)))
         try check(input.objects.count == 1 && input.objects[0].points.count > 10, "native pen drag samples continuous stroke")
+        input.tool = .neon
+        view.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 100, y: 180))); view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 200, y: 180)))
+        try check(view.drawingDraft?.isTransient == true, "neon draft exists while pointer is held")
+        input.clearNeon(); view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 200, y: 180)))
+        try check(view.drawingDraft == nil && !input.objects.contains { $0.isTransient }, "clear neon cancels live neon draft so mouse-up cannot restore it")
+        view.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 100, y: 180))); view.mouseDragged(with: mouse(.leftMouseDragged, CGPoint(x: 200, y: 180)))
+        input.undo(); view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 200, y: 180)))
+        try check(view.drawingDraft == nil && !input.objects.contains { $0.isTransient } && input.objects.count == 1, "undo cancels an in-progress neon draft without undoing permanent pen")
+        input.tool = .pen
         input.tool = .eraser; input.eraserSize = 24
         view.mouseDown(with: mouse(.leftMouseDown, CGPoint(x: 150, y: 100))); view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: 150, y: 100)))
         try check(input.objects.count == 2, "native eraser splits a stroke")
@@ -171,6 +213,26 @@ struct MacPDFEditorRegression {
             try png.write(to: URL(fileURLWithPath: "/private/tmp/nf-macos-pdf-editor-proof.png"))
         }
         try export.write(to: root.appendingPathComponent("export.pdf"))
+        let neonHistory = MacPDFEditorState(document: pdf, identifier: "neon-history", fileName: "history.pdf", sourceURL: URL(string: "https://example.test/history.pdf"), directory: root.appendingPathComponent("neon-history"))
+        neonHistory.add(shape); neonHistory.selectTool(.neon)
+        let savedStatus = neonHistory.status
+        neonHistory.add(transient); neonHistory.undo()
+        try check(neonHistory.objects == [shape] && neonHistory.canRedo && !neonHistory.canUndo && neonHistory.undoCount == 1, "neon-only undo keeps permanent history independent")
+        neonHistory.selectTool(.pen); neonHistory.undo()
+        try check(neonHistory.objects.isEmpty && neonHistory.redoCount == 1, "ordinary tool still undoes permanent document edits")
+        neonHistory.redo(); neonHistory.selectTool(.neon); neonHistory.redo()
+        try check(neonHistory.objects == [shape, transient], "switching tools preserves independent neon redo")
+        neonHistory.selectTool(.pen); neonHistory.undo(); neonHistory.redo()
+        try check(neonHistory.objects.filter(\.isTransient) == [transient], "permanent undo/redo preserves the visible temporary neon layer")
+        neonHistory.selectTool(.neon); neonHistory.undo()
+        try check(neonHistory.status == savedStatus, "neon undo/redo does not change document save status")
+        // Redo-only neon also expires; old cancelled timers must not erase a
+        // new stroke. This bounded wait never touches real documents/network.
+        RunLoop.current.run(until: Date().addingTimeInterval(10.3))
+        try check(neonHistory.neonUndoCount == 0 && neonHistory.neonRedoCount == 0 && !neonHistory.canRedo, "ten-second expiry discards redo-only neon history")
+        neonHistory.redo(); try check(neonHistory.objects == [shape], "expired neon cannot be resurrected by redo")
+        neonHistory.add(transient); neonHistory.close()
+        try check(neonHistory.neonUndoCount == 0 && neonHistory.neonRedoCount == 0 && neonHistory.objects == [shape], "closing the viewer clears temporary neon and its history")
         print("PASS: \(checks) macOS PDF editor checks (persistence, undo/redo, pages, connectors, shapes, PDF export)")
     }
 }

@@ -4,6 +4,7 @@ import SwiftUI
 /// Editor buttons must not become first responder: opening a color/font menu
 /// or pressing a text-format button must preserve NSTextView's selected range.
 struct MacPDFActionButton: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     var title: String
     var symbol: String? = nil
     var identifier: String
@@ -17,6 +18,7 @@ struct MacPDFActionButton: NSViewRepresentable {
     }
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.action = action
+        button.isEnabled = isEnabled
         button.identifier = NSUserInterfaceItemIdentifier(identifier); button.setAccessibilityIdentifier(identifier); button.setAccessibilityLabel(accessibilityTitle ?? title); button.toolTip = accessibilityTitle ?? title
         button.font = .systemFont(ofSize: symbol == nil ? 13 : 10)
         button.title = title
@@ -27,6 +29,6 @@ struct MacPDFActionButton: NSViewRepresentable {
     final class Coordinator: NSObject {
         var action: () -> Void
         init(action: @escaping () -> Void) { self.action = action }
-        @objc func press() { action() }
+        @objc func press(_ sender: NSButton) { guard sender.isEnabled else { return }; action() }
     }
 }

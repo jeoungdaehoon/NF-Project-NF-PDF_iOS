@@ -67,6 +67,11 @@ struct MacPDFRGBA: Codable, Equatable {
     var key: String { "\(r),\(g),\(b),\(a)" }
 }
 
+enum MacPDFNeonType: String, Codable, CaseIterable {
+    case line, box, arrow
+    var title: String { switch self { case .line: "라인"; case .box: "박스"; case .arrow: "화살표" } }
+}
+
 struct MacPDFPoint: Codable, Equatable {
     var x: Double, y: Double, pressure: Double
     init(_ point: CGPoint, pressure: Double = 1) { x = point.x; y = point.y; self.pressure = pressure }
@@ -137,6 +142,7 @@ struct MacPDFObject: Codable, Identifiable, Equatable {
     // copied/moved endpoint pairs retain the same relative bend automatically.
     var connectorOffset: MacPDFPoint?
     var isTransient = false
+    var neonType: MacPDFNeonType?
 }
 
 struct MacPDFEditArchive: Codable {
@@ -153,6 +159,7 @@ final class MacPDFEditorState: ObservableObject {
     @Published var objects: [MacPDFObject] = []
     @Published var selection: Set<UUID> = []
     @Published var tool = MacPDFTool.view
+    @Published var neonType = MacPDFNeonType.line
     // A persistent interaction toggle, not a mutually exclusive drawing tool.
     @Published var connectorEnabled = false
     @Published var connectionStyle = MacPDFStyle()
@@ -189,6 +196,8 @@ final class MacPDFEditorState: ObservableObject {
     @Published var isTextEditing = false
     @Published private(set) var undoCount = 0
     @Published private(set) var redoCount = 0
+    @Published private(set) var neonUndoCount = 0
+    @Published private(set) var neonRedoCount = 0
     var onSave: ((Data) async throws -> Void)?
     var exportOnSave = false
     var onOpenAttachment: ((Data, String) -> Void)?
@@ -204,7 +213,8 @@ final class MacPDFEditorState: ObservableObject {
     private var baseChanged = false
     private var pendingDocumentSave = false
     private var editRevision: UInt = 0
-    private var neonTasks: [UUID: Task<Void, Never>] = [:]
+    private var neonTask: Task<Void, Never>?
+    private var neonUndoStack: [[MacPDFObject]] = [], neonRedoStack: [[MacPDFObject]] = []
     private var paletteOptions: [String: MacPDFStyle] = [:]
     private var toolOptions: [String: MacPDFStyle] = [:]
     private var archiveReadFailed = false
@@ -227,6 +237,7 @@ final class MacPDFEditorState: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.paletteOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { paletteOptions = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.toolOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { toolOptions = saved }
         connectionStyle = toolOptions[MacPDFTool.connector.rawValue] ?? MacPDFStyle()
+        neonType = UserDefaults.standard.string(forKey: "nf.mac.pdf.neonType").flatMap(MacPDFNeonType.init(rawValue:)) ?? .line
         paletteLocked = UserDefaults.standard.bool(forKey: "nf.mac.pdf.paletteLocked")
         alwaysShowPalette = UserDefaults.standard.bool(forKey: "nf.mac.pdf.alwaysShowPalette")
         paletteDetached = UserDefaults.standard.bool(forKey: "nf.mac.pdf.paletteDetached")
@@ -240,6 +251,9 @@ final class MacPDFEditorState: ObservableObject {
 
     var selected: MacPDFObject? { objects.first { selection.contains($0.id) } }
     var pageCount: Int { document.pageCount }
+    var canUndo: Bool { tool == .neon ? neonUndoCount > 0 : undoCount > 0 }
+    var canRedo: Bool { tool == .neon ? neonRedoCount > 0 : redoCount > 0 }
+    private var neonObjects: [MacPDFObject] { objects.filter { $0.isTransient } }
     func pageObjects(_ page: Int) -> [MacPDFObject] { objects.filter { $0.page == page } }
     private func snapshot(structure: Bool) -> Snapshot { Snapshot(objects: objects.filter { !$0.isTransient }, favorites: favorites, base: structure ? basePDFData() : nil) }
 
@@ -279,30 +293,71 @@ final class MacPDFEditorState: ObservableObject {
         }
     }
     func undo() {
+        if tool == .neon {
+            if canvas?.drawingDraft?.isTransient == true { canvas?.clearNeonDraft(); return }
+            guard let previous = neonUndoStack.popLast() else { return }
+            neonRedoStack.append(neonObjects); applyNeon(previous); return
+        }
         canvas?.finishTextEditing()
         guard let item = undoStack.popLast() else { return }
         redoStack.append(item); apply(item.before)
     }
     func redo() {
+        if tool == .neon {
+            canvas?.clearNeonDraft()
+            guard let next = neonRedoStack.popLast() else { return }
+            neonUndoStack.append(neonObjects); applyNeon(next); return
+        }
         canvas?.finishTextEditing()
         guard let item = redoStack.popLast() else { return }
         undoStack.append(item); apply(item.after)
     }
     private func apply(_ snapshot: Snapshot) {
         if let base = snapshot.base, let pdf = PDFDocument(data: base) { document = pdf; canvas?.document = pdf; baseChanged = true }
-        objects = snapshot.objects; favorites = snapshot.favorites; selection = []
+        objects = snapshot.objects + neonObjects; favorites = snapshot.favorites; selection = []
         currentPage = min(currentPage, max(0, document.pageCount - 1)); didChange()
     }
     func add(_ object: MacPDFObject) {
         if object.isTransient {
+            neonUndoStack.append(neonObjects)
+            if neonUndoStack.count > 60 { neonUndoStack.removeFirst() }
+            neonRedoStack.removeAll(); updateNeonHistoryCounts()
             objects.append(object); canvas?.refreshAnnotations()
-            neonTasks.values.forEach { $0.cancel() }; neonTasks.removeAll()
-            neonTasks[object.id] = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                guard !Task.isCancelled, let self else { return }
-                self.objects.removeAll { $0.isTransient }; self.neonTasks[object.id] = nil; self.canvas?.refreshAnnotations()
-            }
+            scheduleNeonExpiry()
         } else { change { objects.append(object); selection = [object.id] } }
+    }
+    private func updateNeonHistoryCounts() {
+        neonUndoCount = neonUndoStack.count; neonRedoCount = neonRedoStack.count
+    }
+    private func applyNeon(_ layer: [MacPDFObject]) {
+        objects.removeAll { $0.isTransient }; objects.append(contentsOf: layer)
+        updateNeonHistoryCounts(); canvas?.refreshAnnotations(); scheduleNeonExpiry()
+    }
+    private func scheduleNeonExpiry() {
+        neonTask?.cancel()
+        // Undo/redo is a presentation action too. Keep the restored layer (or
+        // redo-only history) for ten seconds after the latest neon action.
+        neonTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self else { return }
+            self.removeNeonLayer()
+        }
+    }
+    func clearNeon() {
+        // Neon is temporary presentation ink, not a document edit. Clearing it
+        // must not touch durable objects, document history or remote-save state.
+        canvas?.clearNeonDraft()
+        removeNeonLayer()
+    }
+    private func removeNeonLayer() {
+        neonTask?.cancel(); neonTask = nil
+        neonUndoStack.removeAll(); neonRedoStack.removeAll(); updateNeonHistoryCounts()
+        let ids = Set(neonObjects.map(\.id))
+        guard !ids.isEmpty else { return }
+        objects.removeAll { ids.contains($0.id) }
+        selection.subtract(ids)
+        if selection.isEmpty { menuVisible = false }
+        canvas?.refreshAnnotations()
     }
     func updateSelected(_ action: (inout MacPDFObject) -> Void) {
         change { for index in objects.indices where selection.contains(objects[index].id) { action(&objects[index]) } }
@@ -469,6 +524,7 @@ final class MacPDFEditorState: ObservableObject {
     }
     func setZoom(_ percent: Int) { canvas?.finishTextEditing(); zoom = max(10, min(1000, percent)); canvas?.autoScales = false; canvas?.scaleFactor = CGFloat(zoom) / 100 }
     func rememberSettings() {
+        UserDefaults.standard.set(neonType.rawValue, forKey: "nf.mac.pdf.neonType")
         paletteOptions[style.stroke.key] = style; toolOptions[tool.rawValue] = style
         toolOptions[MacPDFTool.connector.rawValue] = connectionStyle
         UserDefaults.standard.set(try? JSONEncoder().encode(style), forKey: "nf.mac.pdf.style")
@@ -494,6 +550,13 @@ final class MacPDFEditorState: ObservableObject {
         var next = paletteOptions[color.key] ?? style; next.stroke = color
         setStyle(next, field: "stroke")
     }
+    func selectNeonType(_ type: MacPDFNeonType) {
+        guard tool == .neon else { return }
+        canvas?.finishTextEditing(); canvas?.cancelGesture()
+        neonType = type
+        optionsTool = nil; menuVisible = false
+        rememberSettings()
+    }
     func selectTool(_ next: MacPDFTool) {
         if next == .connector {
             canvas?.finishTextEditing(); canvas?.cancelGesture()
@@ -513,7 +576,7 @@ final class MacPDFEditorState: ObservableObject {
         optionsTool = [.shape, .text, .image, .connector].contains(next) || alwaysShowPalette ? next : nil
         canvas?.refreshAnnotations()
     }
-    func resetSettings() { style = MacPDFStyle(); connectionStyle = MacPDFStyle(); eraserSize = 24; toolbarOffset = .zero; toolbarScale = 1; verticalToolbar = false; paletteLocked = false; alwaysShowPalette = false; paletteDetached = false; paletteOffset = .zero; paletteSize = CGSize(width: 350, height: 450); pageControlPosition = "bottom"; paletteOptions = [:]; toolOptions = [:]; optionsTool = nil; editingPaletteIndex = nil; menuVisible = false; palette = [.init(.black), .init(.systemBlue), .init(.systemRed), .init(.systemOrange), .init(.systemGreen)]; rememberSettings() }
+    func resetSettings() { style = MacPDFStyle(); connectionStyle = MacPDFStyle(); neonType = .line; eraserSize = 24; toolbarOffset = .zero; toolbarScale = 1; verticalToolbar = false; paletteLocked = false; alwaysShowPalette = false; paletteDetached = false; paletteOffset = .zero; paletteSize = CGSize(width: 350, height: 450); pageControlPosition = "bottom"; paletteOptions = [:]; toolOptions = [:]; optionsTool = nil; editingPaletteIndex = nil; menuVisible = false; palette = [.init(.black), .init(.systemBlue), .init(.systemRed), .init(.systemOrange), .init(.systemGreen)]; rememberSettings() }
 
     func basePDFData() -> Data? {
         var removed: [(PDFPage, PDFAnnotation)] = []
@@ -606,7 +669,7 @@ final class MacPDFEditorState: ObservableObject {
         }
         catch { self.error = "PDF 저장 실패: \(error.localizedDescription)"; status = "저장 실패" }
     }
-    func close() { canvas?.finishTextEditing(); saveTask?.cancel(); persist(); rememberSettings(); if pendingDocumentSave && sourceURL == nil { Task { await save() } } }
+    func close() { canvas?.finishTextEditing(); clearNeon(); saveTask?.cancel(); persist(); rememberSettings(); if pendingDocumentSave && sourceURL == nil { Task { await save() } } }
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 }
 
