@@ -205,6 +205,7 @@ final class MacPDFEditorState: ObservableObject {
     var exportOnSave = false
     var onOpenAttachment: ((Data, String) -> Void)?
     weak var canvas: MacPDFEditingView?
+    lazy var find = MacPDFFindState(editor: self)
     let identifier: String
     let fileName: String
     let sourceURL: URL?
@@ -285,6 +286,7 @@ final class MacPDFEditorState: ObservableObject {
         editRevision &+= 1
         undoCount = undoStack.count; redoCount = redoStack.count
         canvas?.refreshAnnotations()
+        find.refresh()
         let stored = persist()
         status = stored ? "로컬 편집 저장됨" : "로컬 저장 실패 · PDF 다운로드로 보관해 주세요"
         saveTask?.cancel()
@@ -677,7 +679,7 @@ final class MacPDFEditorState: ObservableObject {
         }
         catch { self.error = "PDF 저장 실패: \(error.localizedDescription)"; status = "저장 실패" }
     }
-    func close() { canvas?.finishTextEditing(); clearNeon(); saveTask?.cancel(); persist(); rememberSettings(); if pendingDocumentSave && sourceURL == nil { Task { await save() } } }
+    func close() { canvas?.finishTextEditing(); find.dismiss(restoreFocus: false); clearNeon(); saveTask?.cancel(); persist(); rememberSettings(); if pendingDocumentSave && sourceURL == nil { Task { await save() } } }
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 }
 

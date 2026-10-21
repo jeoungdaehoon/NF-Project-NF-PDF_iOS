@@ -72,6 +72,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     private var sizingTextEditor = false
     private var initialFitPending = true, mouseTracking: NSTrackingArea?
     private let interactionLayer = CAShapeLayer()
+    private let findLayer = CAShapeLayer()
     private let drawingOverlay = MacPDFDrawingOverlay()
     private var lastMousePoint: CGPoint?
     var activeTextView: NSTextView? { textView }
@@ -172,6 +173,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
                         }
                         return false
                     }
+                    if let self, self.editor?.find.handleKey(event, canvas: self) == true { return true }
                     guard let self, let window = self.window, window.isKeyWindow,
                           event.window === window, window.firstResponder === self,
                           !self.isHiddenOrHasHiddenAncestor,
@@ -186,6 +188,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         drawingOverlay.wantsLayer = true; addSubview(drawingOverlay, positioned: .above, relativeTo: nil)
         wantsLayer = true; interactionLayer.fillColor = NSColor.clear.cgColor; interactionLayer.strokeColor = NSColor.systemBlue.cgColor; interactionLayer.lineWidth = 1.5
         interactionLayer.zPosition = 10000; layer?.addSublayer(interactionLayer)
+        findLayer.fillColor = NSColor.systemYellow.withAlphaComponent(0.16).cgColor
+        findLayer.strokeColor = NSColor.systemOrange.cgColor; findLayer.lineWidth = 2
+        findLayer.zPosition = 9999; layer?.addSublayer(findLayer)
         for name in [Notification.Name.PDFViewPageChanged, .PDFViewScaleChanged, NSView.boundsDidChangeNotification] {
             let observed: Any? = name == NSView.boundsDidChangeNotification ? documentView?.enclosingScrollView?.contentView : self
             documentView?.enclosingScrollView?.contentView.postsBoundsChangedNotifications = true
@@ -262,6 +267,12 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             path.move(to: CGPoint(x: remove.x - 3, y: remove.y + 3)); path.addLine(to: CGPoint(x: remove.x + 3, y: remove.y - 3))
         }
         CATransaction.begin(); CATransaction.setDisableActions(true); interactionLayer.frame = bounds; interactionLayer.path = path; CATransaction.commit()
+        CATransaction.begin(); CATransaction.setDisableActions(true); findLayer.frame = bounds
+        if let object = editor.find.currentObject, let page = document?.page(at: object.page) {
+            let rect = MacPDFObjectRenderer.corners(object).reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: CGSize(width: 0.01, height: 0.01))) }
+            findLayer.path = CGPath(rect: convert(rect, from: page).standardized.insetBy(dx: -3, dy: -3), transform: nil)
+        } else { findLayer.path = nil }
+        CATransaction.commit()
         updateConnectionOverlay()
         if let object = editor.selected, let page = document?.page(at: object.page) {
             let objectBounds = object.kind == .connector ? (MacPDFObjectRenderer.connectorPath(object, objects: editor.objects)?.boundingBoxOfPath ?? object.bounds) : object.bounds
@@ -720,6 +731,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         return flags.contains(.shift)
     }
     override func keyDown(with event: NSEvent) {
+        if editor?.find.handleKey(event, canvas: self) == true { return }
         guard let editor else { super.keyDown(with: event); return }
         if routeDrag != nil, event.keyCode == 53 { cancelGesture(); return }
         if let redo = historyShortcut(event) { redo ? editor.redo() : editor.undo(); return }
@@ -744,6 +756,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         super.keyDown(with: event)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if editor?.find.handleKey(event, canvas: self) == true { return true }
         if window?.firstResponder === self, let redo = historyShortcut(event), let editor {
             redo ? editor.redo() : editor.undo(); return true
         }

@@ -111,12 +111,16 @@ private struct PaneFixture: View {
             let shortcutFrame = shortcut.convert(shortcut.bounds, to: nil), downloadFrame = download.convert(download.bounds, to: nil)
             try check(shortcutFrame.minX > downloadFrame.maxX && shortcutIsPinnedRight(), "split-pane icon is pinned to the far right of the PDF toolbar")
         } else { try check(false, "toolbar controls must be native accessible buttons") }
-        func clearNeonIsLeftOfFullscreen() -> Bool {
-            guard let clear = find("pdf.clearNeon") as? NSButton, let expand = find("pdf.expandPane") as? NSButton else { return false }
-            let a = clear.convert(clear.bounds, to: nil), b = expand.convert(expand.bounds, to: nil)
+        func clearNeonIsLeftOfFind() -> Bool {
+            guard let clear = find("pdf.clearNeon") as? NSButton, let search = find("pdf.find") as? NSButton else { return false }
+            let a = clear.convert(clear.bounds, to: nil), b = search.convert(search.bounds, to: nil)
             return a.maxX < b.minX && (0...18).contains(b.minX - a.maxX) && abs(a.midY - b.midY) < 3
         }
-        try check(clearNeonIsLeftOfFullscreen(), "clear-neon button sits immediately left of the right-hand pane fullscreen icon")
+        try check(clearNeonIsLeftOfFind(), "clear-neon button sits immediately left of the new search shortcut")
+        if let search = find("pdf.find") as? NSButton, let expand = find("pdf.expandPane") as? NSButton {
+            let a = search.convert(search.bounds, to: nil), b = expand.convert(expand.bounds, to: nil)
+            try check(a.maxX < b.minX && (0...18).contains(b.minX - a.maxX), "search shortcut sits immediately left of the pane expansion icon")
+        } else { try check(false, "search and pane expansion shortcuts are available") }
         func neonTypeIsLeftOfClear() -> Bool {
             guard let picker = find("pdf.neon.type") as? NSSegmentedControl, let clear = find("pdf.clearNeon") as? NSButton else { return false }
             let a = picker.convert(picker.bounds, to: nil), b = clear.convert(clear.bounds, to: nil)
@@ -145,7 +149,7 @@ private struct PaneFixture: View {
         state.pane = CGRect(x: 1050, y: 0, width: 550, height: host.bounds.height); pump(0.3)
         try check(hasFrame(MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: host.bounds.size, expandedPane: state.pane)), "expanded viewer follows resized split divider")
         try check(shortcutIsPinnedRight(), "pane shortcut remains pinned right in a narrow resized pane")
-        try check(clearNeonIsLeftOfFullscreen(), "clear-neon button remains next to fullscreen in a narrow split pane")
+        try check(clearNeonIsLeftOfFind(), "clear-neon button remains next to search in a narrow split pane")
         try check(neonTypeIsLeftOfClear(), "neon type selector stays visible beside clear in a narrow split pane")
         try press("attachment.viewer.back"); pump(0.5)
         try check(hasFrame(normal) && state.closeCount == 0, "exit button restores original slide size without closing")
@@ -185,6 +189,18 @@ private struct PaneFixture: View {
         try press("pdf.expandPane"); pump(0.3)
         try check(hasFrame(CGRect(x: 920, y: 32, width: 680, height: 818)), "expanded pinned slide reserves tabs only once even with a nonzero measured pane origin")
         try check(canvas.editor === editor && editor.objects.map(\.id) == objectIDs, "top-gap correction preserves the canvas and edits")
+        try press("pdf.find"); pump(0.2)
+        editor.find.updateQuery("편집 유지"); pump(0.4)
+        try check(editor.find.isPresented && editor.find.matches.count == 1 && editor.find.field?.currentEditor() === window.firstResponder,
+                  "actual remote slide searches added text and owns search-field focus")
+        let expandedFrame = CGRect(x: 920, y: 32, width: 680, height: 818)
+        NSApp.postEvent(escape, atStart: false); pump(0.3)
+        try check(!editor.find.isPresented && hasFrame(expandedFrame) && state.closeCount == 0,
+                  "Escape closes search before the remote header's close shortcut or pane expansion")
+        try press("pdf.find"); pump(0.2)
+        try press("pdf.expandPane"); pump(0.4)
+        try check(editor.find.isPresented && editor.find.query == "편집 유지" && canvas.editor === editor,
+                  "real pane expansion toggles preserve the PDF search session")
         window.close(); pump(0.1)
         print("PASS: \(checks) pane expansion checks")
     }

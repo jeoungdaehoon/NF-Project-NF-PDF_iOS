@@ -41,6 +41,7 @@ struct MacPDFEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !state.presentation { header; Divider() }
+            MacPDFFindBar(find: state.find)
             HStack(spacing: 0) {
                 if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 160); Divider() }
                 GeometryReader { geometry in
@@ -149,9 +150,10 @@ struct MacPDFEditorView: View {
                     .frame(width: 100, height: 22)
                     .help("이 PDF 뷰어의 임시 네온을 모두 지웁니다. 일반 펜·텍스트·도형·연결선은 유지합니다.")
             }
+            MacPDFFindButton(find: state.find)
             if let onTogglePaneExpanded, !isFullscreen {
                 // Keep these actions pinned right, even in a narrow pane.
-                MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "rectangle.split.2x1", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
+                MacPDFActionButton(title: "", symbol: isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", identifier: "pdf.expandPane", accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", action: onTogglePaneExpanded)
                     .frame(width: 22, height: 22)
                     .help(isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기")
             }
