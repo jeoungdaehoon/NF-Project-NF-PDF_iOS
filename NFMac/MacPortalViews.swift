@@ -317,11 +317,6 @@ private struct MacNoteFreeMark: View {
     }
 }
 
-private enum MacPortalPaneSelection: Hashable {
-    case primary
-    case secondary
-}
-
 private struct MacPortalPaneFramesPreferenceKey: PreferenceKey {
     static var defaultValue: [MacPortalPaneSelection: CGRect] = [:]
     static func reduce(value: inout [MacPortalPaneSelection: CGRect], nextValue: () -> [MacPortalPaneSelection: CGRect]) {
@@ -346,6 +341,8 @@ private struct MacPortalWorkspace: View {
     @StateObject private var primary = MacPortalBrowserModel(identifier: "primary")
     @StateObject private var secondary = MacPortalBrowserModel(identifier: "secondary")
     @StateObject private var tabTransfer = MacPortalTabTransfer()
+    @State private var slideRouter = MacPortalSlideRouter()
+    @State private var slideRoutingError: String?
     @State private var isSplit = false
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
@@ -426,9 +423,19 @@ private struct MacPortalWorkspace: View {
             tabTransfer.configure(primary: primary, secondary: secondary)
             configureCallbacks(for: primary)
             configureCallbacks(for: secondary)
+            if preferences.slideDestination != .current && !isSplit { toggleSplit() }
+            configureSlideRouting()
             refreshPDFLibraryState()
         }
-        .onDisappear { tabTransfer.cancel(animated: false) }
+        .onDisappear {
+            tabTransfer.cancel(animated: false)
+            slideRouter.onFailure = nil
+        }
+        .onChange(of: preferences.slideDestination) { _, _ in configureSlideRouting() }
+        .onChange(of: isSplit) { _, _ in configureSlideRouting() }
+        .alert("슬라이드 표시 위치", isPresented: Binding(get: { slideRoutingError != nil }, set: { if !$0 { slideRoutingError = nil } })) {
+            Button("확인", role: .cancel) { slideRoutingError = nil }
+        } message: { Text(slideRoutingError ?? "") }
         .onChange(of: tabTransfer.completedPane) { _, pane in
             guard let pane else { return }
             activePane = pane == secondary.identifier ? .secondary : .primary
@@ -442,9 +449,11 @@ private struct MacPortalWorkspace: View {
                     request: request,
                     storesLocally: preferences.pdfLocalStorageEnabled,
                     onClose: closeRemotePDFPreview,
-                    paneBounds: isSplit ? paneFrames[remotePDFPane] : nil
+                    paneBounds: isSplit ? paneFrames[remotePDFPane] : nil,
+                    containerBounds: isSplit ? (paneFrames[remotePDFPane] ?? .zero) : nil
                 )
-                .transition(.move(edge: .trailing))
+                // A left-pinned viewer must not animate across the other pane.
+                .transition(isSplit ? .opacity : .move(edge: .trailing))
             }
         }
         .sheet(isPresented: $isPDFLibraryPresented, onDismiss: refreshPDFLibraryState) {
@@ -463,7 +472,7 @@ private struct MacPortalWorkspace: View {
         }
         model.onPreviewPDFAttachment = { request in
             activePane = model.identifier == secondary.identifier ? .secondary : .primary
-            remotePDFPane = activePane
+            remotePDFPane = preferences.slideDestination.pane(source: activePane, isSplit: isSplit)
             withAnimation(MacPDFSlidePanelLayout.animation) {
                 remotePDFRequest = request
             }
@@ -483,6 +492,10 @@ private struct MacPortalWorkspace: View {
     }
 
     private func toggleSplit() {
+        if isSplit && slideRouter.hasOpenSlides {
+            slideRoutingError = "편집 중인 슬라이드를 먼저 닫은 뒤 좌우 분할을 닫아 주세요. 저장 중인 내용을 보호하기 위한 안내입니다."
+            return
+        }
         tabTransfer.cancel(animated: false)
         if isSplit {
             activePane = .primary
@@ -493,6 +506,26 @@ private struct MacPortalWorkspace: View {
         secondary.cloneState(from: primary, sidebarHidden: true)
         activePane = .primary
         isSplit = true
+    }
+
+    private func configureSlideRouting() {
+        slideRouter.configure(primary: primary, secondary: secondary,
+                              destination: preferences.slideDestination, isSplit: isSplit)
+        slideRouter.onFailure = { slideRoutingError = $0 }
+    }
+
+    private func selectSlideDestination(_ destination: MacPortalSlideDestination) {
+        if destination == preferences.slideDestination && (destination == .current || isSplit) { return }
+        guard !slideRouter.hasOpenSlides else {
+            slideRoutingError = "열린 슬라이드를 먼저 닫은 뒤 표시 위치를 변경해 주세요."
+            return
+        }
+        if destination != .current, !isSplit { toggleSplit() }
+        preferences.slideDestination = destination
+        if remotePDFRequest != nil {
+            remotePDFPane = destination.pane(source: remotePDFPane, isSplit: isSplit)
+        }
+        configureSlideRouting()
     }
 
     private func toggleSharedSidebar() {
@@ -517,7 +550,8 @@ private struct MacPortalWorkspace: View {
             showsTrailingControls: !isSplit,
             onToggleSidebar: toggleSharedSidebar,
             onToggleSplit: toggleSplit,
-            onActivate: { activePane = .primary }
+            onActivate: { activePane = .primary },
+            onSelectSlideDestination: selectSlideDestination
         )
     }
 
@@ -532,7 +566,8 @@ private struct MacPortalWorkspace: View {
             showsTrailingControls: true,
             onToggleSidebar: toggleSharedSidebar,
             onToggleSplit: toggleSplit,
-            onActivate: { activePane = .secondary }
+            onActivate: { activePane = .secondary },
+            onSelectSlideDestination: selectSlideDestination
         )
     }
 }
@@ -543,6 +578,7 @@ struct MacResizableRemotePDFPanel: View {
     let onClose: () -> Void
     var paneBounds: CGRect?
     var editorDirectory: URL?
+    var containerBounds: CGRect?
 
     @State private var preferredWidth: CGFloat?
     @State private var resizeStartWidth: CGFloat?
@@ -552,13 +588,15 @@ struct MacResizableRemotePDFPanel: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let container = containerBounds ?? CGRect(origin: .zero, size: geometry.size)
             let panelWidth = MacPDFSlidePanelLayout.width(
                 preferredWidth: preferredWidth,
-                for: geometry.size.width
+                for: container.width
             )
             let expanded = isPaneExpanded && paneBounds != nil
-            let bounds = MacPDFSlidePanelLayout.frame(preferredWidth: preferredWidth, availableSize: geometry.size,
-                                                     expandedPane: expanded ? paneBounds : nil)
+            let localBounds = MacPDFSlidePanelLayout.frame(preferredWidth: preferredWidth, availableSize: container.size,
+                                                         expandedPane: expanded ? (containerBounds == nil ? paneBounds : CGRect(origin: .zero, size: container.size)) : nil)
+            let bounds = localBounds.offsetBy(dx: container.minX, dy: container.minY)
 
             ZStack(alignment: .leading) {
                 MacPDFMovableViewer(presentation: presentation, content: MacRemotePDFPreviewView(
@@ -592,7 +630,7 @@ struct MacResizableRemotePDFPanel: View {
                                 }
                                 let nextWidth = MacPDFSlidePanelLayout.width(
                                     preferredWidth: startWidth - value.translation.width,
-                                    for: geometry.size.width
+                                    for: container.width
                                 )
                                 if abs((preferredWidth ?? panelWidth) - nextWidth) >= 0.5 {
                                     preferredWidth = nextWidth
@@ -828,6 +866,7 @@ struct MacPortalToolbar: View {
     let onToggleSidebar: () -> Void
     let onToggleSplit: () -> Void
     let onActivate: () -> Void
+    var onSelectSlideDestination: (MacPortalSlideDestination) -> Void = { _ in }
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -916,15 +955,30 @@ struct MacPortalToolbar: View {
             }
             Spacer(minLength: 4)
             if showsTrailingControls {
-                Button {
-                    onActivate()
-                    onToggleSplit()
+                Menu {
+                    Text("슬라이드 팝업 표시 위치")
+                    ForEach(MacPortalSlideDestination.allCases) { destination in
+                        Button {
+                            onSelectSlideDestination(destination)
+                        } label: {
+                            if preferences.slideDestination == destination {
+                                Label(destination.title, systemImage: "checkmark")
+                            } else { Text(destination.title) }
+                        }
+                        .accessibilityIdentifier("portal.slideDestination.\(destination.rawValue)")
+                    }
+                    Divider()
+                    Button(isSplit ? "좌우 분할 닫기" : "좌우 분할 열기") { onToggleSplit() }
+                    Text("고정 위치를 선택하면 반대쪽에서 연 문서도 해당 영역에 표시됩니다.")
                 } label: {
                     Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
                         .frame(width: 20, height: 20, alignment: .center)
                         .offset(y: -2)
                 }
-                .help(isSplit ? "2분할 닫기" : "현재 페이지를 좌우로 2분할")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("슬라이드 표시 위치 및 좌우 분할 설정")
+                .accessibilityIdentifier("portal.slideDestination")
                 Rectangle()
                     .fill(separatorColor)
                     .frame(width: 1, height: 20)

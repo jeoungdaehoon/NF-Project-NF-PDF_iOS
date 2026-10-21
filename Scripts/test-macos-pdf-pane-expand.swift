@@ -16,6 +16,7 @@ private final class PreviewProtocol: URLProtocol {
 }
 @MainActor private final class Fixture: ObservableObject {
     @Published var pane: CGRect? = CGRect(x: 900, y: 0, width: 700, height: 850)
+    @Published var container: CGRect?
     var closeCount = 0
 }
 private struct PaneFixture: View {
@@ -30,7 +31,7 @@ private struct PaneFixture: View {
                 Color.gray.opacity(0.25)
             }
             MacResizableRemotePDFPanel(request: request, storesLocally: false, onClose: { state.closeCount += 1 },
-                paneBounds: state.pane, editorDirectory: directory)
+                paneBounds: state.pane, editorDirectory: directory, containerBounds: state.container)
         }.ignoresSafeArea()
     }
 }
@@ -162,6 +163,19 @@ private struct PaneFixture: View {
         try check(find("attachment.viewer.expandPane") == nil && popupHost(height: 90) != nil, "pane expansion action is absent outside split mode")
         window.sendEvent(escape); pump(0.2)
         try check(editor.objects.map(\.id) == objectIDs && canvas.editor === editor, "all transitions preserve current edits")
+        state.pane = CGRect(x: 0, y: 0, width: 650, height: 850)
+        state.container = state.pane; pump(0.4)
+        let leftLocal = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: state.container!.size)
+        try check(hasFrame(leftLocal), "left-pinned normal PDF is constrained to the left pane before expansion")
+        try press("pdf.expandPane"); pump(0.3)
+        try check(hasFrame(CGRect(x: 0, y: 32, width: 650, height: 818)), "left-pinned PDF expansion stays below tabs and inside the left pane")
+        state.pane = CGRect(x: 920, y: 0, width: 680, height: 850)
+        state.container = state.pane; pump(0.4)
+        try check(hasFrame(CGRect(x: 920, y: 32, width: 680, height: 818)), "changing pinned PDF region moves the same expanded canvas into the right pane")
+        try press("pdf.expandPane"); pump(0.3)
+        let rightLocal = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: state.container!.size).offsetBy(dx: 920, dy: 0)
+        try check(hasFrame(rightLocal), "normal right-pinned PDF cannot overlap the left page")
+        try check(editor.objects.map(\.id) == objectIDs, "pinned-region changes preserve edited PDF objects")
         window.close(); pump(0.1)
         print("PASS: \(checks) pane expansion checks")
     }

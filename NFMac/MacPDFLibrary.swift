@@ -581,7 +581,9 @@ struct MacRemotePDFPreviewView: View {
     @State private var storedPDF: MacLocalPDFDocument?
     @State private var image: NSImage?
     @State private var markdown: String?
-    @State private var numbersPreviewURL: URL?
+    @State private var quickLookFile: MacAttachmentQuickLookFile?
+    @State private var csvDocument: MacCSVDocument?
+    @State private var isParsingCSV = false
     @StateObject private var markdownPreviewController = MacMarkdownPreviewController()
     @State private var attachmentData: Data?
     @State private var attachmentIsMovie = false
@@ -593,6 +595,12 @@ struct MacRemotePDFPreviewView: View {
     @State private var pendingMoreMenuAction: MoreMenuAction?
 
     private enum MoreMenuAction { case sharePDF, openOriginal, saveOriginal, fullscreen }
+
+    private var attachmentPreviewDescription: String? {
+        if let csvDocument { return "CSV 미리보기 · 읽기 전용 · \(csvDocument.rows.count)행 \(csvDocument.columnCount)열 · \(csvDocument.encodingName)" }
+        if let quickLookFile { return "\(quickLookFile.kind.title) 미리보기 · 읽기 전용" }
+        return nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -719,6 +727,26 @@ struct MacRemotePDFPreviewView: View {
                 .frame(height: 44)
                 .background(Color(red: 0.11, green: 0.15, blue: 0.19))
             }
+            if let attachmentPreviewDescription {
+                HStack {
+                    Label(attachmentPreviewDescription, systemImage: "doc.richtext")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(attachmentPreviewDescription)
+                    Spacer()
+                    if let onTogglePaneExpanded, !isFullscreen {
+                        MacPDFActionButton(title: "", symbol: "rectangle.split.2x1",
+                                           identifier: "attachment.viewer.quickLook.expandPane",
+                                           accessibilityTitle: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기",
+                                           action: onTogglePaneExpanded)
+                            .frame(width: 28, height: 24)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                Divider()
+            }
             Group {
                 if let pdfDocument {
                     MacPDFWorkspace(
@@ -750,10 +778,22 @@ struct MacRemotePDFPreviewView: View {
                     }
                 } else if let markdown {
                     MacMarkdownPreviewView(markdown: markdown, controller: markdownPreviewController)
-                } else if let numbersPreviewURL {
-                    MacNumbersQuickLookView(fileURL: numbersPreviewURL)
+                } else if let quickLookFile {
+                    MacAttachmentQuickLookView(file: quickLookFile)
+                } else if let csvDocument {
+                    if csvDocument.rows.isEmpty {
+                        ContentUnavailableView("빈 CSV 문서입니다", systemImage: "tablecells", description: Text("원본 파일에 표시할 행이 없습니다."))
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("attachment.viewer.csv.empty")
+                    } else {
+                        MacCSVPreviewView(document: csvDocument)
+                    }
                 } else if let errorMessage {
                     ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("attachment.viewer.error")
+                } else if isParsingCSV {
+                    ProgressView("CSV 표를 불러오는 중…")
                 } else if attachmentData != nil {
                     ContentUnavailableView(
                         "첨부 파일을 불러왔습니다",
@@ -767,7 +807,7 @@ struct MacRemotePDFPreviewView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .task { await load() }
+        .task(id: request.id) { await load() }
         .onExitCommand { exitOrClose() }
     }
 
@@ -789,6 +829,9 @@ struct MacRemotePDFPreviewView: View {
     }
 
     private func load() async {
+        pdfDocument = nil; storedPDF = nil; image = nil; markdown = nil; quickLookFile = nil; csvDocument = nil; isParsingCSV = false
+        attachmentData = nil; attachmentIsMovie = false; errorMessage = nil; didStoreLocally = false
+        title = "첨부 파일"
         do {
             var urlRequest = URLRequest(url: request.url, cachePolicy: .reloadIgnoringLocalCacheData)
             urlRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -796,6 +839,7 @@ struct MacRemotePDFPreviewView: View {
                 urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
             let (data, response) = try await URLSession.shared.data(for: urlRequest)
+            try Task.checkCancellation()
             if let response = response as? HTTPURLResponse,
                !(200..<300).contains(response.statusCode) {
                 throw URLError(.badServerResponse)
@@ -812,8 +856,7 @@ struct MacRemotePDFPreviewView: View {
             let isMarkdown = ["md", "markdown", "mdown"].contains(fileExtension)
                 || ["md", "markdown", "mdown"].contains(sourceExtension)
                 || ["text/markdown", "text/x-markdown"].contains(mimeType)
-            let isNumbers = fileExtension == "numbers" || sourceExtension == "numbers"
-                || ["application/vnd.apple.numbers", "application/x-iwork-numbers-sffnumbers"].contains(mimeType)
+            let quickLookKind = MacAttachmentQuickLookKind.detect(fileName: title, sourceURL: request.url, mimeType: mimeType)
             if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
                 pdfDocument = document
                 if storesLocally {
@@ -825,22 +868,32 @@ struct MacRemotePDFPreviewView: View {
             } else if isMarkdown {
                 markdown = String(data: data, encoding: .utf8)
                     ?? String(data: data, encoding: .utf16)
-            } else if isNumbers {
+            } else if MacCSVDocument.matches(fileName: title, sourceURL: request.url, mimeType: mimeType) {
+                isParsingCSV = true
+                let encodingName = response.textEncodingName
+                let parsing = Task.detached(priority: .userInitiated) { try MacCSVDocument.parse(data, encodingName: encodingName) }
                 do {
-                    let directory = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("NF-NumbersQuickLook", isDirectory: true)
-                        .appendingPathComponent(request.id.uuidString, isDirectory: true)
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    let name = fileExtension == "numbers" ? title : "\(title).numbers"
-                    title = name
-                    let url = directory.appendingPathComponent(Self.safeFileName(name))
-                    try data.write(to: url, options: .atomic)
-                    numbersPreviewURL = url
+                    let parsed = try await withTaskCancellationHandler {
+                        try await parsing.value
+                    } onCancel: { parsing.cancel() }
+                    try Task.checkCancellation()
+                    csvDocument = parsed
                 } catch {
-                    errorMessage = "Numbers 미리보기를 준비하지 못했습니다. 기본 앱에서 열거나 원본 파일을 저장해 주세요."
+                    guard !Task.isCancelled else { return }
+                    errorMessage = error.localizedDescription
+                }
+                isParsingCSV = false
+            } else if let quickLookKind {
+                do {
+                    let file = try MacAttachmentQuickLookFile(data: data, fileName: title, kind: quickLookKind)
+                    title = file.url.lastPathComponent
+                    quickLookFile = file
+                } catch {
+                    errorMessage = "\(quickLookKind.title) 미리보기를 준비하지 못했습니다. 기본 앱에서 열거나 원본 파일을 저장해 주세요."
                 }
             }
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = "네트워크 연결과 파일 형식을 확인해 주세요."
         }
     }
@@ -893,36 +946,6 @@ struct MacRemotePDFPreviewView: View {
         alert.messageText = title
         alert.informativeText = error.localizedDescription
         alert.runModal()
-    }
-}
-
-private struct MacNumbersQuickLookView: NSViewRepresentable {
-    let fileURL: URL
-
-    func makeNSView(context: Context) -> QLPreviewView {
-        let view: QLPreviewView = QLPreviewView(frame: .zero)
-        view.autostarts = true
-        view.previewItem = fileURL as NSURL
-        return view
-    }
-
-    func updateNSView(_ view: QLPreviewView, context: Context) {
-        if context.coordinator.fileURL != fileURL {
-            context.coordinator.fileURL = fileURL
-            view.previewItem = fileURL as NSURL
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(fileURL: fileURL) }
-
-    static func dismantleNSView(_ view: QLPreviewView, coordinator: Coordinator) {
-        view.close()
-        try? FileManager.default.removeItem(at: coordinator.fileURL.deletingLastPathComponent())
-    }
-
-    final class Coordinator {
-        var fileURL: URL
-        init(fileURL: URL) { self.fileURL = fileURL }
     }
 }
 

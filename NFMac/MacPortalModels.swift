@@ -117,6 +117,10 @@ final class MacPortalPreferences: ObservableObject {
         didSet { defaults.set(pdfLocalStorageEnabled, forKey: Self.pdfLocalStorageKey) }
     }
 
+    @Published var slideDestination: MacPortalSlideDestination {
+        didSet { defaults.set(slideDestination.rawValue, forKey: "nf.mac.slideDestination.v1") }
+    }
+
     private let defaults: UserDefaults
     private static let zoomKey = "nf.mac.portal.zoomPercent.v2"
     private static let appearanceKey = "nf.mac.portal.appearance.v1"
@@ -124,6 +128,7 @@ final class MacPortalPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        slideDestination = MacPortalSlideDestination(rawValue: defaults.string(forKey: "nf.mac.slideDestination.v1") ?? "") ?? .current
         let storedZoom = defaults.integer(forKey: Self.zoomKey)
         storedZoomPercent = storedZoom == 0 ? 120 : Self.normalizedZoom(storedZoom)
         appearance = MacPortalAppearance(rawValue: defaults.string(forKey: Self.appearanceKey) ?? "") ?? .system
@@ -172,6 +177,8 @@ final class MacPortalBrowserModel: ObservableObject {
     var onAuthenticationRequired: (() -> Void)?
     var onOpenPDFDocuments: (() -> Void)?
     var onPreviewPDFAttachment: ((MacPDFRemoteRequest) -> Void)?
+    @Published var slideRoutingConfiguration: [String: Any] = ["pane": "primary", "target": "primary", "split": false]
+    var onSlideRoutingMessage: (([String: Any]) -> Void)?
     let identifier: String
     private let defaults: UserDefaults
     private var initialURL: URL

@@ -22,9 +22,8 @@ struct MacPDFCanvas: NSViewRepresentable {
     static func dismantleNSView(_ view: MacPDFEditingView, coordinator: ()) { view.onExitPaneExpansion = nil; view.finishTextEditing(); view.removeObservers() }
 }
 
-/// Route the PDF surface through one editor. Native text inputs and SwiftUI
-/// overlays retain their own hit testing; PDFKit's private views do not consume
-/// editing gestures before our tool handlers see them.
+/// Editing tools own object gestures. In selection mode, the unedited PDF
+/// surface keeps PDFKit's native text selection, links, menus and drag behavior.
 final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     weak var editor: MacPDFEditorState?
     var onExitPaneExpansion: (() -> Void)?
@@ -66,6 +65,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     private var activeNeonType = MacPDFNeonType.line
     private var panStart: CGPoint?, panOrigin: CGPoint?, commandStart: (CGFloat, CGFloat)?
     private var commandHeld = false
+    private var nativePDFGesture = false
     private var textView: NSTextView?, editingTextID: UUID?
     private var textBeforeEditing: [MacPDFObject] = [], editingTextScale: CGFloat = 1
     private var textEditingBaseBounds: CGRect?
@@ -85,7 +85,31 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             let local = textView.convert(point, from: superview)
             if textView.bounds.contains(local) { return textView }
         }
+        let local = convert(point, from: superview)
+        // Keep left-button dispatch on this view (including the first click in
+        // an inactive window). mouseDown/Dragged/Up explicitly hand native
+        // gestures to PDFView; right-click retains PDFKit's native menus.
+        if NSApp.currentEvent?.type == .rightMouseDown, routesNativePDFInteraction(at: local) { return super.hitTest(point) }
         return self
+    }
+    func routesNativePDFInteraction(at point: CGPoint) -> Bool {
+        guard editor?.tool == .select, !commandHeld, commandStart == nil,
+              start == nil, routeDrag == nil, connectionDrag == nil, panStart == nil,
+              let editor else { return false }
+        if let handle = connectorRouteHandle, hypot(handle.x - point.x, handle.y - point.y) <= 12 { return false }
+        if connectionHandles.contains(where: { hypot($0.center.x - point.x, $0.center.y - point.y) <= 13 }) { return false }
+        guard let page = page(for: point, nearest: false), let document else { return true }
+        let p = convert(point, to: page)
+        if hit(p, page: document.index(for: page)) != nil { return false }
+        if editor.selected?.page == document.index(for: page), let rect = selectionBounds() {
+            let scale = max(scaleFactor, 0.1)
+            let remove = CGPoint(x: rect.minX - 18 / scale, y: rect.maxY + 18 / scale)
+            let rotate = CGPoint(x: rect.midX, y: rect.maxY + 24 / scale)
+            if hypot(remove.x - p.x, remove.y - p.y) < 10 / scale || hypot(rotate.x - p.x, rotate.y - p.y) < 10 / scale { return false }
+            if Self.handles(rect).contains(where: { hypot($0.x - p.x, $0.y - p.y) < 10 / scale }) { return false }
+            if editor.selection.count > 1 && rect.contains(p) { return false }
+        }
+        return true
     }
     override func updateTrackingAreas() {
         if let mouseTracking { removeTrackingArea(mouseTracking) }
@@ -95,6 +119,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     var editingCursor: NSCursor {
         if commandHeld { return commandStart == nil ? .openHand : .closedHand }
         if panStart != nil { return .closedHand }
+        if editor?.tool == .select { return .arrow }
         return editor?.tool == .view ? .openHand : .crosshair
     }
     private func updateCommandModifier(_ flags: NSEvent.ModifierFlags) {
@@ -362,6 +387,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         return object.bounds.contains(local)
     }
     func cancelGesture() {
+        nativePDFGesture = false
         if let drag = routeDrag, let editor, let original = drag.before.first(where: { $0.id == drag.id }), let index = editor.objects.firstIndex(where: { $0.id == drag.id }) { editor.objects[index] = original }
         routeDrag = nil; draft = nil; start = nil; dragPage = nil; samples = []; moving = false; rotating = false; resizeHandle = nil; connectionDrag = nil; panStart = nil; panOrigin = nil; commandStart = nil; refreshAnnotations()
     }
@@ -372,12 +398,20 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     override func mouseDown(with event: NSEvent) {
         guard let editor else { super.mouseDown(with: event); return }
+        nativePDFGesture = false
         updateCommandModifier(event.modifierFlags)
         if commandHeld {
             finishTextEditing(); window?.makeFirstResponder(self); cancelGesture()
             commandStart = (event.locationInWindow.x, scaleFactor); editingCursor.set()
             return
         }
+        if !event.modifierFlags.contains(.option), routesNativePDFInteraction(at: convert(event.locationInWindow, from: nil)) {
+            finishTextEditing(); editor.selection = []; editor.menuVisible = false; editor.optionsTool = nil
+            refreshAnnotations(); nativePDFGesture = true
+            super.mouseDown(with: event)
+            return
+        }
+        clearSelection()
         finishTextEditing(); window?.makeFirstResponder(self); activeTool = editor.tool; editor.menuVisible = false
         activeNeonType = editor.neonType
         let viewPoint = convert(event.locationInWindow, from: nil)
@@ -422,6 +456,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         else if [.pen, .highlighter, .neon].contains(activeTool) { editor.selection = []; updateInkDraft(editor, page: editor.currentPage) }
     }
     override func mouseDragged(with event: NSEvent) {
+        if nativePDFGesture { super.mouseDragged(with: event); return }
         if let (x, scale) = commandStart {
             updateCommandModifier(event.modifierFlags)
             // Keep ownership until mouse-up, even if Command is released, so
@@ -485,6 +520,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
     }
     override func mouseUp(with event: NSEvent) {
+        if nativePDFGesture { nativePDFGesture = false; super.mouseUp(with: event); return }
         if commandStart != nil {
             commandStart = nil; updateCommandModifier(event.modifierFlags); editingCursor.set(); return
         }
@@ -690,11 +726,11 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
         if event.modifierFlags.contains(.command) {
             switch key {
-            case "c": editor.copySelected()
-            case "x": editor.copySelected(); editor.deleteSelected()
+            case "c": copy(nil)
+            case "x": copy(nil); if !editor.selection.isEmpty { editor.deleteSelected() }
             case "v": editor.paste()
             case "d": editor.duplicateSelected()
-            case "a": editor.selection = Set(editor.pageObjects(editor.currentPage).filter { !$0.isTransient }.map(\.id)); editor.menuVisible = true; refreshAnnotations()
+            case "a": selectAll(nil)
             default: super.keyDown(with: event)
             }; return
         }
@@ -715,4 +751,13 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         keyDown(with: event); return true
     }
     override func copy(_ sender: Any?) { if let editor, !editor.selection.isEmpty { editor.copySelected() } else { super.copy(sender) } }
+    override func selectAll(_ sender: Any?) {
+        guard let editor else { super.selectAll(sender); return }
+        if editor.tool == .select && editor.selection.isEmpty { super.selectAll(sender) }
+        else {
+            clearSelection()
+            editor.selection = Set(editor.pageObjects(editor.currentPage).filter { !$0.isTransient }.map(\.id))
+            editor.menuVisible = !editor.selection.isEmpty; refreshAnnotations()
+        }
+    }
 }

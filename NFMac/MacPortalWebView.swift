@@ -45,6 +45,8 @@ struct MacPortalWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
+        controller.addUserScript(WKUserScript(source: Self.slideConfigurationScript(model.slideRoutingConfiguration),
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(
             source: Self.bootstrapScript,
             injectionTime: .atDocumentStart,
@@ -60,6 +62,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
         controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
         controller.add(context.coordinator, name: "NFPortalMacPDFShare")
+        controller.add(context.coordinator, name: "NFPortalMacSlideRouting")
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
@@ -101,6 +104,16 @@ struct MacPortalWebView: NSViewRepresentable {
         context.coordinator.onSidebarNavigate = onSidebarNavigate
         context.coordinator.onFindCommand = onFindCommand
         context.coordinator.onFindNextCommand = onFindNextCommand
+        let slideScript = Self.slideConfigurationScript(model.slideRoutingConfiguration)
+        if context.coordinator.lastSlideConfiguration != slideScript {
+            context.coordinator.lastSlideConfiguration = slideScript
+            let controller = webView.configuration.userContentController
+            let scripts = controller.userScripts.filter { !$0.source.hasPrefix("/* nf-slide-config */") }
+            controller.removeAllUserScripts()
+            controller.addUserScript(WKUserScript(source: slideScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            scripts.forEach(controller.addUserScript)
+            webView.evaluateJavaScript(slideScript)
+        }
         if model.webView !== webView { model.connect(webView) }
         if context.coordinator.lastAppliedZoomPercent != preferences.zoomPercent {
             webView.pageZoom = CGFloat(preferences.zoomPercent) / 100
@@ -136,6 +149,7 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacSidebarNavigation",
             "NFPortalMacSidebarHover",
             "NFPortalMacPDFShare",
+            "NFPortalMacSlideRouting",
         ]
             .forEach(controller.removeScriptMessageHandler(forName:))
         webView.navigationDelegate = nil
@@ -157,6 +171,7 @@ struct MacPortalWebView: NSViewRepresentable {
         var lastAppliedAppearance: MacPortalAppearance?
         var lastAppliedPDFLocalStorageEnabled: Bool?
         var lastAppliedPDFDocumentCount: Int?
+        var lastSlideConfiguration: String?
         private var popupWindows: [ObjectIdentifier: NSWindow] = [:]
         private var popupWebViews: [ObjectIdentifier: WKWebView] = [:]
         private var sharingPicker: NSSharingServicePicker?
@@ -192,9 +207,11 @@ struct MacPortalWebView: NSViewRepresentable {
             }
             """)
             deliverPDFState(to: webView)
+            webView.evaluateJavaScript(MacPortalWebView.slideConfigurationScript(model.slideRoutingConfiguration))
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            model.onSlideRoutingMessage?(["action": "reset"])
             model.refreshNavigationState()
             model.applySidebarVisibility()
         }
@@ -249,7 +266,7 @@ struct MacPortalWebView: NSViewRepresentable {
             decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
         ) {
             if let responseURL = navigationResponse.response.url,
-               isPDFResponse(navigationResponse.response) {
+               (isPDFResponse(navigationResponse.response) || MacAttachmentQuickLookKind.handlesResponse(navigationResponse.response)) {
                 presentAttachmentPreview(responseURL, from: webView)
                 decisionHandler(.cancel)
                 return
@@ -666,6 +683,11 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
+            case "NFPortalMacSlideRouting":
+                guard message.frameInfo.isMainFrame,
+                      let url = message.frameInfo.request.url, MacPortalConfig.isPortalURL(url),
+                      let record = message.body as? [String: Any] else { return }
+                model.onSlideRoutingMessage?(record)
             case "NFPortalMacNavigation":
                 guard let record = message.body as? [String: Any],
                       let rawURL = record["url"] as? String,
@@ -764,6 +786,7 @@ struct MacPortalWebView: NSViewRepresentable {
         private func isAttachmentNavigationURL(_ url: URL) -> Bool {
             if url.path.hasPrefix("/api/artifacts/files") { return true }
             if url.pathExtension.lowercased() == "pdf" { return true }
+            if MacAttachmentQuickLookKind.handlesNavigation(url) { return true }
             if URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.contains(where: {
                 $0.name.lowercased() == "download"
             }) == true { return true }
@@ -808,6 +831,12 @@ struct MacPortalWebView: NSViewRepresentable {
                 }
             }
         }
+    }
+
+    static func slideConfigurationScript(_ configuration: [String: Any]) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys])) ?? Data("{}".utf8)
+        let json = String(decoding: data, as: UTF8.self)
+        return "/* nf-slide-config */ window.__nfMacSlideRouting = \(json); window.dispatchEvent(new CustomEvent('nfMacSlideRoutingChanged'));"
     }
 
     private static let bootstrapScript = #"""

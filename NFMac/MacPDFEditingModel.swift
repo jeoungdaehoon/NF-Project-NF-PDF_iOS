@@ -434,6 +434,7 @@ final class MacPDFEditorState: ObservableObject {
         add(object); selectObjects([object.id], showMenu: true); optionsTool = nil
     }
     func selectObjects(_ ids: Set<UUID>, showMenu: Bool) {
+        if !ids.isEmpty { canvas?.clearSelection() }
         selection = ids; menuVisible = showMenu && !ids.isEmpty
         if let object = selected, ids.count == 1 {
             style = object.style; shape = object.shape
@@ -564,6 +565,7 @@ final class MacPDFEditorState: ObservableObject {
         rememberSettings()
     }
     func selectTool(_ next: MacPDFTool) {
+        if next != .select { canvas?.clearSelection() }
         if next == .connector {
             canvas?.finishTextEditing(); canvas?.cancelGesture()
             connectorEnabled.toggle(); optionsTool = nil; menuVisible = false
