@@ -588,7 +588,7 @@ struct MacResizableRemotePDFPanel: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let container = containerBounds ?? CGRect(origin: .zero, size: geometry.size)
+            let container = MacPDFSlidePanelLayout.containerFrame(paneBounds: containerBounds, availableSize: geometry.size)
             let panelWidth = MacPDFSlidePanelLayout.width(
                 preferredWidth: preferredWidth,
                 for: container.width
@@ -655,8 +655,8 @@ struct MacResizableRemotePDFPanel: View {
             }
             .position(x: bounds.midX, y: bounds.midY)
         }
-        // Measure from the window top, like MacPortalPane. The 32pt inset
-        // above reserves the title-bar tabs once, without a second safe-area gap.
+        // Use the overlay's full-height workspace, not HSplitView's safe-area
+        // inset pane origin. The layout reserves the title-bar tabs once.
         .ignoresSafeArea(.container, edges: .top)
         .onChange(of: paneBounds == nil) { _, unavailable in
             if unavailable { isPaneExpanded = false }

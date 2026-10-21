@@ -1,6 +1,9 @@
 import AppKit
 import PDFKit
 import SwiftUI
+#if canImport(NF_macOS)
+@testable import NF_macOS
+#endif
 
 private final class PreviewProtocol: URLProtocol {
     nonisolated(unsafe) static var pdf = Data()
@@ -176,6 +179,12 @@ private struct PaneFixture: View {
         let rightLocal = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: state.container!.size).offsetBy(dx: 920, dy: 0)
         try check(hasFrame(rightLocal), "normal right-pinned PDF cannot overlap the left page")
         try check(editor.objects.map(\.id) == objectIDs, "pinned-region changes preserve edited PDF objects")
+        state.pane = CGRect(x: 920, y: 28, width: 680, height: 822)
+        state.container = state.pane; pump(0.3)
+        try check(hasFrame(rightLocal), "AppKit titlebar safe area does not add a second top gap in a pinned slide")
+        try press("pdf.expandPane"); pump(0.3)
+        try check(hasFrame(CGRect(x: 920, y: 32, width: 680, height: 818)), "expanded pinned slide reserves tabs only once even with a nonzero measured pane origin")
+        try check(canvas.editor === editor && editor.objects.map(\.id) == objectIDs, "top-gap correction preserves the canvas and edits")
         window.close(); pump(0.1)
         print("PASS: \(checks) pane expansion checks")
     }

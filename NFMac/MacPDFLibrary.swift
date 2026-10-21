@@ -17,14 +17,28 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
 enum MacPDFSlidePanelLayout {
     static let animation = Animation.timingCurve(0.22, 1, 0.36, 1, duration: 0.52)
     static let resizeHandleWidth: CGFloat = 10
+    static let tabBarHeight: CGFloat = 32
+
+    /// HSplitView's measured pane rect can start below AppKit's title-bar safe
+    /// area, while the overlay ignores that safe area. Only its horizontal
+    /// bounds belong to this coordinate space; both panes fill the workspace.
+    static func containerFrame(paneBounds: CGRect?, availableSize: CGSize) -> CGRect {
+        let workspace = CGRect(origin: .zero, size: availableSize)
+        guard let paneBounds else { return workspace }
+        guard !paneBounds.isEmpty, !workspace.isEmpty else { return .zero }
+        let horizontalPane = CGRect(x: paneBounds.minX, y: 0, width: paneBounds.width, height: workspace.height)
+        let bounds = workspace.intersection(horizontalPane)
+        return bounds.isNull ? .zero : bounds
+    }
+
     static func frame(preferredWidth: CGFloat?, availableSize: CGSize, expandedPane: CGRect? = nil) -> CGRect {
         if let expandedPane {
-            let content = CGRect(x: 0, y: 32, width: max(0, availableSize.width), height: max(0, availableSize.height - 32))
+            let content = CGRect(x: 0, y: tabBarHeight, width: max(0, availableSize.width), height: max(0, availableSize.height - tabBarHeight))
             let bounds = content.intersection(expandedPane)
             if !bounds.isNull, !bounds.isEmpty { return bounds }
         }
         let panelWidth = width(preferredWidth: preferredWidth, for: availableSize.width)
-        return CGRect(x: availableSize.width - panelWidth, y: 32, width: panelWidth, height: max(0, availableSize.height - 32))
+        return CGRect(x: availableSize.width - panelWidth, y: tabBarHeight, width: panelWidth, height: max(0, availableSize.height - tabBarHeight))
     }
 
     static func width(preferredWidth: CGFloat?, for availableWidth: CGFloat) -> CGFloat {
