@@ -367,6 +367,7 @@ struct MacPortalWebView: NSViewRepresentable {
             let sourceSize = sourceWebView.window?.contentLayoutRect.size ?? NSSize(width: 1200, height: 800)
             let width = min(max(sourceSize.width * 0.78, 720), 1280)
             let height = min(max(sourceSize.height * 0.82, 620), 960)
+            MacPortalPDFSharing.preparePopup(configuration: configuration, handler: self)
             let popupWebView = WKWebView(
                 frame: NSRect(x: 0, y: 0, width: width, height: height),
                 configuration: configuration
@@ -397,21 +398,7 @@ struct MacPortalWebView: NSViewRepresentable {
         private func createPDFForSharing(from webView: WKWebView) {
             let identifier = ObjectIdentifier(webView)
             guard pdfCreationWebViews.insert(identifier).inserted else { return }
-            webView.evaluateJavaScript("""
-            ({
-                title: document.title || '',
-                width: Math.max(
-                    document.documentElement.scrollWidth || 0,
-                    document.body ? document.body.scrollWidth : 0,
-                    window.innerWidth || 0
-                ),
-                height: Math.max(
-                    document.documentElement.scrollHeight || 0,
-                    document.body ? document.body.scrollHeight : 0,
-                    window.innerHeight || 0
-                )
-            })
-            """) { [weak self, weak webView] pageValue, _ in
+            webView.evaluateJavaScript(MacPortalPDFSharing.measurementScript) { [weak self, weak webView] pageValue, _ in
                 guard let self, let webView else { return }
                 let page = pageValue as? [String: Any]
                 let rawTitle = (page?["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
