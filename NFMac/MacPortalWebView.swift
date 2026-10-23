@@ -964,6 +964,12 @@ struct MacPortalWebView: NSViewRepresentable {
                 html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"][data-nf-mac-sidebar-preview="true"] #portal-content {
                     left: calc(var(--nf-mac-sidebar-preview-width, 276px) - 1px) !important;
                 }
+                /* The month calendar is a body portal (z-index: 200), outside
+                   #portal-content. Keep the shared menu above it in both hover
+                   and pinned modes, but below document slides and dialogs. */
+                html[data-nf-desktop-host="true"]:has([data-project-month-calendar="true"]) #portal-navigation {
+                    z-index: 210 !important;
+                }
                 @media (prefers-reduced-motion: reduce) {
                     #__nfMacBreadcrumbBar,
                     html[data-nf-desktop-host="true"][data-nf-mac-sidebar-collapsed="true"] #portal-navigation,
