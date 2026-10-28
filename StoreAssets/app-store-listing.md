@@ -41,9 +41,9 @@ NF는 팀의 진행 상황을 선명하게 정리하고, 필요한 문서를 현
 
 ## 지원 및 정책 URL
 
-- 지원 URL: `https://hlp-project-portal-745194786909.asia-northeast3.run.app`
-- 개인정보처리방침: `https://hlp-project-portal-745194786909.asia-northeast3.run.app/privacy`
-- 계정 삭제 요청: `https://hlp-project-portal-745194786909.asia-northeast3.run.app/account-deletion`
+- 지원 URL: `https://notefree-1076199489932.asia-northeast3.run.app`
+- 개인정보처리방침: `https://notefree-1076199489932.asia-northeast3.run.app/privacy`
+- 계정 삭제 요청: `https://notefree-1076199489932.asia-northeast3.run.app/account-deletion`
 
 ## 스크린샷 순서
 
