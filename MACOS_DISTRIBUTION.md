@@ -27,5 +27,5 @@ NF_MAC_NOTARY_PROFILE="NF-notary" \
 ## 참고
 
 - `NF` iOS 타깃과 `NF-macOS` 타깃은 소스·번들·설정을 분리하므로 macOS 화면 변경이 iPhone/iPad UI에 영향을 주지 않습니다.
-- 화면 배율은 `설정 > 화면` 또는 `⌘+`, `⌘-`, `⌘0`에서 조정하며 앱을 종료해도 유지됩니다.
+- 화면 배율은 `설정 > 해상도` 또는 `⌘+`, `⌘-`, `⌘0`에서 조정하며 앱을 종료해도 유지됩니다.
 - Sign in with Apple을 외부 배포본에서도 사용하려면 macOS App ID와 배포 프로비저닝 구성이 Apple Developer 계정에 준비되어 있어야 합니다.

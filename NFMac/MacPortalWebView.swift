@@ -58,6 +58,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalIOSPDFLocalStorage")
         controller.add(context.coordinator, name: "NFPortalIOSPDFDocuments")
         controller.add(context.coordinator, name: "NFPortalMacPageZoom")
+        controller.add(context.coordinator, name: "NFPortalWorkspace")
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
         controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
@@ -145,6 +146,7 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalIOSPDFLocalStorage",
             "NFPortalIOSPDFDocuments",
             "NFPortalMacPageZoom",
+            "NFPortalWorkspace",
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
             "NFPortalMacSidebarHover",
@@ -670,6 +672,11 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
+            case "NFPortalWorkspace":
+                guard message.frameInfo.isMainFrame,
+                      let url = message.frameInfo.request.url, url.scheme == "https", MacPortalConfig.isPortalURL(url),
+                      let record = message.body as? [String: Any], let enabled = record["enabled"] as? Bool else { return }
+                NotificationCenter.default.post(name: .init("nfPortalWorkspaceRequest"), object: model, userInfo: ["enabled": enabled])
             case "NFPortalMacSlideRouting":
                 guard message.frameInfo.isMainFrame,
                       let url = message.frameInfo.request.url, MacPortalConfig.isPortalURL(url),
@@ -823,7 +830,7 @@ struct MacPortalWebView: NSViewRepresentable {
     static func slideConfigurationScript(_ configuration: [String: Any]) -> String {
         let data = (try? JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys])) ?? Data("{}".utf8)
         let json = String(decoding: data, as: UTF8.self)
-        return "/* nf-slide-config */ window.__nfMacSlideRouting = \(json); window.dispatchEvent(new CustomEvent('nfMacSlideRoutingChanged'));"
+        return "/* nf-slide-config */ window.__nfMacSlideRouting = \(json); window.__nfNativeWorkspace = { enabled: window.__nfMacSlideRouting.split === true }; window.dispatchEvent(new Event('nfPortalWorkspaceState')); window.dispatchEvent(new CustomEvent('nfMacSlideRoutingChanged'));"
     }
 
     private static let bootstrapScript = #"""

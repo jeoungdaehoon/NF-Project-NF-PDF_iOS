@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import SwiftUI
+import WebKit
 
 enum MacPortalTitlebarPalette {
     static let backgroundNSColor = NSColor(
@@ -343,6 +344,7 @@ private struct MacPortalWorkspace: View {
     @StateObject private var tabTransfer = MacPortalTabTransfer()
     @State private var slideRouter = MacPortalSlideRouter()
     @State private var slideRoutingError: String?
+    @State private var workspaceRequestBusy = false
     @State private var isSplit = false
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
@@ -433,6 +435,23 @@ private struct MacPortalWorkspace: View {
         }
         .onChange(of: preferences.slideDestination) { _, _ in configureSlideRouting() }
         .onChange(of: isSplit) { _, _ in configureSlideRouting() }
+        .onReceive(NotificationCenter.default.publisher(for: .init("nfPortalWorkspaceRequest"))) { note in
+            guard let source = note.object as? MacPortalBrowserModel,
+                  source === primary || source === secondary,
+                  let enabled = note.userInfo?["enabled"] as? Bool, enabled != isSplit, !workspaceRequestBusy else { return }
+            workspaceRequestBusy = true
+            publishWorkspaceBusy(true)
+            Task { @MainActor in
+                defer { workspaceRequestBusy = false; publishWorkspaceBusy(false) }
+                do {
+                    for model in isSplit ? [primary, secondary] : [source] {
+                        guard let view = model.webView else { return }
+                        _ = try await view.callAsyncJavaScript("if (typeof window.__nfDisplayPrepare !== 'function') throw new Error('페이지 로딩 후 다시 시도해 주세요.'); await Promise.race([window.__nfDisplayPrepare(), new Promise((_, reject) => setTimeout(() => reject(new Error('저장 확인 시간 초과')), 20000))]); return true;", arguments: [:], in: nil, contentWorld: .page)
+                    }
+                    if enabled != isSplit { toggleSplit() }
+                } catch { slideRoutingError = "변경 내용을 저장하지 못했습니다. 페이지 로딩과 저장 상태를 확인해 주세요." }
+            }
+        }
         .alert("슬라이드 표시 위치", isPresented: Binding(get: { slideRoutingError != nil }, set: { if !$0 { slideRoutingError = nil } })) {
             Button("확인", role: .cancel) { slideRoutingError = nil }
         } message: { Text(slideRoutingError ?? "") }
@@ -489,6 +508,14 @@ private struct MacPortalWorkspace: View {
     private func refreshPDFLibraryState() {
         primary.refreshLocalPDFDocumentCount()
         secondary.refreshLocalPDFDocumentCount()
+    }
+
+    private func publishWorkspaceBusy(_ busy: Bool) {
+        for model in [primary, secondary] {
+            guard let view = model.webView, let url = view.url,
+                  url.scheme == "https", MacPortalConfig.isPortalURL(url) else { continue }
+            view.evaluateJavaScript("window.__nfNativeWorkspace = {enabled: \(isSplit), busy: \(busy)}; window.dispatchEvent(new Event('nfPortalWorkspaceState'));")
+        }
     }
 
     private func toggleSplit() {

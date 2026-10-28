@@ -13,6 +13,43 @@ import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
+/** Shared, authenticated native panes. Weak views avoid retaining closed editors. */
+@MainActor
+private final class PortalMobileWorkspace: ObservableObject {
+    @Published var enabled = false
+    @Published var busy = false
+    @Published var error: String?
+    @Published var secondaryURL = PortalConfig.portalDashboardURL
+    @Published var fraction: CGFloat = 0.5
+    private let views = NSMapTable<NSString, WKWebView>(keyOptions: .strongMemory, valueOptions: .weakMemory)
+    private var zoom = 100
+    private var zoomInitialized = false
+    func attach(_ view: WKWebView, pane: String) { views.setObject(view, forKey: pane as NSString) }
+    func detach(_ pane: String) { views.removeObject(forKey: pane as NSString) }
+    func setZoom(_ percent: Int) { zoomInitialized = true; zoom = min(200, max(80, Int((Double(percent) / 5).rounded()) * 5)); publish() }
+    func publish() {
+        for pane in ["primary", "secondary"] {
+            guard let view = views.object(forKey: pane as NSString), let url = view.url, url.scheme == "https", PortalConfig.isPortalURL(url) else { continue }
+            view.pageZoom = CGFloat(zoom) / 100
+            view.evaluateJavaScript("window.__nfNativeWorkspace = {enabled: \(enabled), busy: \(busy)}; window.dispatchEvent(new Event('nfPortalWorkspaceState'));")
+            if zoomInitialized { view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', {detail:{percent:\(zoom)}}));") }
+        }
+    }
+    func request(_ next: Bool, source: String) async {
+        guard !busy, enabled != next else { return }
+        busy = true; publish()
+        defer { busy = false; publish() }
+        do {
+            for pane in enabled ? ["primary", "secondary"] : [source] {
+                guard let view = views.object(forKey: pane as NSString), let url = view.url, url.scheme == "https", PortalConfig.isPortalURL(url) else { throw NSError(domain: "NFWorkspace", code: 1) }
+                _ = try await view.callAsyncJavaScript("if (typeof window.__nfDisplayPrepare !== 'function') throw new Error('아직 페이지 로딩 중입니다.'); await Promise.race([window.__nfDisplayPrepare(), new Promise((_,reject)=>setTimeout(()=>reject(new Error('저장 시간 초과')),20000))]); return true;", arguments: [:], in: nil, contentWorld: .page)
+            }
+            if next { secondaryURL = PortalConfig.normalizePortalURL(views.object(forKey: source as NSString)?.url) }
+            enabled = next
+        } catch { self.error = "페이지 로딩과 저장이 끝난 뒤 다시 시도해 주세요. 편집 중인 화면은 유지됩니다." }
+    }
+}
+
 /**
  Portal WebView로 전달할 iOS 앱 지원 폰트 목록입니다. ( J.D.H )
  - Version: 1.0.0
@@ -70,6 +107,8 @@ private let portalSupportedWebViewFontPayload: String = {
  - SeeAlso: ``PortalWebViewModel``, ``PortalWebViewState``
  */
 struct PortalWebView: View {
+    @StateObject private var mobileWorkspace = PortalMobileWorkspace()
+    @State private var splitDragStart: CGFloat?
 #if targetEnvironment(macCatalyst)
     @StateObject private var desktopChrome = PortalDesktopChromeModel()
     @StateObject private var secondaryDesktopChrome = PortalDesktopChromeModel()
@@ -129,12 +168,30 @@ struct PortalWebView: View {
         .ignoresSafeArea(.container, edges: .top)
         .background(MacCatalystTitlebarConfigurator())
 #else
-        makeContent(portalURL: portalURL)
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                makeContent(portalURL: portalURL, workspace: mobileWorkspace, pane: "primary")
+                    .frame(width: mobileWorkspace.enabled ? (geometry.size.width - 8) * mobileWorkspace.fraction : geometry.size.width)
+                if mobileWorkspace.enabled {
+                    Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 8)
+                        .contentShape(Rectangle()).gesture(DragGesture().onChanged { value in
+                            if splitDragStart == nil { splitDragStart = mobileWorkspace.fraction }
+                            mobileWorkspace.fraction = min(0.8, max(0.2, (splitDragStart ?? 0.5) + value.translation.width / max(geometry.size.width, 1)))
+                        }.onEnded { _ in splitDragStart = nil })
+                        .accessibilityLabel("좌우 페이지 너비 조절")
+                        .accessibilityAdjustableAction { direction in mobileWorkspace.fraction = min(0.8, max(0.2, mobileWorkspace.fraction + (direction == .increment ? 0.05 : -0.05))) }
+                    makeContent(portalURL: mobileWorkspace.secondaryURL, workspace: mobileWorkspace, pane: "secondary")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+        }.alert("페이지 분할", isPresented: Binding(get: { mobileWorkspace.error != nil }, set: { if !$0 { mobileWorkspace.error = nil } })) {
+            Button("확인", role: .cancel) { mobileWorkspace.error = nil }
+        } message: { Text(mobileWorkspace.error ?? "") }
 #endif
     }
 
     /** 동일한 로그인 세션과 앱 브리지를 사용하는 Portal WebView를 생성합니다. */
-    private func makeContent(portalURL: URL) -> PortalWebViewContent {
+    private func makeContent(portalURL: URL, workspace: PortalMobileWorkspace? = nil, pane: String = "primary") -> PortalWebViewContent {
         PortalWebViewContent(
             portalURL: portalURL,
             loginInfo: loginInfo,
@@ -150,7 +207,8 @@ struct PortalWebView: View {
             onPDFLocalStorageChanged: onPDFLocalStorageChanged,
             pdfLocalStorageEnabled: pdfLocalStorageEnabled,
             onOpenPDFDocuments: onOpenPDFDocuments,
-            localPDFDocumentCount: localPDFDocumentCount
+            localPDFDocumentCount: localPDFDocumentCount,
+            workspace: workspace, pane: pane
         )
     }
 
@@ -201,6 +259,8 @@ private struct PortalWebViewContent: UIViewRepresentable {
     let onOpenPDFDocuments: () -> Void
     /// 활성 문서와 휴지통 문서를 포함한 로컬 PDF 문서 수입니다.
     let localPDFDocumentCount: Int
+    var workspace: PortalMobileWorkspace? = nil
+    var pane: String = "primary"
 #if targetEnvironment(macCatalyst)
     /// Mac Catalyst 데스크톱 탐색 바 상태입니다.
     var desktopChrome: PortalDesktopChromeModel? = nil
@@ -238,6 +298,10 @@ private struct PortalWebViewContent: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         /// JavaScript Bridge를 연결하기 위한 UserContentController 입니다.
         let userContentController = WKUserContentController()
+#if !targetEnvironment(macCatalyst)
+        userContentController.add(context.coordinator, name: "NFPortalWorkspace")
+        userContentController.add(context.coordinator, name: "NFPortalMacPageZoom")
+#endif
         userContentController.add(context.coordinator, name: Coordinator.googleLoginBridgeName)
         userContentController.add(context.coordinator, name: Coordinator.logoutBridgeName)
         userContentController.add(context.coordinator, name: Coordinator.accountDeletionBridgeName)
@@ -297,6 +361,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         /// 최초 Portal URL을 로드합니다.
         webView.load(URLRequest(url: PortalConfig.normalizePortalURL(portalURL)))
         context.coordinator.webView = webView
+        workspace?.attach(webView, pane: pane)
         return webView
     }
 
@@ -316,6 +381,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         webView.backgroundColor = portalThemeController.theme.background.uiColor
         /// Coordinator가 최신 WebView State와 Web 브리지 Callback을 사용하도록 부모 값을 갱신합니다.
         context.coordinator.parent = self
+        workspace?.attach(webView, pane: pane)
 #if targetEnvironment(macCatalyst)
         desktopChrome?.connect(webView)
 #endif
@@ -342,6 +408,11 @@ private struct PortalWebViewContent: UIViewRepresentable {
         - coordinator: WKWebView Coordinator 입니다.
      */
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.parent.workspace?.detach(coordinator.parent.pane)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalWorkspace")
+#if !targetEnvironment(macCatalyst)
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalMacPageZoom")
+#endif
         coordinator.cloudAuthPopup?.closePopup()
         coordinator.cancelInitialLoadTimeout()
         /// ScriptMessageHandler 순환 참조를 막기 위해 Bridge를 제거합니다.
@@ -834,6 +905,7 @@ extension PortalWebViewContent {
             - navigation: 완료된 Navigation 정보 입니다.
          */
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            parent.workspace?.publish()
             hasCompletedInitialLoad = true
             cancelInitialLoadTimeout()
             /// 페이지 로드 완료 후 생성된 WebKit 내부 입력 View에도 키보드 어시스트 바 제거를 적용합니다.
@@ -1069,6 +1141,14 @@ extension PortalWebViewContent {
             - message: JavaScript에서 전달한 ScriptMessage 입니다.
          */
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "NFPortalWorkspace" || (message.name == "NFPortalMacPageZoom" && parent.workspace != nil) {
+                guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
+                      url.scheme == "https", PortalConfig.isPortalURL(url), let record = message.body as? [String: Any] else { return }
+                if message.name == "NFPortalWorkspace", let enabled = record["enabled"] as? Bool {
+                    Task { @MainActor in await parent.workspace?.request(enabled, source: parent.pane) }
+                } else if let percent = record["percent"] as? Int { parent.workspace?.setZoom(percent) }
+                return
+            }
             /// Portal Google 로그인 버튼 클릭을 외부 OAuth 세션으로 연결합니다.
             if message.name == Self.googleLoginBridgeName {
                 parent.onOpenExternal(PortalConfig.portalLoginURL)
@@ -1577,7 +1657,7 @@ private final class PortalDesktopChromeModel: ObservableObject {
     private static let zoomPercentKey = "NFPortalMacPageZoomPercent.v1"
     private static let defaultZoomPercent = 120
     private static let minimumZoomPercent = 80
-    private static let maximumZoomPercent = 160
+    private static let maximumZoomPercent = 200
     private var isToolbarNavigationMenuHovered = false
     private var isWebNavigationMenuHovered = false
     private var navigationMenuHoverCloseTask: Task<Void, Never>?
@@ -2227,7 +2307,7 @@ private struct PortalDesktopToolbar: View {
             Divider().frame(height: 22)
 
             Menu {
-                ForEach(Array(stride(from: 80, through: 160, by: 5)), id: \.self) { percent in
+                ForEach(Array(stride(from: 80, through: 200, by: 5)), id: \.self) { percent in
                     Button {
                         model.setZoom(percent: percent)
                     } label: {
