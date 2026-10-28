@@ -20,18 +20,53 @@ private final class PortalMobileWorkspace: ObservableObject {
     @Published var busy = false
     @Published var error: String?
     @Published var secondaryURL = PortalConfig.portalDashboardURL
-    @Published var fraction: CGFloat = 0.5
+    @Published var fraction: CGFloat = 0.5 { didSet { publish() } }
+    @Published var chromeHeight: CGFloat = 40
+    @Published var menuOpen = false
+    private var activePane = "primary"
+    private var pages: [String: [String: String]] = [:]
+    private var viewportWidth: CGFloat = 1
     private let views = NSMapTable<NSString, WKWebView>(keyOptions: .strongMemory, valueOptions: .weakMemory)
     private var zoom = 100
     private var zoomInitialized = false
     func attach(_ view: WKWebView, pane: String) { views.setObject(view, forKey: pane as NSString) }
     func detach(_ pane: String) { views.removeObject(forKey: pane as NSString) }
     func setZoom(_ percent: Int) { zoomInitialized = true; zoom = min(200, max(80, Int((Double(percent) / 5).rounded()) * 5)); publish() }
+    func resize(_ width: CGFloat) { viewportWidth = max(1, width); publish() }
+    func receiveChrome(_ message: [String: Any], pane: String) {
+        switch message["kind"] as? String {
+        case "activate":
+            if activePane != pane { activePane = pane; publish() }
+        case "layout":
+            if pane == "primary", let height = message["height"] as? Double {
+                chromeHeight = min(160, max(0, height * Double(zoom) / 100))
+            }
+        case "menu": if pane == "primary" { menuOpen = message["open"] as? Bool ?? false }
+        case "openMenu": views.object(forKey: "primary")?.evaluateJavaScript("window.dispatchEvent(new Event('nfWorkspaceOpenMenu'));")
+        case "page":
+            guard let page = message["page"] as? [String: String], let url = page["url"], url.hasPrefix("/"), !url.hasPrefix("//") else { return }
+            pages[pane] = ["url": String(url.prefix(4096)), "title": String((page["title"] ?? "NF").prefix(160))]; publish()
+        case "error": views.object(forKey: "primary")?.evaluateJavaScript("window.dispatchEvent(new Event('nfWorkspaceNavigationError'));")
+        case "command":
+            guard !busy, let command = message["command"] as? [String: String],
+                  ["push", "back", "forward", "reload"].contains(command["kind"] ?? ""),
+                  let data = try? JSONSerialization.data(withJSONObject: command), let json = String(data: data, encoding: .utf8),
+                  let view = views.object(forKey: (enabled ? activePane : pane) as NSString), let url = view.url,
+                  url.scheme == "https", PortalConfig.isPortalURL(url) else { return }
+            view.evaluateJavaScript("if(typeof window.__nfWorkspaceExecute==='function'){window.__nfWorkspaceExecute(\(json)).catch(function(){});}else{window.dispatchEvent(new Event('nfWorkspaceNavigationError'));}")
+        default: break
+        }
+    }
     func publish() {
         for pane in ["primary", "secondary"] {
             guard let view = views.object(forKey: pane as NSString), let url = view.url, url.scheme == "https", PortalConfig.isPortalURL(url) else { continue }
             view.pageZoom = CGFloat(zoom) / 100
-            view.evaluateJavaScript("window.__nfNativeWorkspace = {enabled: \(enabled), busy: \(busy)}; window.dispatchEvent(new Event('nfPortalWorkspaceState'));")
+            var state: [String: Any] = ["enabled": enabled, "busy": busy, "sharedChrome": true, "pane": pane,
+                "activePane": activePane, "fraction": max(1, viewportWidth - 8) * fraction / viewportWidth]
+            if let page = pages[activePane] { state["activePage"] = page }
+            if let data = try? JSONSerialization.data(withJSONObject: state), let json = String(data: data, encoding: .utf8) {
+                view.evaluateJavaScript("window.__nfNativeWorkspace = \(json); window.dispatchEvent(new Event('nfPortalWorkspaceState'));")
+            }
             if zoomInitialized { view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', {detail:{percent:\(zoom)}}));") }
         }
     }
@@ -46,6 +81,7 @@ private final class PortalMobileWorkspace: ObservableObject {
             }
             if next { secondaryURL = PortalConfig.normalizePortalURL(views.object(forKey: source as NSString)?.url) }
             enabled = next
+            activePane = "primary"; menuOpen = false
         } catch { self.error = "페이지 로딩과 저장이 끝난 뒤 다시 시도해 주세요. 편집 중인 화면은 유지됩니다." }
     }
 }
@@ -169,21 +205,27 @@ struct PortalWebView: View {
         .background(MacCatalystTitlebarConfigurator())
 #else
         GeometryReader { geometry in
-            HStack(spacing: 0) {
+            ZStack(alignment: .topLeading) {
                 makeContent(portalURL: portalURL, workspace: mobileWorkspace, pane: "primary")
-                    .frame(width: mobileWorkspace.enabled ? (geometry.size.width - 8) * mobileWorkspace.fraction : geometry.size.width)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 if mobileWorkspace.enabled {
-                    Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 8)
+                    makeContent(portalURL: mobileWorkspace.secondaryURL, workspace: mobileWorkspace, pane: "secondary")
+                        .frame(width: max(1, (geometry.size.width - 8) * (1 - mobileWorkspace.fraction)), height: max(1, geometry.size.height - mobileWorkspace.chromeHeight))
+                        .offset(x: (geometry.size.width - 8) * mobileWorkspace.fraction + 8, y: mobileWorkspace.chromeHeight)
+                        .opacity(mobileWorkspace.menuOpen ? 0 : 1).allowsHitTesting(!mobileWorkspace.menuOpen)
+                    Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 8, height: max(1, geometry.size.height - mobileWorkspace.chromeHeight))
+                        .offset(x: (geometry.size.width - 8) * mobileWorkspace.fraction, y: mobileWorkspace.chromeHeight)
                         .contentShape(Rectangle()).gesture(DragGesture().onChanged { value in
                             if splitDragStart == nil { splitDragStart = mobileWorkspace.fraction }
                             mobileWorkspace.fraction = min(0.8, max(0.2, (splitDragStart ?? 0.5) + value.translation.width / max(geometry.size.width, 1)))
                         }.onEnded { _ in splitDragStart = nil })
                         .accessibilityLabel("좌우 페이지 너비 조절")
                         .accessibilityAdjustableAction { direction in mobileWorkspace.fraction = min(0.8, max(0.2, mobileWorkspace.fraction + (direction == .increment ? 0.05 : -0.05))) }
-                    makeContent(portalURL: mobileWorkspace.secondaryURL, workspace: mobileWorkspace, pane: "secondary")
-                        .frame(maxWidth: .infinity)
+                        .opacity(mobileWorkspace.menuOpen ? 0 : 1).allowsHitTesting(!mobileWorkspace.menuOpen)
                 }
             }
+            .onAppear { mobileWorkspace.resize(geometry.size.width) }
+            .onChange(of: geometry.size.width) { _, width in mobileWorkspace.resize(width) }
         }.alert("페이지 분할", isPresented: Binding(get: { mobileWorkspace.error != nil }, set: { if !$0 { mobileWorkspace.error = nil } })) {
             Button("확인", role: .cancel) { mobileWorkspace.error = nil }
         } message: { Text(mobileWorkspace.error ?? "") }
@@ -1144,7 +1186,9 @@ extension PortalWebViewContent {
             if message.name == "NFPortalWorkspace" || (message.name == "NFPortalMacPageZoom" && parent.workspace != nil) {
                 guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
                       url.scheme == "https", PortalConfig.isPortalURL(url), let record = message.body as? [String: Any] else { return }
-                if message.name == "NFPortalWorkspace", let enabled = record["enabled"] as? Bool {
+                if message.name == "NFPortalWorkspace", let chrome = record["chrome"] as? [String: Any] {
+                    parent.workspace?.receiveChrome(chrome, pane: parent.pane)
+                } else if message.name == "NFPortalWorkspace", let enabled = record["enabled"] as? Bool {
                     Task { @MainActor in await parent.workspace?.request(enabled, source: parent.pane) }
                 } else if let percent = record["percent"] as? Int { parent.workspace?.setZoom(percent) }
                 return
