@@ -537,7 +537,7 @@ final class PortalPDFPageEditRepository {
         if let pageEdits = load(identifier: identifier) {
             pageEdits.installInteractionProxies(in: document)
         }
-        return document.portalFlattenedDataRepresentation() ?? document.dataRepresentation()
+        return PortalPDFPortableWorkspace.export(document: document) ?? document.portalFlattenedDataRepresentation() ?? document.dataRepresentation()
     }
 }
 
@@ -545,6 +545,7 @@ extension PDFDocument {
     /// 앱 편집 객체를 제외한 PDF 본문만 직렬화합니다.
     /// 화면과 편집 상태는 `PortalPDFPageEditRepository`의 `.nfedit` 파일이 보관합니다.
     func portalBaseDataRepresentation() -> Data? {
+        PortalPDFPortableWorkspace.prepareForPersistence(self)
         var pageAnnotations: [(page: PDFPage, annotations: [PDFAnnotation])] = []
         for pageIndex in 0..<pageCount {
             guard let page = page(at: pageIndex) else { continue }

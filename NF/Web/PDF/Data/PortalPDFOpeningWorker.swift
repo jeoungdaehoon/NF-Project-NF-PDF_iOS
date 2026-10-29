@@ -12,16 +12,16 @@ enum PortalPDFOpeningWorker {
         await Task.detached(priority: .userInitiated) {
             // 메모리 매핑하지 않아 파일의 지연 읽기가 첫 화면 표시로 미뤄지지 않게 합니다.
             guard let data = try? Data(contentsOf: fileURL) else { return nil }
-            return prepare(data)
+            return await prepare(data)
         }.value
     }
 
     nonisolated static func decode(data: Data) async -> PortalPreparedPDF? {
-        await Task.detached(priority: .userInitiated) { prepare(data) }.value
+        await Task.detached(priority: .userInitiated) { await prepare(data) }.value
     }
 
-    nonisolated private static func prepare(_ data: Data) -> PortalPreparedPDF? {
+    nonisolated private static func prepare(_ data: Data) async -> PortalPreparedPDF? {
         guard let document = PDFDocument(data: data), document.pageCount > 0 else { return nil }
-        return PortalPreparedPDF(document: document)
+        return await MainActor.run { PortalPreparedPDF(document: PortalPDFPortableWorkspace.restore(data: data) ?? document) }
     }
 }

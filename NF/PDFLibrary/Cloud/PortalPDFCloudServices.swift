@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PDFKit
 import WebKit
 
 enum PortalPDFCloudProvider: String, CaseIterable, Identifiable {
@@ -231,6 +232,8 @@ struct PortalPDFGoogleDriveLink: Codable, Identifiable, Hashable, Sendable {
     let fileName: String
     let remoteURL: URL
     let syncedAt: Date
+    var version: String? = nil
+    var accountID: String? = nil
 }
 
 final class PortalPDFGoogleDriveLinkStore {
@@ -314,6 +317,7 @@ final class PortalPDFGoogleDriveService {
 
     private let cookieProvider: PortalSessionCookieProvider
     private let linkStore: PortalPDFGoogleDriveLinkStore
+    private var activeAccountID: String?
 
     init(
         cookieProvider: PortalSessionCookieProvider? = nil,
@@ -323,15 +327,87 @@ final class PortalPDFGoogleDriveService {
         self.linkStore = linkStore ?? PortalPDFGoogleDriveLinkStore()
     }
 
-    func sync(_ document: PortalLocalPDFDocument) async throws -> PortalPDFGoogleDriveLink {
-        if let existingLink = linkStore.link(for: document.id) {
-            return try await update(document, link: existingLink)
+    private func currentAccountID() async throws -> String {
+        let sessionURL = URL(string: "\(PortalConfig.portalOrigin)/api/auth/session")!
+        var sessionRequest = URLRequest(url: sessionURL)
+        sessionRequest.setValue(try await requiredCookieHeader(for: sessionURL), forHTTPHeaderField: "Cookie")
+        let (sessionData, sessionResponse) = try await URLSession.shared.data(for: sessionRequest)
+        try validate(response: sessionResponse, data: sessionData)
+        guard let session = try JSONSerialization.jsonObject(with: sessionData) as? [String: Any],
+              let user = session["user"] as? [String: Any], let accountID = user["id"] as? String else {
+            throw PortalPDFCloudError.portalSessionUnavailable
         }
-        return try await upload(document)
+        activeAccountID=accountID
+        return accountID
+    }
+
+    func sync(_ document: PortalLocalPDFDocument, copy: Bool = false) async throws -> PortalPDFGoogleDriveLink {
+        let accountID=try await currentAccountID()
+        let localData = try Data(contentsOf: document.localFileURL)
+        let existing = linkStore.link(for: document.id)
+        let linked = existing?.accountID == accountID && existing?.version != nil ? existing : nil
+        let remoteID = copy ? UUID().uuidString : linked?.portalFileID ?? UUID().uuidString
+        let expected = copy ? "new" : linked?.version ?? "new"
+        let version = UUID().uuidString
+        guard let pdf = PortalPDFPortableWorkspace.restore(data: localData) ?? PDFDocument(data: localData) else { throw PortalPDFCloudError.invalidServerResponse }
+        PortalPDFPageEditRepository().load(identifier: document.id)?.installInteractionProxies(in: pdf)
+        guard let data = PortalPDFPortableWorkspace.export(document: pdf, title: document.fileName, cloudDocumentID: remoteID, cloudVersion: version) else {
+            throw PortalPDFCloudError.invalidServerResponse
+        }
+        let endpoint = URL(string: "\(PortalConfig.portalOrigin)/api/pdf-library/\(remoteID)")!
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "PUT"
+        request.setValue("application/pdf", forHTTPHeaderField: "Content-Type")
+        request.setValue(try await requiredCookieHeader(for: endpoint), forHTTPHeaderField: "Cookie")
+        request.setValue(expected, forHTTPHeaderField: "If-Match")
+        request.setValue(version, forHTTPHeaderField: "X-PDF-Revision")
+        let title = copy ? document.fileName + " 사본" : document.fileName
+        request.setValue(title.addingPercentEncoding(withAllowedCharacters: .alphanumerics), forHTTPHeaderField: "X-PDF-Title")
+        let (responseData, response) = try await URLSession.shared.upload(for: request, from: data)
+        try validate(response: response, data: responseData)
+        let link = PortalPDFGoogleDriveLink(localDocumentID: document.id, portalFileID: remoteID, driveFileID: "", fileName: title, remoteURL: endpoint, syncedAt: Date(), version: version, accountID: accountID)
+        try linkStore.save(link)
+        return link
+    }
+
+    struct RemoteDocument: Decodable, Identifiable {
+        let id: String
+        let title: String
+        let version: String
+        let modifiedAt: String
+    }
+
+    func remoteDocuments() async throws -> [RemoteDocument] {
+        _ = try await currentAccountID()
+        let endpoint = URL(string: "\(PortalConfig.portalOrigin)/api/pdf-library")!
+        var request = URLRequest(url: endpoint)
+        request.setValue(try await requiredCookieHeader(for: endpoint), forHTTPHeaderField: "Cookie")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        struct Listing: Decodable { let documents: [RemoteDocument] }
+        return try JSONDecoder().decode(Listing.self, from: data).documents
+    }
+
+    func link(_ remote: RemoteDocument, to document: PortalLocalPDFDocument) async throws {
+        let accountID=try await currentAccountID()
+        let url=URL(string: "\(PortalConfig.portalOrigin)/api/pdf-library/\(remote.id)")!
+        try linkStore.save(PortalPDFGoogleDriveLink(localDocumentID:document.id,portalFileID:remote.id,driveFileID:"",fileName:remote.title,remoteURL:url,syncedAt:Date(),version:remote.version,accountID:accountID))
+    }
+
+    func download(_ remote: RemoteDocument) async throws -> Data {
+        guard remote.id.range(of: "^[a-zA-Z0-9_-]{1,80}$", options: .regularExpression) != nil else { throw PortalPDFCloudError.invalidServerResponse }
+        let endpoint = URL(string: "\(PortalConfig.portalOrigin)/api/pdf-library/\(remote.id)?version=\(remote.version)")!
+        var request = URLRequest(url: endpoint)
+        request.setValue(try await requiredCookieHeader(for: endpoint), forHTTPHeaderField: "Cookie")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        guard data.starts(with: Data("%PDF-".utf8)), data.count <= 100 * 1024 * 1024 else { throw PortalPDFCloudError.invalidServerResponse }
+        return data
     }
 
     func links() -> [PortalPDFGoogleDriveLink] {
-        linkStore.links().sorted { $0.syncedAt > $1.syncedAt }
+        guard let activeAccountID else {return []}
+        return linkStore.links().filter {$0.accountID==activeAccountID}.sorted { $0.syncedAt > $1.syncedAt }
     }
 
     func unlink(localDocumentID: String) throws {

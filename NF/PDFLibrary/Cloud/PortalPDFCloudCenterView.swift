@@ -16,9 +16,10 @@ struct PortalPDFCloudCenterView: View {
     private let iCloudRepository = PortalPDFICloudRepository()
     private let googleDriveService = PortalPDFGoogleDriveService()
 
-    @State private var selectedProvider: PortalPDFCloudProvider = .iCloud
+    @State private var selectedProvider: PortalPDFCloudProvider = .googleDrive
     @State private var localDocuments: [PortalLocalPDFDocument] = []
     @State private var iCloudDocuments: [PortalICloudPDFDocument] = []
+    @State private var remoteDocuments: [PortalPDFGoogleDriveService.RemoteDocument] = []
     @State private var googleDriveLinks: [PortalPDFGoogleDriveLink] = []
     @State private var iCloudAvailability: PortalICloudAvailability = .checking
     @State private var processingID: String?
@@ -72,7 +73,7 @@ struct PortalPDFCloudCenterView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(portalTheme.colorScheme, for: .navigationBar)
             .tint(portalTheme.accentColor)
-            .task {
+            .task(id: selectedProvider) {
                 await reload()
             }
             .fileImporter(
@@ -168,7 +169,7 @@ struct PortalPDFCloudCenterView: View {
     private var googleDriveContent: some View {
         PortalPDFCloudSectionTitle(
             title: "NF 계정 문서",
-            subtitle: "NF에 Google로 로그인한 계정의 Notefree 폴더에 저장합니다."
+            subtitle: "NF에 연결한 Google Drive의 Notefree/PDF 폴더에 저장합니다."
         )
         if localDocuments.isEmpty {
             PortalPDFCloudEmptyCard(
@@ -187,9 +188,20 @@ struct PortalPDFCloudCenterView: View {
                     isProcessing: processingID == document.id,
                     onSync: { syncToGoogleDrive(document) }
                 )
+                Button("Drive에 사본 저장") { syncToGoogleDrive(document, copy: true) }
+                    .disabled(processingID != nil)
             }
         }
 
+        PortalPDFCloudSectionTitle(title: "Drive 문서 가져오기", subtitle: "다른 Android·iOS 기기에서 저장한 PDF와 편집 데이터를 가져옵니다.")
+        ForEach(remoteDocuments) { remote in
+            HStack {
+                Text(remote.title).lineLimit(2)
+                Spacer()
+                Button("가져오기") { importFromGoogleDrive(remote) }.disabled(processingID != nil)
+            }
+            .padding(12)
+        }
         PortalPDFCloudSectionTitle(
             title: "Drive 연결 상태",
             subtitle: "연결 기록은 Drive 토큰이 아니라 NF 파일 ID만 기기에 보관합니다."
@@ -250,6 +262,12 @@ struct PortalPDFCloudCenterView: View {
     private func reload() async {
         localDocuments = localRepository.documents()
         googleDriveLinks = googleDriveService.links()
+        if selectedProvider == .googleDrive {
+            do { remoteDocuments = try await googleDriveService.remoteDocuments();googleDriveLinks=googleDriveService.links() }
+            catch is CancellationError { return }
+            catch { errorMessage = cloudErrorMessage(error) }
+            return
+        }
         iCloudAvailability = await iCloudRepository.availability()
         guard iCloudAvailability == .available else {
             iCloudDocuments = []
@@ -276,17 +294,32 @@ struct PortalPDFCloudCenterView: View {
         }
     }
 
-    private func syncToGoogleDrive(_ document: PortalLocalPDFDocument) {
+    private func syncToGoogleDrive(_ document: PortalLocalPDFDocument, copy: Bool = false) {
         Task {
             processingID = document.id
             defer { processingID = nil }
             do {
-                _ = try await googleDriveService.sync(document)
+                _ = try await googleDriveService.sync(document, copy: copy)
                 googleDriveLinks = googleDriveService.links()
                 successMessage = "“\(document.fileName)” 문서를 NF 로그인 계정의 Google Drive에 저장했습니다."
             } catch {
                 errorMessage = cloudErrorMessage(error)
             }
+        }
+    }
+
+    private func importFromGoogleDrive(_ remote: PortalPDFGoogleDriveService.RemoteDocument) {
+        Task {
+            processingID = remote.id
+            defer { processingID = nil }
+            do {
+                let data = try await googleDriveService.download(remote)
+                let imported = try localRepository.createDocument(data: data, fileName: remote.title.hasSuffix(".pdf") ? remote.title : remote.title + ".pdf")
+                try await googleDriveService.link(remote, to: imported)
+                localDocuments = localRepository.documents()
+                successMessage = "“\(remote.title)” 문서와 편집 데이터를 이 기기로 가져왔습니다."
+            } catch is CancellationError { return }
+            catch { errorMessage = cloudErrorMessage(error) }
         }
     }
 
