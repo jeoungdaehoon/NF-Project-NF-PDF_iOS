@@ -29,9 +29,20 @@ private final class PortalMobileWorkspace: ObservableObject {
     private let views = NSMapTable<NSString, WKWebView>(keyOptions: .strongMemory, valueOptions: .weakMemory)
     private var zoom = 100
     private var zoomInitialized = false
+    private var chromeCSSHeight: CGFloat = 40
+    private var publishPending = false
+    private var deliveredStates: [String: String] = [:]
+    private var deliveredZooms: [String: Int] = [:]
     func attach(_ view: WKWebView, pane: String) { views.setObject(view, forKey: pane as NSString) }
     func detach(_ pane: String) { views.removeObject(forKey: pane as NSString) }
-    func setZoom(_ percent: Int) { zoomInitialized = true; zoom = min(200, max(80, Int((Double(percent) / 5).rounded()) * 5)); publish() }
+    func setZoom(_ percent: Int) {
+        let next = min(200, max(80, Int((Double(percent) / 5).rounded()) * 5))
+        guard !zoomInitialized || next != zoom else { return }
+        zoomInitialized = true; zoom = next
+        let height = min(160, max(0, chromeCSSHeight * CGFloat(zoom) / 100))
+        if abs(chromeHeight - height) > 0.5 { chromeHeight = height }
+        publish()
+    }
     func resize(_ width: CGFloat) { viewportWidth = max(1, width); publish() }
     func receiveChrome(_ message: [String: Any], pane: String) {
         switch message["kind"] as? String {
@@ -39,13 +50,16 @@ private final class PortalMobileWorkspace: ObservableObject {
             if activePane != pane { activePane = pane; publish() }
         case "layout":
             if pane == "primary", let height = message["height"] as? Double {
-                chromeHeight = min(160, max(0, height * Double(zoom) / 100))
+                chromeCSSHeight = height
+                let next = min(160, max(0, height * Double(zoom) / 100))
+                if abs(chromeHeight - next) > 0.5 { chromeHeight = next }
             }
         case "menu": if pane == "primary" { menuOpen = message["open"] as? Bool ?? false }
         case "openMenu": views.object(forKey: "primary")?.evaluateJavaScript("window.dispatchEvent(new Event('nfWorkspaceOpenMenu'));")
         case "page":
             guard let page = message["page"] as? [String: String], let url = page["url"], url.hasPrefix("/"), !url.hasPrefix("//") else { return }
-            pages[pane] = ["url": String(url.prefix(4096)), "title": String((page["title"] ?? "NF").prefix(160))]; publish()
+            let next = ["url": String(url.prefix(4096)), "title": String((page["title"] ?? "NF").prefix(160))]
+            if pages[pane] != next { pages[pane] = next; publish() }
         case "error": views.object(forKey: "primary")?.evaluateJavaScript("window.dispatchEvent(new Event('nfWorkspaceNavigationError'));")
         case "command":
             guard !busy, let command = message["command"] as? [String: String],
@@ -57,17 +71,43 @@ private final class PortalMobileWorkspace: ObservableObject {
         default: break
         }
     }
-    func publish() {
+    func publish(force: Bool = false) {
+        if force { deliveredStates.removeAll(); deliveredZooms.removeAll() }
+        guard !publishPending else { return }
+        publishPending = true
+        // SwiftUI가 두 pane의 프레임을 적용한 다음 최신 비율만 전달합니다.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.publishPending = false
+            self.deliverState()
+        }
+    }
+    private func deliverState() {
         for pane in ["primary", "secondary"] {
             guard let view = views.object(forKey: pane as NSString), let url = view.url, url.scheme == "https", PortalConfig.isPortalURL(url) else { continue }
-            view.pageZoom = CGFloat(zoom) / 100
+            let scale = CGFloat(zoom) / 100
+            if abs(view.pageZoom - scale) > 0.001 {
+                view.pageZoom = scale
+                (view as? PortalWorkspaceWebView)?.invalidateWorkspaceViewport()
+            }
             var state: [String: Any] = ["enabled": enabled, "busy": busy, "sharedChrome": true, "pane": pane,
                 "activePane": activePane, "fraction": max(1, viewportWidth - 8) * fraction / viewportWidth]
             if let page = pages[activePane] { state["activePage"] = page }
-            if let data = try? JSONSerialization.data(withJSONObject: state), let json = String(data: data, encoding: .utf8) {
-                view.evaluateJavaScript("window.__nfNativeWorkspace = \(json); window.dispatchEvent(new Event('nfPortalWorkspaceState'));")
+            state["zoom"] = zoom
+            if let data = try? JSONSerialization.data(withJSONObject: state, options: .sortedKeys), let json = String(data: data, encoding: .utf8), deliveredStates[pane] != json {
+                deliveredStates[pane] = json
+                // CSS 폭은 React effect를 기다리지 않고 같은 bridge 전달에서 적용합니다.
+                view.evaluateJavaScript("""
+                window.__nfNativeWorkspace = \(json);
+                document.documentElement.style.setProperty('--nf-native-primary-fraction', String(window.__nfNativeWorkspace.fraction));
+                window.dispatchEvent(new Event('nfPortalWorkspaceState'));
+                window.dispatchEvent(new Event('nfPortalNativeViewportChange'));
+                """)
             }
-            if zoomInitialized { view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', {detail:{percent:\(zoom)}}));") }
+            if zoomInitialized, deliveredZooms[pane] != zoom {
+                deliveredZooms[pane] = zoom
+                view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nfPortalMacZoomState', {detail:{percent:\(zoom)}}));")
+            }
         }
     }
     func request(_ next: Bool, source: String) async {
@@ -83,6 +123,32 @@ private final class PortalMobileWorkspace: ObservableObject {
             enabled = next
             activePane = "primary"; menuOpen = false
         } catch { self.error = "페이지 로딩과 저장이 끝난 뒤 다시 시도해 주세요. 편집 중인 화면은 유지됩니다." }
+    }
+}
+
+/// WebKit의 실제 frame 변경 이후 웹의 고정 레이어·달력 뷰포트를 다시 측정합니다.
+final class PortalWorkspaceWebView: WKWebView {
+    private var lastWorkspaceSize: CGSize = .zero
+    private var viewportUpdatePending = false
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.size != lastWorkspaceSize else { return }
+        lastWorkspaceSize = bounds.size
+        invalidateWorkspaceViewport()
+    }
+    func invalidateWorkspaceViewport() {
+        guard !viewportUpdatePending else { return }
+        viewportUpdatePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewportUpdatePending = false
+            guard self.bounds.width > 0, self.bounds.height > 0 else { return }
+            let scale = max(0.01, self.pageZoom)
+            self.evaluateJavaScript("""
+            window.__nfNativeViewport = {width:\(self.bounds.width / scale),height:\(self.bounds.height / scale)};
+            window.dispatchEvent(new Event('nfPortalNativeViewportChange'));
+            """)
+        }
     }
 }
 
@@ -213,14 +279,16 @@ struct PortalWebView: View {
                         .frame(width: max(1, (geometry.size.width - 8) * (1 - mobileWorkspace.fraction)), height: max(1, geometry.size.height - mobileWorkspace.chromeHeight))
                         .offset(x: (geometry.size.width - 8) * mobileWorkspace.fraction + 8, y: mobileWorkspace.chromeHeight)
                         .opacity(mobileWorkspace.menuOpen ? 0 : 1).allowsHitTesting(!mobileWorkspace.menuOpen)
-                    Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 8, height: max(1, geometry.size.height - mobileWorkspace.chromeHeight))
-                        .offset(x: (geometry.size.width - 8) * mobileWorkspace.fraction, y: mobileWorkspace.chromeHeight)
-                        .contentShape(Rectangle()).gesture(DragGesture().onChanged { value in
+                    Color.clear.frame(width: 28, height: max(1, geometry.size.height - mobileWorkspace.chromeHeight))
+                        .overlay { Rectangle().fill(Color.secondary.opacity(0.4)).frame(width: 8) }
+                        .contentShape(Rectangle())
+                        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global).onChanged { value in
                             if splitDragStart == nil { splitDragStart = mobileWorkspace.fraction }
-                            mobileWorkspace.fraction = min(0.8, max(0.2, (splitDragStart ?? 0.5) + value.translation.width / max(geometry.size.width, 1)))
+                            mobileWorkspace.fraction = min(0.8, max(0.2, (splitDragStart ?? 0.5) + value.translation.width / max(geometry.size.width - 8, 1)))
                         }.onEnded { _ in splitDragStart = nil })
                         .accessibilityLabel("좌우 페이지 너비 조절")
                         .accessibilityAdjustableAction { direction in mobileWorkspace.fraction = min(0.8, max(0.2, mobileWorkspace.fraction + (direction == .increment ? 0.05 : -0.05))) }
+                        .offset(x: (geometry.size.width - 8) * mobileWorkspace.fraction - 10, y: mobileWorkspace.chromeHeight)
                         .opacity(mobileWorkspace.menuOpen ? 0 : 1).allowsHitTesting(!mobileWorkspace.menuOpen)
                 }
             }
@@ -380,12 +448,16 @@ private struct PortalWebViewContent: UIViewRepresentable {
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
 #endif
         /// WKWebView 인스턴스를 생성합니다.
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = PortalWorkspaceWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.scrollView.backgroundColor = portalThemeController.theme.background.uiColor
         webView.isOpaque = false
         webView.backgroundColor = portalThemeController.theme.background.uiColor
+        webView.underPageBackgroundColor = portalThemeController.theme.background.uiColor
+#if !targetEnvironment(macCatalyst)
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+#endif
         /// iOS가 링크를 길게 눌렀을 때 표시하는 미리보기/열기 메뉴를 비활성화합니다.
         webView.allowsLinkPreview = false
         /// WebView 입력창 포커스 시 iOS 기본 키보드 어시스트 바가 보이지 않도록 처리합니다.
@@ -421,6 +493,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         /// 웹 테마 변경 시 WebView 바깥의 네이티브 여백과 스크롤 배경도 같은 색으로 갱신합니다.
         webView.scrollView.backgroundColor = portalThemeController.theme.background.uiColor
         webView.backgroundColor = portalThemeController.theme.background.uiColor
+        webView.underPageBackgroundColor = portalThemeController.theme.background.uiColor
         /// Coordinator가 최신 WebView State와 Web 브리지 Callback을 사용하도록 부모 값을 갱신합니다.
         context.coordinator.parent = self
         workspace?.attach(webView, pane: pane)
@@ -751,6 +824,7 @@ extension PortalWebViewContent {
         private let viewModel: PortalWebViewModel
         /// 현재 연결된 WKWebView 입니다.
         weak var webView: WKWebView?
+        private var deliveredConfiguration: [String: String] = [:]
         /// 메인 화면 최초 로딩이 무한정 대기하지 않도록 제한하는 시간(초) 입니다.
         private let initialLoadTimeout: TimeInterval = 30
         /// 최초 로딩 제한시간 작업 입니다.
@@ -947,7 +1021,9 @@ extension PortalWebViewContent {
             - navigation: 완료된 Navigation 정보 입니다.
          */
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            parent.workspace?.publish()
+            deliveredConfiguration.removeAll()
+            (webView as? PortalWorkspaceWebView)?.invalidateWorkspaceViewport()
+            parent.workspace?.publish(force: true)
             hasCompletedInitialLoad = true
             cancelInitialLoadTimeout()
             /// 페이지 로드 완료 후 생성된 WebKit 내부 입력 View에도 키보드 어시스트 바 제거를 적용합니다.
@@ -1524,6 +1600,8 @@ extension PortalWebViewContent {
             - webView: JavaScript를 실행할 WKWebView 입니다.
          */
         func deliverSupportedFonts(to webView: WKWebView) {
+            guard deliveredConfiguration["fonts"] == nil else { return }
+            deliveredConfiguration["fonts"] = "sent"
             /// 전역 변수와 CustomEvent를 함께 사용해 페이지 초기화 전/후 어느 시점에도 폰트 목록을 받을 수 있게 합니다.
             let script = """
             (function() {
@@ -1553,6 +1631,8 @@ extension PortalWebViewContent {
         func deliverAutoLoginState(to webView: WKWebView) {
             /// 전역 값·localStorage·CustomEvent를 함께 제공해 웹 설정 UI가 어느 시점에도 현재 값을 읽을 수 있게 합니다.
             let enabled = parent.autoLoginEnabled ? "true" : "false"
+            guard deliveredConfiguration["autoLogin"] != enabled else { return }
+            deliveredConfiguration["autoLogin"] = enabled
             let script = """
             (function() {
                 var enabled = \(enabled);
@@ -1578,6 +1658,8 @@ extension PortalWebViewContent {
         func deliverPDFLocalStorageState(to webView: WKWebView) {
             /// 전역 값·localStorage·CustomEvent를 함께 제공해 웹 설정 UI가 현재 값을 읽을 수 있게 합니다.
             let enabled = parent.pdfLocalStorageEnabled ? "true" : "false"
+            guard deliveredConfiguration["pdfLocalStorage"] != enabled else { return }
+            deliveredConfiguration["pdfLocalStorage"] = enabled
             let script = """
             (function() {
                 var enabled = \(enabled);
@@ -1596,6 +1678,8 @@ extension PortalWebViewContent {
         /** 로컬 PDF 문서 수를 웹 탭바에 전달해 PDF 문서 분기 표시 여부를 갱신합니다. */
         func deliverPDFDocumentLibraryState(to webView: WKWebView) {
             let count = max(0, parent.localPDFDocumentCount)
+            guard deliveredConfiguration["pdfCount"] != String(count) else { return }
+            deliveredConfiguration["pdfCount"] = String(count)
             let script = """
             (function() {
                 var count = \(count);
