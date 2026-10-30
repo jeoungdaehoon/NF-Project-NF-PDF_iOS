@@ -648,7 +648,10 @@ struct MacResizableRemotePDFPanel: View {
 
                 if !presentation.isFullscreen && !expanded { MacPDFPanelResizeHandle()
                     .gesture(
-                        DragGesture(minimumDistance: 0)
+                        // The handle moves as the panel width changes. Local
+                        // translation feeds that movement back into the next
+                        // drag update, making the boundary oscillate.
+                        DragGesture(minimumDistance: 0, coordinateSpace: .global)
                             .onChanged { value in
                                 let startWidth = resizeStartWidth ?? panelWidth
                                 if resizeStartWidth == nil {
@@ -681,6 +684,12 @@ struct MacResizableRemotePDFPanel: View {
                 }
             }
             .position(x: bounds.midX, y: bounds.midY)
+            .transaction { transaction in
+                if isResizing {
+                    transaction.animation = nil
+                    transaction.disablesAnimations = true
+                }
+            }
         }
         // Use the overlay's full-height workspace, not HSplitView's safe-area
         // inset pane origin. The layout reserves the title-bar tabs once.
