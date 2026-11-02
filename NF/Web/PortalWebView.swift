@@ -410,6 +410,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         let userContentController = WKUserContentController()
 #if !targetEnvironment(macCatalyst)
         userContentController.add(context.coordinator, name: "NFPortalWorkspace")
+        userContentController.add(context.coordinator, name: "NFMeeting")
         userContentController.add(context.coordinator, name: "NFPortalMacPageZoom")
 #endif
         userContentController.add(context.coordinator, name: Coordinator.googleLoginBridgeName)
@@ -525,6 +526,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
         coordinator.parent.workspace?.detach(coordinator.parent.pane)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalWorkspace")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFMeeting")
 #if !targetEnvironment(macCatalyst)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalMacPageZoom")
 #endif
@@ -1259,6 +1261,11 @@ extension PortalWebViewContent {
             - message: JavaScript에서 전달한 ScriptMessage 입니다.
          */
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            if message.name == "NFMeeting" {
+                guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url, url.scheme == "https", PortalConfig.isPortalURL(url), let input = message.body as? [String: Any], let webView = message.webView else { return }
+                Task { @MainActor in await PortalMeeting.shared.handle(input, webView: webView) }
+                return
+            }
             if message.name == "NFPortalWorkspace" || (message.name == "NFPortalMacPageZoom" && parent.workspace != nil) {
                 guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
                       url.scheme == "https", PortalConfig.isPortalURL(url), let record = message.body as? [String: Any] else { return }
