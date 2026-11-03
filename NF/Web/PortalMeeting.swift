@@ -21,8 +21,13 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
         var size: Int = 0
         var createdAt: String
         var complete = false
+        var recordingSettings: PortalMeetingRecordingSettings?
+        var interrupted: Bool?
     }
     private var recorder: AVAudioRecorder?
+    private var live: PortalMeetingLiveCapture?
+    private var incrementalTask: Task<Void, Never>?
+    private var incrementalErrors: [String: String] = [:]
     private var current: Record?
     private var timer: Timer?
     private var interruption: NSObjectProtocol?
@@ -61,17 +66,19 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
             }
 #endif
         }
-        return ["recording": true, "transcription": available, "summarization": available, "reason": available ? "" : "기본 한국어 온디바이스 전사·요약이 모두 준비된 기기에서만 자동 회의록을 지원합니다."]
+        return ["recording": true, "recordingSettingsVersion": 1, "incrementalTranscription": true, "transcription": available, "summarization": available, "reason": available ? "" : "기본 한국어 온디바이스 전사·요약이 모두 준비된 기기에서만 자동 회의록을 지원합니다."]
 #endif
     }
-    private func start(user: String, report: String) async throws -> Record {
+    private func start(user: String, report: String, settings: PortalMeetingRecordingSettings) async throws -> Record {
 #if targetEnvironment(macCatalyst)
         throw failure("녹음은 모바일·태블릿에서 지원합니다.")
 #else
-        guard recorder == nil, !user.isEmpty, user.count <= 150, !report.isEmpty, report.count <= 150 else { throw failure("다른 녹음이 진행 중이거나 계정 정보가 올바르지 않습니다.") }
+        try settings.validate()
+        guard current == nil, !aiBusy, !user.isEmpty, user.count <= 150, !report.isEmpty, report.count <= 150 else { throw failure("다른 녹음·단말 AI 작업이 진행 중이거나 계정 정보가 올바르지 않습니다.") }
+        if settings.during { guard await capabilities()["transcription"] as? Bool == true else { throw failure("기본 한국어 구간 전사 모델 준비가 필요합니다.") } }
         let allowed = await withCheckedContinuation { continuation in AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) } }
         guard allowed else { throw failure("설정에서 마이크 권한을 허용해 주세요.") }
-        guard recorder == nil else { throw failure("다른 녹음이 진행 중입니다.") }
+        guard current == nil else { throw failure("다른 녹음이 진행 중입니다.") }
         let folder = try directory
         let space = try folder.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
         guard space >= 256 * 1024 * 1024 else { throw failure("단말 저장 공간이 부족합니다.") }
@@ -79,33 +86,47 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
         try audioSession.setCategory(.record, mode: .default)
         try audioSession.setActive(true)
         let id = UUID().uuidString.lowercased()
-        let row = Record(id: id, nativeId: id, userId: user, reportId: report, createdAt: ISO8601DateFormatter().string(from: Date()))
+        let row = Record(id: id, nativeId: id, userId: user, reportId: report, createdAt: ISO8601DateFormatter().string(from: Date()), recordingSettings: settings)
+        try save(row)
+        if settings.during {
+            let capture = PortalMeetingLiveCapture(original: try path(id, "m4a"), folder: try segmentFolder(id), maxSeconds: settings.maxSeconds, onPart: { [weak self] in
+                Task { @MainActor [weak self] in self?.queueIncremental(row) }
+            }, onLimit: { [weak self] in Task { @MainActor [weak self] in if self?.current?.id == id { _ = try? self?.finish() } } })
+            do { try capture.start(); live = capture; current = row }
+            catch { try? audioSession.setActive(false); throw error }
+        } else {
         let capture = try AVAudioRecorder(url: path(id, "m4a"), settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 44100, AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 64000])
         capture.delegate = self
         try save(row)
-        guard capture.prepareToRecord(), capture.record(forDuration: 7200) else { throw failure("녹음을 시작하지 못했습니다.") }
+        guard capture.prepareToRecord(), capture.record(forDuration: settings.maxSeconds) else { throw failure("녹음을 시작하지 못했습니다.") }
         recorder = capture; current = row
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor [weak self] in self?.checkpoint() } }
         interruption = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             guard (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue else { return }
-            Task { @MainActor [weak self] in self?.recorder?.pause(); self?.checkpoint() }
+            Task { @MainActor [weak self] in self?.recorder?.pause(); self?.live?.pause(); self?.checkpoint() }
         }
         return row
 #endif
     }
     private func checkpoint() {
-        guard var row = current, let capture = recorder else { return }
-        row.seconds = min(7200, capture.currentTime); current = row
+        guard var row = current else { return }
+        let limit = row.recordingSettings?.maxSeconds ?? 7200
+        row.seconds = min(limit, live?.seconds ?? recorder?.currentTime ?? row.seconds); current = row
         do {
             try save(row)
             let size = try path(row.id, "m4a").resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            if row.seconds >= 7200 || size >= 256 * 1024 * 1024 { _ = try finish() }
+            let available = try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
+            if row.seconds >= limit || size >= 256 * 1024 * 1024 || available < 8 * 1024 * 1024 { _ = try finish() }
         }
         catch { _ = try? finish() }
     }
     private func finish() throws -> Record {
         guard var row = current else { throw failure("진행 중인 녹음이 없습니다.") }
-        if let capture = recorder { row.seconds = min(7200, max(row.seconds, capture.currentTime)); capture.stop() }
+        let limit = row.recordingSettings?.maxSeconds ?? 7200
+        if let capture = recorder { row.seconds = min(limit, max(row.seconds, capture.currentTime)); capture.stop() }
+        if let capture = live { row.seconds = min(limit, capture.seconds); do { try capture.finish() } catch { row.interrupted = true; incrementalErrors[row.id] = error.localizedDescription } }
+        live = nil
         recorder = nil; timer?.invalidate(); timer = nil
         if let interruption { NotificationCenter.default.removeObserver(interruption); self.interruption = nil }
         row.size = try path(row.id, "m4a").resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -119,6 +140,14 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
     private func transcribe(_ row: Record) async throws -> String {
         let supported = await capabilities()
         guard supported["transcription"] as? Bool == true else { throw failure("이 기기는 기본 한국어 자동 회의록을 지원하지 않습니다.") }
+        if row.recordingSettings?.during == true {
+            guard row.interrupted != true else { throw failure("녹음 파일 마무리 중 오류가 있었습니다. 원본을 확인해 주세요. 저장된 전사는 유지됩니다.") }
+            return try await processIncremental(row, finished: true)
+        }
+        return try await transcribeFile(path(row.id, "m4a"))
+    }
+    @available(iOS 26.0, *)
+    private func transcribeFile(_ url: URL) async throws -> String {
         let module = SpeechTranscriber(locale: Locale(identifier: "ko-KR"), preset: .transcription)
         let analyzer = SpeechAnalyzer(modules: [module])
         let results = Task { () throws -> String in
@@ -130,10 +159,51 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
             return text
         }
         do {
-            let audio = try AVAudioFile(forReading: path(row.id, "m4a"))
+            let audio = try AVAudioFile(forReading: url)
             try await analyzer.start(inputAudioFile: audio, finishAfterFile: true)
             return try await results.value
         } catch { results.cancel(); throw error }
+    }
+    private func segmentFolder(_ id: String) throws -> URL {
+        let folder = try path(id, "segments")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        return folder
+    }
+    private func savedParts(_ id: String) throws -> [String] {
+        let url = try path(id, "parts")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        return try JSONDecoder().decode([String].self, from: Data(contentsOf: url))
+    }
+    private func queueIncremental(_ row: Record) {
+        guard row.recordingSettings?.during == true, incrementalTask == nil, !aiBusy else { return }
+        if #available(iOS 26.0, *) {
+            aiBusy = true
+            incrementalTask = Task { @MainActor in
+                defer { self.aiBusy = false; self.incrementalTask = nil }
+                do { _ = try await self.processIncremental(row, finished: false); self.incrementalErrors.removeValue(forKey: row.id) }
+                catch { self.incrementalErrors[row.id] = error.localizedDescription }
+            }
+        }
+    }
+    @available(iOS 26.0, *)
+    private func processIncremental(_ row: Record, finished: Bool) async throws -> String {
+        let files = try FileManager.default.contentsOfDirectory(at: segmentFolder(row.id), includingPropertiesForKeys: nil).filter { $0.pathExtension == "m4a" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var parts = try savedParts(row.id)
+        let interval = row.recordingSettings?.segmentMinutes ?? 1
+        let ready = finished ? files.count : files.count / interval * interval
+        guard parts.count <= files.count else { throw failure("저장된 녹음 구간을 확인해 주세요. 원본은 유지됩니다.") }
+        for index in parts.count..<max(parts.count, ready) {
+            // Empty speech is still a valid completed minute. Errors never
+            // append a part, so retries resume exactly at the failed minute.
+            let text = try await transcribeFile(files[index])
+            parts.append(text)
+            try JSONEncoder().encode(parts).write(to: path(row.id, "parts"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        }
+        guard finished else { return "" }
+        guard !files.isEmpty, parts.count == files.count, parts.contains(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw failure("인식된 말소리가 없습니다. 원본을 듣고 확인해 주세요.") }
+        let transcript = parts.enumerated().map { "[\($0.offset):00]\n\($0.element)" }.joined(separator: "\n\n")
+        guard transcript.count <= 1_000_000 else { throw failure("전사 크기 제한을 초과했습니다.") }
+        return transcript
     }
     @available(iOS 26.0, *)
     private func summarize(_ text: String) async throws -> String {
@@ -161,7 +231,7 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
         do {
             switch operation {
             case "capabilities": output["result"] = await capabilities()
-            case "start": output["result"] = try object(await start(user: user, report: report))
+            case "start": output["result"] = try object(await start(user: user, report: report, settings: PortalMeetingRecordingSettings.parse(input["recordingSettings"])))
             case "list":
                 output["result"] = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }.compactMap { url -> [String: Any]? in guard let row = try? JSONDecoder().decode(Record.self, from: Data(contentsOf: url)), row.userId == user, row.reportId == report else { return nil }; return try? object(row) }
             case "summarize":
@@ -170,16 +240,17 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
             default:
                 let row = try load(id, user: user, report: report)
                 switch operation {
-                case "status": output["result"] = ["seconds": current?.id == id ? recorder?.currentTime ?? row.seconds : row.seconds, "paused": current?.id == id && recorder?.isRecording != true, "active": current?.id == id]
-                case "pause": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; recorder?.pause(); checkpoint(); output["result"] = true
-                case "resume": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; try AVAudioSession.sharedInstance().setActive(true); recorder?.record(); output["result"] = true
+                case "status": output["result"] = ["seconds": current?.id == id ? live?.seconds ?? recorder?.currentTime ?? row.seconds : row.seconds, "paused": current?.id == id && (live?.paused ?? (recorder?.isRecording != true)), "active": current?.id == id, "speechCompleted": (try? savedParts(id).count) ?? 0, "incrementalError": incrementalErrors[id] ?? ""]
+                case "pause": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; recorder?.pause(); live?.pause(); checkpoint(); output["result"] = true
+                case "resume": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; try AVAudioSession.sharedInstance().setActive(true); recorder?.record(); try live?.resume(); output["result"] = true
                 case "stop": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; output["result"] = try object(finish())
                 case "read":
                     guard row.complete, let offset = input["offset"] as? Int, let length = input["length"] as? Int, length > 0, length <= 1048576, offset >= 0, offset + length <= row.size else { throw failure("전송 범위가 올바르지 않습니다.") }
                     let file = try FileHandle(forReadingFrom: path(id, "m4a")); defer { try? file.close() }; try file.seek(toOffset: UInt64(offset))
                     let data = try file.read(upToCount: length) ?? Data(); guard data.count == length else { throw failure("로컬 원본이 변경되었습니다.") }; output["result"] = ["base64": data.base64EncodedString()]
-                case "remove": guard row.complete, current?.id != id else { throw failure("녹음 종료 후 삭제해 주세요.") }; try FileManager.default.removeItem(at: path(id, "m4a")); try FileManager.default.removeItem(at: path(id, "json")); output["result"] = true
+                case "remove": guard row.complete, current?.id != id, !aiBusy else { throw failure("녹음·단말 작업 종료 후 삭제해 주세요.") }; try FileManager.default.removeItem(at: path(id, "m4a")); try FileManager.default.removeItem(at: path(id, "json")); try? FileManager.default.removeItem(at: path(id, "parts")); try? FileManager.default.removeItem(at: path(id, "segments")); output["result"] = true
                 case "transcribe":
+                    await incrementalTask?.value
                     guard row.complete, !aiBusy else { throw failure("녹음 종료 후 단말 작업을 다시 실행해 주세요.") }; aiBusy = true; defer { aiBusy = false }
                     if #available(iOS 26.0, *) { output["result"] = ["text": try await transcribe(row)] } else { throw failure("자동 회의록을 지원하지 않습니다.") }
                 default: throw failure("지원하지 않는 단말 작업입니다.")
