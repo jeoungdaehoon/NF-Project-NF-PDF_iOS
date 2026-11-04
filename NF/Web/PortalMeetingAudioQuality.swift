@@ -28,9 +28,12 @@ nonisolated enum PortalMeetingAudioQuality {
         // transcription file. Never pretend the original is the whole budget.
         Int64(settings.maxSeconds) * (settings.during ? 32000 : 48000) + 64 * 1024 * 1024
     }
-    static func transcriptionCopy(_ source: URL) throws -> URL {
+    static func transcriptionCopy(_ source: URL, minute: Int? = nil) throws -> URL {
         let input = try AVAudioFile(forReading: source)
-        let estimated = Int64(Double(input.length) / input.processingFormat.sampleRate * 32000) + 16 * 1024 * 1024
+        let rate = input.processingFormat.sampleRate
+        if let minute { input.framePosition = min(input.length, Int64(Double(minute) * 60 * rate)) }
+        let end = minute == nil ? input.length : min(input.length, input.framePosition + Int64(60 * rate))
+        let estimated = Int64(Double(end - input.framePosition) / rate * 32000) + 16 * 1024 * 1024
         let space = availableBytes(at: source)
         guard space >= estimated else { throw NSError(domain: "NFMeeting", code: 1, userInfo: [NSLocalizedDescriptionKey: "전사용 임시 음성 공간이 부족합니다. 원본은 유지됩니다."]) }
         let destination = FileManager.default.temporaryDirectory.appendingPathComponent("nf-meeting-level-\(UUID().uuidString).caf")
@@ -46,8 +49,8 @@ nonisolated enum PortalMeetingAudioQuality {
                 var readError: Error?, convertError: NSError?
                 let state = converter.convert(to: output, error: &convertError) { requested, status in
                     do {
-                        guard input.framePosition < input.length else { status.pointee = .endOfStream; return nil }
-                        try input.read(into: sourceBuffer, frameCount: min(requested, sourceBuffer.frameCapacity, AVAudioFrameCount(input.length - input.framePosition)))
+                        guard input.framePosition < end else { status.pointee = .endOfStream; return nil }
+                        try input.read(into: sourceBuffer, frameCount: min(requested, sourceBuffer.frameCapacity, AVAudioFrameCount(min(Int64(UInt32.max), end - input.framePosition))))
                         if sourceBuffer.frameLength == 0 { status.pointee = .endOfStream; return nil }
                         status.pointee = .haveData; return sourceBuffer
                     } catch { readError = error; status.pointee = .endOfStream; return nil }
