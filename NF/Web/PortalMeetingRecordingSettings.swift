@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated struct PortalMeetingRecordingSettings: Codable, Equatable {
     var maxMinutes = 120
-    var transcriptionMode = "after"
+    var transcriptionMode = "during"
     var segmentMinutes = 1
     var maxSeconds: Double { Double(maxMinutes * 60) }
     var during: Bool { transcriptionMode == "during" }

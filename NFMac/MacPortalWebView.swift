@@ -52,6 +52,7 @@ struct MacPortalWebView: NSViewRepresentable {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
+        controller.add(context.coordinator, name: "NFMeeting")
         controller.add(context.coordinator, name: "NFPortalMacNavigation")
         controller.add(context.coordinator, name: "NFPortalIOSGoogleLogin")
         controller.add(context.coordinator, name: "NFPortalIOSLogout")
@@ -140,6 +141,7 @@ struct MacPortalWebView: NSViewRepresentable {
         coordinator.closePopupWindows()
         let controller = webView.configuration.userContentController
         [
+            "NFMeeting",
             "NFPortalMacNavigation",
             "NFPortalIOSGoogleLogin",
             "NFPortalIOSLogout",
@@ -672,6 +674,10 @@ struct MacPortalWebView: NSViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             switch message.name {
+            case "NFMeeting":
+                guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url, url.scheme == "https", MacPortalConfig.isPortalURL(url), let input = message.body as? [String: Any], let webView = message.webView else { return }
+                if #available(macOS 15.0, *) { Task { @MainActor in await PortalMeeting.shared.handle(input, webView: webView) } }
+                else if let requestID = input["requestId"] as? String, let data = try? JSONSerialization.data(withJSONObject: ["requestId": requestID, "error": "단말 음성 기능은 macOS 15 이상에서 지원합니다."]), let json = String(data: data, encoding: .utf8) { webView.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nf-meeting-result',{detail:\(json)}));") }
             case "NFPortalWorkspace":
                 guard message.frameInfo.isMainFrame,
                       let url = message.frameInfo.request.url, url.scheme == "https", MacPortalConfig.isPortalURL(url),

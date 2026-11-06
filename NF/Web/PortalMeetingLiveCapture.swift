@@ -4,6 +4,7 @@ import Synchronization
 
 /// SPSC queue: tap only copies into preallocated buffers. No locks, allocation,
 /// encoder, disk access, or Task creation on the input callback.
+@available(macOS 15.0, *)
 nonisolated final class PortalMeetingPcmQueue: @unchecked Sendable {
     private let slots: [AVAudioPCMBuffer]
     private let writeIndex = Atomic<Int>(0)
@@ -45,6 +46,7 @@ nonisolated final class PortalMeetingPcmQueue: @unchecked Sendable {
 /// The unmodified original and optional minute fragments are encoded only by
 /// the writer. Queue saturation is an explicit interrupted recording, never
 /// an apparently successful file with silently dropped buffers.
+@available(macOS 15.0, *)
 nonisolated final class PortalMeetingLiveCapture: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let writerQueue = DispatchQueue(label: "nf.meeting.writer", qos: .userInitiated)

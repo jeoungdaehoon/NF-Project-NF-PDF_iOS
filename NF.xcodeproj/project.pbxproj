@@ -23,11 +23,22 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		5B0000000000000000000010 /* PortalMeeting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000020 /* PortalMeeting.swift */; };
+		5B0000000000000000000011 /* PortalMeetingLiveCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000021 /* PortalMeetingLiveCapture.swift */; };
+		5B0000000000000000000012 /* PortalMeetingRecordingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000022 /* PortalMeetingRecordingSettings.swift */; };
+		5B0000000000000000000013 /* PortalMeetingAudioQuality.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000023 /* PortalMeetingAudioQuality.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		48E180ED3019EB190002DE82 /* NF.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NF.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		48E180FA3019EB1D0002DE82 /* NFTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NFTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		48E181043019EB1D0002DE82 /* NFUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NFUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A0000010000000000000001 /* NF macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "NF macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5B0000000000000000000020 /* PortalMeeting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PortalMeeting.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000021 /* PortalMeetingLiveCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PortalMeetingLiveCapture.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000022 /* PortalMeetingRecordingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PortalMeetingRecordingSettings.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000023 /* PortalMeetingAudioQuality.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PortalMeetingAudioQuality.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -329,6 +340,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5B0000000000000000000010 /* PortalMeeting.swift in Sources */,
+				5B0000000000000000000011 /* PortalMeetingLiveCapture.swift in Sources */,
+				5B0000000000000000000012 /* PortalMeetingRecordingSettings.swift in Sources */,
+				5B0000000000000000000013 /* PortalMeetingAudioQuality.swift in Sources */,
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

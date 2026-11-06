@@ -3,10 +3,11 @@ import Testing
 @testable import NF
 
 struct PortalMeetingRecordingSettingsTests {
-    @Test func legacyDefaultsAndAllAllowedChoices() throws {
+    @Test func incrementalDefaultsAndAllAllowedChoices() throws {
         let defaults = try PortalMeetingRecordingSettings.parse(nil)
         #expect(defaults.maxSeconds == 7200)
-        #expect(!defaults.during)
+        #expect(defaults.during)
+        #expect(try !PortalMeetingRecordingSettings.parse(["maxMinutes": 120, "transcriptionMode": "after", "segmentMinutes": 1]).during)
         for maximum in stride(from: 10, through: 120, by: 10) {
             for segment in 1...10 {
                 let value = try PortalMeetingRecordingSettings.parse(["maxMinutes": maximum, "transcriptionMode": "during", "segmentMinutes": segment])
