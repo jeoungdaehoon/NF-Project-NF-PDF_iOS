@@ -411,6 +411,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
 #if !targetEnvironment(macCatalyst)
         userContentController.add(context.coordinator, name: "NFPortalWorkspace")
         userContentController.add(context.coordinator, name: "NFMeeting")
+        userContentController.addUserScript(WKUserScript(source: PortalNativeFeatureScript.source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         userContentController.add(context.coordinator, name: "NFPortalMacPageZoom")
 #endif
         userContentController.add(context.coordinator, name: Coordinator.googleLoginBridgeName)
@@ -524,6 +525,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         - coordinator: WKWebView Coordinator 입니다.
      */
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        PortalMeeting.shared.stopInlinePlayback()
         coordinator.parent.workspace?.detach(coordinator.parent.pane)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalWorkspace")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFMeeting")
@@ -935,6 +937,7 @@ extension PortalWebViewContent {
          - Date: 2026.08.05
          */
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            PortalMeeting.shared.stopInlinePlayback()
 #if targetEnvironment(macCatalyst)
             parent.desktopChrome?.refreshNavigationState(in: webView)
 #endif

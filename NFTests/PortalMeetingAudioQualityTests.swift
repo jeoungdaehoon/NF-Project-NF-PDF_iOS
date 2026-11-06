@@ -84,7 +84,7 @@ struct PortalMeetingAudioQualityTests {
         #expect(try Data(contentsOf: source) == before)
     }
     @Test func storageIncludesTemporaryAudio() {
-        let after = PortalMeetingRecordingSettings(), during = try! PortalMeetingRecordingSettings.parse(["maxMinutes": 120, "transcriptionMode": "during", "segmentMinutes": 1])
+        let after = try! PortalMeetingRecordingSettings.parse(["maxMinutes": 120, "transcriptionMode": "after", "segmentMinutes": 1]), during = PortalMeetingRecordingSettings()
         #expect(PortalMeetingAudioQuality.requiredBytes(after) == 7200 * 48000 + 64 * 1024 * 1024)
         #expect(PortalMeetingAudioQuality.requiredBytes(during) == 7200 * 32000 + 64 * 1024 * 1024)
     }
