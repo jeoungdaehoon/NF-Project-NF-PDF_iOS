@@ -18,6 +18,32 @@ nonisolated struct PortalMeetingAudioLevel {
 }
 
 nonisolated enum PortalMeetingAudioQuality {
+    /// Original-signal energy only, not a speech detector or confidence score.
+    /// Retains no audio and never amplifies the measured signal.
+    static func audibleSeconds(_ source: URL, minute: Int? = nil) throws -> Double {
+        let input = try AVAudioFile(forReading: source)
+        let rate = input.processingFormat.sampleRate
+        if let minute { input.framePosition = min(input.length, Int64(Double(minute) * 60 * rate)) }
+        let end = minute == nil ? input.length : min(input.length, input.framePosition + Int64(60 * rate))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 8192) else { throw NSError(domain: "NFMeeting", code: 1) }
+        let window = max(1, Int(rate * 0.02)), channels = Int(input.processingFormat.channelCount)
+        var energy = 0.0, frames = 0, audible = 0
+        while input.framePosition < end {
+            try Task.checkCancellation()
+            try input.read(into: buffer, frameCount: AVAudioFrameCount(min(Int64(buffer.frameCapacity), end - input.framePosition)))
+            guard buffer.frameLength > 0, let values = buffer.floatChannelData else { throw NSError(domain: "NFMeeting", code: 1) }
+            for index in 0..<Int(buffer.frameLength) {
+                for channel in 0..<channels { let sample = Double(values[channel][index]); energy += sample * sample / Double(channels) }
+                frames += 1
+                if frames == window {
+                    if energy / Double(frames) >= 0.0000316227766 { audible += frames }
+                    energy = 0; frames = 0
+                }
+            }
+        }
+        if frames > 0, energy / Double(frames) >= 0.0000316227766 { audible += frames }
+        return Double(audible) / rate
+    }
     static func availableBytes(at url: URL) -> Int64 {
         if let value = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage { return value }
         if let value = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]).volumeAvailableCapacity { return Int64(value) }
@@ -28,7 +54,7 @@ nonisolated enum PortalMeetingAudioQuality {
         // transcription file. Never pretend the original is the whole budget.
         Int64(settings.maxSeconds) * (settings.during ? 32000 : 48000) + 64 * 1024 * 1024
     }
-    static func transcriptionCopy(_ source: URL, minute: Int? = nil) throws -> URL {
+    static func transcriptionCopy(_ source: URL, minute: Int? = nil, enhance: Bool = true) throws -> URL {
         let input = try AVAudioFile(forReading: source)
         let rate = input.processingFormat.sampleRate
         if let minute { input.framePosition = min(input.length, Int64(Double(minute) * 60 * rate)) }
@@ -58,7 +84,7 @@ nonisolated enum PortalMeetingAudioQuality {
                 if let readError { throw NSError(domain: "NFMeeting", code: 1, userInfo: [NSLocalizedDescriptionKey: "전사용 원본 읽기 실패: \(readError)"]) }; if let convertError { throw convertError }
                 if output.frameLength > 0, let values = output.floatChannelData?[0] {
                     noProgress = 0
-                    level.process(values, count: Int(output.frameLength), rate: 16000)
+                    if enhance { level.process(values, count: Int(output.frameLength), rate: 16000) }
                     do { try file.write(from: output) } catch { throw NSError(domain: "NFMeeting", code: 1, userInfo: [NSLocalizedDescriptionKey: "전사용 PCM 저장 실패: \(error)"]) }; frames += Int64(output.frameLength)
                 }
                 else { noProgress += 1 }
@@ -70,5 +96,65 @@ nonisolated enum PortalMeetingAudioQuality {
             guard frames > 0 else { throw NSError(domain: "NFMeeting", code: 1) }
             return destination
         } catch { try? FileManager.default.removeItem(at: destination); throw error }
+    }
+}
+
+/// Conservative quality checks, not semantic correction. Never invent a name,
+/// number, decision or missing sentence to make a transcript look complete.
+nonisolated enum PortalMeetingTextQuality {
+    static let summaryVersion = "conversation-sentences-v2"
+    static func tooSparse(_ text: String, audibleSeconds: Double) -> Bool {
+        let plain = text.replacingOccurrences(of: #"\[\d+(?::\d+|초)?\]"#, with: "", options: .regularExpression)
+        return audibleSeconds >= 30 && plain.filter { $0.isLetter || $0.isNumber }.count < 16
+    }
+    static func suspicious(_ text: String) -> Bool {
+        let plain = text.replacingOccurrences(of: #"\[\d+(?::\d+|초)?\]"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard plain.count >= 24 else { return false }
+        let visible = plain.filter { !$0.isWhitespace }
+        if visible.filter({ $0.isLetter || $0.isNumber }).count * 2 < visible.count { return true }
+        return plain.range(of: #"(.{6,80}?)\1{3,}"#, options: .regularExpression) != nil
+    }
+    static func summaryParts(_ text: String, limit: Int = 1800) -> [String] {
+        precondition(limit >= 32)
+        var remaining = text[...], result: [String] = []
+        while !remaining.isEmpty {
+            let end = remaining.index(remaining.startIndex, offsetBy: min(limit, remaining.count))
+            var cut = end
+            if end < remaining.endIndex {
+                let middle = remaining.index(remaining.startIndex, offsetBy: min(limit / 2, remaining.count))
+                let candidates = remaining[middle..<end]
+                if let boundary = candidates.indices.last(where: { index in
+                    if remaining[index] == "\n" { return true }
+                    let next = remaining.index(after: index)
+                    return ".!?。！？".contains(remaining[index]) && (next == remaining.endIndex || remaining[next].isWhitespace)
+                }) {
+                    cut = remaining.index(after: boundary)
+                } else if let space = candidates.lastIndex(where: { $0.isWhitespace }) {
+                    cut = remaining.index(after: space)
+                }
+            }
+            result.append(String(remaining[..<cut])); remaining = remaining[cut...]
+        }
+        return result
+    }
+    static func sourceFacts(_ text: String) -> [String] {
+        var seen = Set<String>()
+        return text.components(separatedBy: "\n").compactMap { line in
+            let value = line.replacingOccurrences(of: #"^\[\d+초\]\s*"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.hasPrefix("["), value.contains(where: { $0.isNumber }) || ["담당", "기한", "결정", "하기로", "까지"].contains(where: { value.contains($0) }), seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+    static func contextTerms(_ text: String) -> [String] {
+        let suffix = String(text.suffix(500))
+        let expression = try! NSRegularExpression(pattern: #"[가-힣A-Za-z][가-힣A-Za-z0-9_-]{2,}"#)
+        let matches = expression.matches(in: suffix, range: NSRange(suffix.startIndex..., in: suffix))
+        var seen = Set<String>()
+        let terms = matches.reversed().compactMap { match -> String? in
+            guard let range = Range(match.range, in: suffix) else { return nil }
+            let term = String(suffix[range])
+            return seen.insert(term).inserted ? term : nil
+        }
+        return Array(terms.prefix(12).reversed())
     }
 }

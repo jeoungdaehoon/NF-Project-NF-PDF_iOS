@@ -5,6 +5,33 @@ import Testing
 @testable import NF
 
 struct PortalMeetingAudioQualityTests {
+    @Test func obviousOmissionsNeedReviewNotInventedText() {
+        #expect(PortalMeetingTextQuality.tooSparse("[1:00] 밑에.", audibleSeconds: 45))
+        #expect(!PortalMeetingTextQuality.tooSparse("", audibleSeconds: 0))
+        #expect(!PortalMeetingTextQuality.tooSparse("네.", audibleSeconds: 2))
+        #expect(!PortalMeetingTextQuality.tooSparse("충분한 길이의 인식된 문장은 이 검사만으로 실패시키지 않습니다.", audibleSeconds: 45))
+    }
+    @Test func sentencePartsPreserveEveryCharacter() {
+        let text = String(repeating: "김담당자는 2026-11-10까지 SDK-123을 확인하기로 했습니다. 👩🏽‍💻\n", count: 80)
+        let parts = PortalMeetingTextQuality.summaryParts(text)
+        #expect(parts.joined() == text)
+        #expect(parts.allSatisfy { $0.count <= 1800 })
+        #expect(parts.dropLast().allSatisfy { $0.last?.isWhitespace == true })
+        let emoji = String(repeating: "👩🏽‍💻", count: 2000)
+        #expect(PortalMeetingTextQuality.summaryParts(emoji).joined() == emoji)
+    }
+    @Test func qualityChecksDoNotRewriteFacts() {
+        #expect(PortalMeetingTextQuality.suspicious(String(repeating: "같은 문장이 반복됩니다. ", count: 8)))
+        #expect(PortalMeetingTextQuality.suspicious(String(repeating: "!?_", count: 20)))
+        #expect(!PortalMeetingTextQuality.suspicious("김담당자가 2026-11-10까지 SDK-123 버전 검토 결과를 확인합니다."))
+        #expect(!PortalMeetingTextQuality.suspicious("네 네 네"))
+        let source = "[1:00]\n[3초] 김담당자가 SDK-123을 11월 10일까지 확인.\n일반 논의\n담당: 이담당\n"
+        #expect(PortalMeetingTextQuality.sourceFacts(source) == ["김담당자가 SDK-123을 11월 10일까지 확인.", "담당: 이담당"])
+        let context = "SDK-123 담당자는 김담당입니다 다음 구간 SDK-123"
+        let terms = PortalMeetingTextQuality.contextTerms(context)
+        #expect(Set(terms).count == terms.count && terms.count <= 12)
+        #expect(terms.allSatisfy { context.contains($0) })
+    }
     @Test func silenceNoiseFloorAndQuietSpeech() {
         for amplitude: Float in [0, 0.0005, 0.015, 0.95] {
             var samples = (0..<16000).map { sin(Float($0) * 2 * .pi * 440 / 16000) * amplitude }
