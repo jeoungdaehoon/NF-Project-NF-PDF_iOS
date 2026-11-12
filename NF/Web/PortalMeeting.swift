@@ -42,6 +42,10 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
     private var live: PortalMeetingLiveCapture?
 #if !os(macOS)
     private var playback: PortalMeetingPlayback?
+    private let screenAwake = PortalRecordingScreenAwake(
+        read: { UIApplication.shared.isIdleTimerDisabled },
+        write: { UIApplication.shared.isIdleTimerDisabled = $0 }
+    )
 #endif
 #if os(macOS)
     private var shareDelegate: MeetingShareDelegate?
@@ -184,7 +188,12 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
             let capture = PortalMeetingLiveCapture(original: try path(id, "m4a"), folder: try segmentFolder(id), maxSeconds: settings.maxSeconds, recordSegments: settings.during, onPart: { [weak self] in
                 Task { @MainActor [weak self] in self?.queueIncremental(row) }
             }, onLimit: { [weak self] in Task { @MainActor [weak self] in if self?.current?.id == id { _ = try? self?.finish() } } })
-            do { try capture.start(); live = capture; current = row }
+            do {
+                try capture.start(); live = capture; current = row
+#if !os(macOS)
+                screenAwake.begin()
+#endif
+            }
             catch {
 #if !os(macOS)
                 try? audioSession.setActive(false)
@@ -194,6 +203,12 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
         }
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor [weak self] in self?.checkpoint() } }
 #if !os(macOS)
+        audioObservers.append(NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.current != nil else { return }
+                self.screenAwake.begin()
+            }
+        })
         interruption = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             guard (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.began.rawValue else { return }
             Task { @MainActor [weak self] in self?.recorder?.pause(); self?.live?.pause(); self?.current?.captureWarning = "통화·시스템 오디오 인터럽트로 일시정지했습니다. 확인 후 재개해 주세요."; self?.checkpoint() }
@@ -238,22 +253,26 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
     }
     private func finish() throws -> Record {
         guard var row = current else { throw failure("진행 중인 녹음이 없습니다.") }
+        defer {
+            live = nil
+            recorder = nil; timer?.invalidate(); timer = nil
+            if let interruption { NotificationCenter.default.removeObserver(interruption); self.interruption = nil }
+            audioObservers.forEach { NotificationCenter.default.removeObserver($0) }; audioObservers.removeAll()
+            current = nil
+#if !os(macOS)
+            screenAwake.restore()
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+#endif
+        }
         let limit = row.recordingSettings?.maxSeconds ?? 7200
         if let capture = recorder { row.seconds = min(limit, max(row.seconds, capture.currentTime)); capture.stop() }
         if let capture = live {
             do { try capture.finish() } catch { row.interrupted = true; row.captureWarning = error.localizedDescription; incrementalErrors[row.id] = error.localizedDescription }
             row.seconds = min(limit, capture.seconds); row.audioDiagnostics = capture.diagnostics.mapValues { String(describing: $0) }
         }
-        live = nil
-        recorder = nil; timer?.invalidate(); timer = nil
-        if let interruption { NotificationCenter.default.removeObserver(interruption); self.interruption = nil }
-        audioObservers.forEach { NotificationCenter.default.removeObserver($0) }; audioObservers.removeAll()
         row.size = try path(row.id, "m4a").resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         if row.recordingSettings?.during == true { row.segmentCount = try FileManager.default.contentsOfDirectory(at: segmentFolder(row.id), includingPropertiesForKeys: nil).filter { $0.pathExtension == "m4a" }.count }
-        row.complete = true; try save(row); current = nil
-#if !os(macOS)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-#endif
+        row.complete = true; try save(row)
         return row
     }
     nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) { Task { @MainActor in if self.recorder === recorder { _ = try? self.finish() } } }
@@ -668,10 +687,16 @@ final class PortalMeeting: NSObject, AVAudioRecorderDelegate {
                 case "pause": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; recorder?.pause(); live?.pause(); checkpoint(); output["result"] = true
                 case "resume":
                     guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }
+                    do {
 #if !os(macOS)
                     try AVAudioSession.sharedInstance().setActive(true)
 #endif
                     recorder?.record(); try live?.resume(); current?.captureWarning = nil; output["result"] = true
+                    } catch {
+                        current?.interrupted = true; current?.captureWarning = error.localizedDescription
+                        _ = try? finish()
+                        throw error
+                    }
                 case "stop": guard current?.id == id else { throw failure("진행 중인 녹음이 아닙니다.") }; output["result"] = try object(finish())
                 case "read":
                     guard row.complete, let offset = input["offset"] as? Int, let length = input["length"] as? Int, length > 0, length <= 1048576, offset >= 0, offset + length <= row.size else { throw failure("전송 범위가 올바르지 않습니다.") }
