@@ -618,7 +618,7 @@ struct MacRemotePDFPreviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button { exitOrClose() } label: {
                     Image(systemName: isFullscreen || isPaneExpanded ? "arrow.down.right.and.arrow.up.left" : "chevron.left")
                         .font(.system(size: 15, weight: .semibold))
@@ -693,7 +693,7 @@ struct MacRemotePDFPreviewView: View {
                     .onDisappear(perform: runPendingMoreMenuAction)
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .frame(height: 48)
             Divider()
             if markdown != nil {
@@ -757,7 +757,7 @@ struct MacRemotePDFPreviewView: View {
                             .frame(width: 28, height: 24)
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 16)
                 .frame(height: 32)
                 Divider()
             }
@@ -972,16 +972,16 @@ private struct MacAttachmentMenuRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: systemImage)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
                 Text(title)
                 Spacer(minLength: 0)
             }
             .font(.system(size: 13))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .frame(minHeight: 26)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(minHeight: 40)
             .contentShape(RoundedRectangle(cornerRadius: 7))
             .background(isHovering && isEnabled ? Color.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: 7))
         }

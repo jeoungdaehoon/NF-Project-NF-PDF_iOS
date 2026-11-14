@@ -260,7 +260,7 @@ struct PortalPDFDocumentsView: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(portalTheme.mutedColor)
             TextField("PDF 파일명 검색", text: $searchQuery)
@@ -277,7 +277,7 @@ struct PortalPDFDocumentsView: View {
                 .accessibilityLabel("검색어 지우기")
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 16)
         .frame(height: 44)
         .background(portalTheme.surfaceColor)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -326,7 +326,7 @@ struct PortalPDFDocumentsView: View {
         ZStack {
             Color.black.opacity(0.48)
                 .ignoresSafeArea()
-            VStack(spacing: 14) {
+            VStack(spacing: 16) {
                 ProgressView()
                     .controlSize(.large)
                     .tint(.white)
@@ -335,9 +335,9 @@ struct PortalPDFDocumentsView: View {
                     .foregroundStyle(.white)
             }
             .padding(.horizontal, 28)
-            .padding(.vertical, 22)
+            .padding(.vertical, 24)
             .background(portalTheme.surfaceColor)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(addingDocumentMessage)
@@ -377,7 +377,7 @@ struct PortalPDFDocumentsView: View {
                     .lineLimit(1)
                 Spacer()
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .frame(height: 44)
             .background(portalTheme.surfaceColor)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -398,7 +398,7 @@ struct PortalPDFDocumentsView: View {
             }
             .frame(width: 44, height: 48)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(folder.name)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(portalTheme.foregroundColor)
@@ -412,19 +412,12 @@ struct PortalPDFDocumentsView: View {
             Image(systemName: "chevron.right")
                 .foregroundStyle(portalTheme.mutedColor)
         }
-        .padding(16)
-        .background(
-            targetedFolderID == folder.id
-                ? portalTheme.accentColor.opacity(0.16)
-                : portalTheme.documentLibraryCardBackgroundColor
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    targetedFolderID == folder.id ? portalTheme.accentColor : portalTheme.borderColor.opacity(0.9),
-                    lineWidth: targetedFolderID == folder.id ? 2 : 1
-                )
+        .padding(.horizontal, 8)
+        .padding(.vertical, 12)
+        .background(targetedFolderID == folder.id ? portalTheme.accentColor.opacity(0.16) : Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(targetedFolderID == folder.id ? portalTheme.accentColor : portalTheme.borderColor)
+                .frame(height: targetedFolderID == folder.id ? 2 : 1)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -442,7 +435,7 @@ struct PortalPDFDocumentsView: View {
         HStack(alignment: .center, spacing: 12) {
             PortalPDFDocumentThumbnailView(document: document)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(document.fileName)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(portalTheme.foregroundColor)
@@ -503,12 +496,11 @@ struct PortalPDFDocumentsView: View {
             .menuIndicator(.hidden)
             .accessibilityLabel("\(document.fileName) 더보기")
         }
-        .padding(16)
-        .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(portalTheme.borderColor.opacity(0.5), lineWidth: 1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 12)
+        .background(Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(portalTheme.borderColor).frame(height: 1)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -516,14 +508,14 @@ struct PortalPDFDocumentsView: View {
             selectedDocument = document
         }
         .draggable(document.id) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: "doc.richtext.fill")
                     .foregroundStyle(portalTheme.accentColor)
                 Text(document.fileName)
                     .font(.system(size: 14, weight: .medium))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
             .frame(height: 44)
             .background(portalTheme.surfaceColor)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -544,9 +536,9 @@ struct PortalPDFDocumentsView: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 56)
         .background(portalTheme.surfaceColor.opacity(0.55))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(portalTheme.borderColor, style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
         }
     }
@@ -938,7 +930,7 @@ struct PortalPDFDocumentMoveSheet: View {
                     .frame(maxWidth: .infinity)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(.ultraThinMaterial)
+                    .background(portalTheme.surfaceColor)
             }
             .task {
                 folders = repository.folders()

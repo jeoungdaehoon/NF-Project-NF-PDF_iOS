@@ -59,7 +59,7 @@ struct MacPDFSystemImageEditView: View {
     private let targetID: UUID?
     init(parent: MacPDFEditorState) { self.parent = parent; targetID = parent.selected?.id }
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             Text("macOS 시스템 이미지 편집").font(.headline)
             if let image { Image(nsImage: image).resizable().scaledToFit().frame(height: 240) }
             Text(message).font(.caption)

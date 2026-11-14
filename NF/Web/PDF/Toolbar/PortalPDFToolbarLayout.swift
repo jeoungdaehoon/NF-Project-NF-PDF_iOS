@@ -984,7 +984,7 @@ extension PortalPDFPreviewView {
 
     /// PDF 로딩 중 사용자에게 표시할 진행 화면입니다.
     var loadingView: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             if let localDownloadProgress {
                 ProgressView(value: localDownloadProgress, total: 1)
                     .progressViewStyle(.linear)

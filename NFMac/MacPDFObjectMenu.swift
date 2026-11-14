@@ -32,7 +32,7 @@ struct MacPDFObjectMenu: View {
         Group {
             if state.selectionViewRect.intersects(viewport) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         if image {
                             ForEach(MacPDFImageAction.allCases, id: \.rawValue) { action in item(action.title, action.symbol, id: action.rawValue) { onImageAction(action) } }
                         } else {
@@ -52,7 +52,7 @@ struct MacPDFObjectMenu: View {
                     }.padding(8)
                 }
                 .frame(width: rect.width, height: rect.height)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13))
+                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: rect.minY > state.selectionViewRect.maxY ? .top : .bottom) {
                     MenuTail().fill(Color(nsColor: .controlBackgroundColor)).frame(width: 14, height: 8)
                         .rotationEffect(.degrees(rect.minY > state.selectionViewRect.maxY ? 180 : 0)).offset(y: rect.minY > state.selectionViewRect.maxY ? -7 : 7).allowsHitTesting(false)
@@ -77,7 +77,7 @@ struct MacPDFTextAssistant: View {
     @State private var boxOptionsVisible = false
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button { state.canvas?.textUndo(redo: false) } label: { Image(systemName: "arrow.uturn.backward") }.help("텍스트 실행 취소")
                 Button { state.canvas?.textUndo(redo: true) } label: { Image(systemName: "arrow.uturn.forward") }.help("텍스트 다시 실행")
                 Button("서체") { state.canvas?.showFontPicker() }.accessibilityIdentifier("pdf.text.font")
@@ -94,13 +94,13 @@ struct MacPDFTextAssistant: View {
                 Button { state.canvas?.toggleTextLink() } label: { Image(systemName: "link") }.help("선택 URL 링크 적용·해제")
                 MacPDFActionButton(title: "완료", identifier: "pdf.text.done") { state.canvas?.finishTextEditing(); state.menuVisible = true }.frame(width: 42, height: 28)
             }.buttonStyle(.borderless).padding(10)
-        }.frame(height: 48).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
+        }.frame(height: 48).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
             .overlay(alignment: .topTrailing) {
                 if boxOptionsVisible {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack { Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") { boxOptionsVisible = false }.frame(width: 42, height: 24) }
                         MacPDFTextBoxControls(state: state)
-                    }.padding(14).frame(width: 260).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
+                    }.padding(16).frame(width: 260).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
                 }
             }
     }
@@ -115,7 +115,7 @@ struct MacPDFTextAssistant: View {
 struct MacPDFTextBoxControls: View {
     @ObservedObject var state: MacPDFEditorState
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("텍스트 박스 테두리").font(.headline)
             Stepper("두께 \(state.style.width, specifier: "%.1f") pt", value: value(\.width, field: "width"), in: 0...12, step: 0.5)
                 .accessibilityIdentifier("pdf.text.border.width")

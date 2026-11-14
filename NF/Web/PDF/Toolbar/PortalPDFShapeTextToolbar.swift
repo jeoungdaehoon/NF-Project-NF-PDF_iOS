@@ -18,12 +18,12 @@ extension PortalPDFPreviewView {
     var pdfShapeOptionPanel: some View {
         VStack(alignment: isMarkupToolbarVertical ? .center : .leading, spacing: 6) {
             if isMarkupToolbarVertical {
-                VStack(alignment: .center, spacing: 6) {
+                VStack(alignment: .center, spacing: 8) {
                     shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
                     shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
                 }
             } else {
-                HStack(spacing: 14) {
+                HStack(spacing: 16) {
                     shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
                     shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
                 }
@@ -34,7 +34,7 @@ extension PortalPDFPreviewView {
         .padding(10)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
         .padding(.horizontal, 5)
-        .background(inverseEditorBlurBackground(cornerRadius: 18))
+        .background(inverseEditorBlurBackground(cornerRadius: 10))
     }
 
     /// 텍스트 박스의 배경·테두리 컬러와 명시적 추가 기능을 제공하는 상세 패널입니다.
@@ -60,7 +60,7 @@ extension PortalPDFPreviewView {
         .padding(10)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
         .padding(.horizontal, 5)
-        .background(inverseEditorBlurBackground(cornerRadius: 18))
+        .background(inverseEditorBlurBackground(cornerRadius: 10))
     }
 
     /// 문자 패널 폭을 유지하면서 문자·라인·배경 컬러를 구분해 선택합니다.

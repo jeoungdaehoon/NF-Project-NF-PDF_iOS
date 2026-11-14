@@ -30,7 +30,7 @@ extension PortalPDFPreviewView {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .frame(width: currentPenOptionPanelSize.width, height: currentPenOptionPanelSize.height)
         .padding(.horizontal, 5)
         .background(inverseEditorBlurBackground(cornerRadius: 14))
@@ -103,7 +103,7 @@ extension PortalPDFPreviewView {
     /// 잠금 해제된 펜 팔레트 오른쪽 상단의 크기 조절 핸들입니다.
     var penOptionPanelResizeButton: some View {
         Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 16, weight: .bold))
+            .font(.system(size: 16, weight: .medium))
             .frame(width: 24, height: 24)
             .foregroundStyle(Color.gray)
             .contentShape(Rectangle())
@@ -160,7 +160,7 @@ extension PortalPDFPreviewView {
     var penOptionPanelMoveHandle: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(portalTheme.borderColor)
                 .frame(width: penOptionPanelMoveHandleWidth, height: 4)
         }
             .frame(width: penOptionPanelMoveHandleWidth, height: 15)
@@ -227,7 +227,7 @@ extension PortalPDFPreviewView {
 
     /// 펜 팔레트와 선택 컬러의 값·두께 변경을 한 화면에서 제공하는 편집 콘텐츠입니다.
     var pdfPenEditorContent: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             if penOptionPanelScrollIsVertical {
                 VStack(alignment: .center, spacing: 4) {
                     ScrollView(.vertical, showsIndicators: false) {
@@ -401,15 +401,15 @@ extension PortalPDFPreviewView {
                 }
             } label: {
                 VStack(alignment: .center, spacing: 2) {
-                    Circle()
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(displayColor(for: penColor))
-                        .frame(width: 26, height: 26)
+                        .frame(width: 28, height: 28)
                         .overlay {
-                            Circle()
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .stroke(selectedPenColor == penColor ? Color.white : Color.clear, lineWidth: 3)
                         }
                         .overlay {
-                            Circle()
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
                                 .stroke(Color.white.opacity(0.22), lineWidth: 1)
                         }
                     Text(String(format: "%.1f", penLineWidth(for: penColor)))

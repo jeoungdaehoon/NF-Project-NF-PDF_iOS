@@ -542,7 +542,7 @@ struct PortalPDFPreviewView: View {
             }
             .accessibilityLabel("PDF 문서 이름 편집")
         } else {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text(activeItem.title)
                     .font(.headline)
                     .lineLimit(1)
@@ -633,12 +633,12 @@ struct PortalPDFPreviewView: View {
             }
         }
         .foregroundStyle(portalTheme.foregroundColor)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.vertical, 15)
         .frame(maxWidth: 360)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.secondary.opacity(0.22), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.22), radius: 18, y: 7)
@@ -678,7 +678,7 @@ struct PortalPDFPreviewView: View {
                                     .lineLimit(1)
                             }
                             .foregroundStyle(isActive ? portalTheme.foregroundColor : portalTheme.mutedColor)
-                            .padding(.horizontal, 14)
+                            .padding(.horizontal, 16)
                             .frame(minWidth: 112, maxWidth: 220, minHeight: 42)
                             .contentShape(Rectangle())
                             .overlay(alignment: .bottom) {
@@ -1240,7 +1240,7 @@ struct PortalPDFPreviewView: View {
         subtitle: String? = nil,
         foregroundColor: Color? = nil
     ) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             Image(systemName: systemImage)
                 .font(.system(size: 18, weight: .regular))
                 .frame(width: 26, height: 28)
@@ -1503,7 +1503,7 @@ struct PortalPDFPreviewView: View {
                 .padding(.bottom, 4)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 18)
+        .padding(.vertical, 16)
     }
 
     var pdfDisplayStyle: PortalPDFDisplayStyle {
@@ -1884,7 +1884,7 @@ struct PortalPDFPreviewView: View {
     }
 
     func failedView(message: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
             Text("첨부 미리보기를 열 수 없습니다.")
                 .font(.headline)
                 .foregroundStyle(.primary)

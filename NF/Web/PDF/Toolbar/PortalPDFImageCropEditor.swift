@@ -80,8 +80,8 @@ struct PortalPDFImageCropEditorView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
 
                 GeometryReader { geometry in
                     cropCanvas(size: geometry.size)
@@ -94,7 +94,7 @@ struct PortalPDFImageCropEditorView: View {
                     .foregroundStyle(portalTheme.mutedColor)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 22)
+                    .padding(.horizontal, 24)
                     .padding(.top, 12)
 
                 HStack(spacing: 12) {
@@ -116,7 +116,7 @@ struct PortalPDFImageCropEditorView: View {
                     .disabled(mode == .freehand && normalizedFreehandPoints.count < 3)
                 }
                 .font(.system(size: 15, weight: .semibold))
-                .padding(.horizontal, 18)
+                .padding(.horizontal, 16)
                 .padding(.vertical, 16)
             }
             .background(portalTheme.backgroundColor.ignoresSafeArea())
@@ -176,7 +176,7 @@ struct PortalPDFImageCropEditorView: View {
             covering: selectionRect
         )
         return ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.black)
 
             Image(uiImage: item.image)
@@ -198,9 +198,9 @@ struct PortalPDFImageCropEditorView: View {
             }
         }
         .coordinateSpace(name: cropCanvasCoordinateSpace)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(portalTheme.borderColor, lineWidth: 1)
         }
         .simultaneousGesture(imageZoomGesture(

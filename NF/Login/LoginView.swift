@@ -43,9 +43,9 @@ struct LoginView: View {
                         Spacer(minLength: 0)
                         setLogoView()
                     }
-                    .padding(.bottom, 26)
+                    .padding(.bottom, 24)
                     Text("NF PROJECT OPERATIONS")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 12, weight: .medium))
                         .tracking(2.4)
                         .foregroundStyle(NFColor.muted)
                         .padding(.bottom, 16)
@@ -55,7 +55,7 @@ struct LoginView: View {
                     }
                         .font(.system(size: 28, weight: .medium))
                         .foregroundStyle(NFColor.title)
-                        .padding(.bottom, 22)
+                        .padding(.bottom, 24)
                     Text("Apple, Gmail 또는 Google Workspace 계정으로 가입할 수 있습니다. 계정별 데이터는 분리되며 상호 동의한 회원만 서로의 프로젝트를 볼 수 있습니다.")
                         .font(.system(size: 14, weight: .semibold))
                         .lineSpacing(6)
@@ -79,7 +79,7 @@ struct LoginView: View {
                                     .tint(.white)
                             }
                             Text(isProcessing ? "로그인 정보 확인 중…" : "Google 계정으로 로그인")
-                                .font(.system(size: 18, weight: .bold))
+                                .font(.system(size: 18, weight: .medium))
                         }
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -92,9 +92,9 @@ struct LoginView: View {
                 .padding(28)
                 .frame(width: cardWidth)
                 .background(NFColor.card)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
+                    RoundedRectangle(cornerRadius: 10)
                         .stroke(NFColor.border, lineWidth: 1)
                 )
                 .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 4)

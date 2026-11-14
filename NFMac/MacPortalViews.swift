@@ -98,15 +98,15 @@ private struct MacIntroView: View {
         ZStack {
             MacLoginPalette.background.ignoresSafeArea()
 
-            VStack(spacing: 18) {
+            VStack(spacing: 20) {
                 MacNoteFreeMark()
                     .frame(width: 86, height: 86)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Text("NF")
                     Text("Portal")
                 }
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: 25, weight: .medium))
                 .foregroundStyle(MacLoginPalette.introTitle)
 
                 Text("PROJECT OPERATIONS")
@@ -224,7 +224,7 @@ private struct MacLoginView: View {
             Text(MacAppVersion.displayText)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(MacLoginPalette.muted)
-                .padding(18)
+                .padding(16)
         }
 
     }
@@ -726,7 +726,7 @@ private struct MacPortalPane: View {
                     onClose: closeFind
                 )
                 .padding(.top, 40)
-                .padding(.trailing, 14)
+                .padding(.trailing, 16)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -804,7 +804,7 @@ private struct MacPortalFindBar: View {
     let onClose: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
             TextField("문구 검색", text: $query)
@@ -843,7 +843,7 @@ private struct MacPortalFindBar: View {
         .controlSize(.small)
         .padding(.horizontal, 10)
         .frame(height: 34)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .stroke(Color.primary.opacity(0.16), lineWidth: 1)
@@ -1113,7 +1113,7 @@ struct MacPortalSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            .padding(22)
+            .padding(24)
             .tabItem { Label("기본", systemImage: "gearshape") }
 
             Form {
@@ -1136,7 +1136,7 @@ struct MacPortalSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            .padding(22)
+            .padding(24)
             .tabItem { Label("화면", systemImage: "display") }
         }
         .frame(width: 560, height: 310)

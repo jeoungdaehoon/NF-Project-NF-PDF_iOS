@@ -1559,6 +1559,7 @@ extension PortalWebViewContent {
                 var pendingFrame = 0;
                 function cssValue(computed, name, fallback) {
                     var value = computed.getPropertyValue(name).trim();
+                    if (name.indexOf('--nf-ui-') === 0 && !/^#[0-9a-f]{3,8}$/i.test(value) && value.indexOf('rgb(') !== 0 && value.indexOf('rgba(') !== 0) return fallback;
                     return value || fallback;
                 }
                 function sendTheme() {
@@ -1572,12 +1573,12 @@ extension PortalWebViewContent {
                     var scheme = (computed.colorScheme || '').toLowerCase();
                     window.webkit.messageHandlers.NFPortalIOSTheme.postMessage({
                         presetID: presetID,
-                        backgroundColor: cssValue(computed, '--background', '#191919'),
-                        surfaceColor: cssValue(computed, '--card-background', '#202020'),
+                        backgroundColor: cssValue(computed, '--nf-ui-bg', cssValue(computed, '--background', '#171719')),
+                        surfaceColor: cssValue(computed, '--nf-ui-panel', cssValue(computed, '--card-background', '#1e1e21')),
                         sidebarBackgroundColor: cssValue(computed, '--sidebar-background', fallbackSidebar),
-                        foregroundColor: cssValue(computed, '--foreground', '#d4d4d4'),
-                        mutedColor: cssValue(computed, '--theme-muted', fallbackMuted),
-                        borderColor: cssValue(computed, '--card-border', '#2f2f2f'),
+                        foregroundColor: cssValue(computed, '--nf-ui-text', cssValue(computed, '--foreground', '#ededef')),
+                        mutedColor: cssValue(computed, '--nf-ui-muted', cssValue(computed, '--theme-muted', fallbackMuted)),
+                        borderColor: cssValue(computed, '--nf-ui-line', cssValue(computed, '--card-border', '#333337')),
                         accentColor: cssValue(computed, '--detail-animation-color', '#4667ec'),
                         colorScheme: scheme.indexOf('light') >= 0 ? 'light' : 'dark'
                     });
@@ -2386,7 +2387,7 @@ private struct PortalDesktopToolbar: View {
     let onToggleSplitView: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Button(action: model.toggleNavigationMenu) {
                 Image(systemName: model.isNavigationMenuHidden ? "line.3.horizontal" : "sidebar.left")
                     .frame(width: 22, height: 22)
@@ -2412,7 +2413,7 @@ private struct PortalDesktopToolbar: View {
             Divider().frame(height: 22)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     ForEach(model.pages) { page in
                         Button {
                             model.open(page)
@@ -2470,7 +2471,7 @@ private struct PortalDesktopToolbar: View {
         .font(.system(size: 14, weight: .medium))
         .foregroundStyle(theme.foreground.color)
         .padding(.leading, reservesTrafficLightArea ? 92 : 12)
-        .padding(.trailing, 14)
+        .padding(.trailing, 16)
         .frame(height: 46)
         .background(theme.surface.color)
         .overlay(alignment: .bottom) {
@@ -2515,7 +2516,7 @@ private struct PortalDesktopBreadcrumbBar: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 16)
         }
         .font(.system(size: 13, weight: .medium))
         .foregroundStyle(theme.foreground.color)

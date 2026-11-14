@@ -40,8 +40,8 @@ struct PortalPDFCloudCenterView: View {
                         googleDriveContent
                     }
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 18)
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
                 .padding(.bottom, 36)
             }
             .scrollIndicators(.hidden)
@@ -392,7 +392,7 @@ private struct PortalPDFCloudHeaderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("클라우드")
-                .font(.system(size: 28, weight: .bold))
+                .font(.system(size: 25, weight: .medium))
                 .foregroundStyle(portalTheme.foregroundColor)
             Text("NF PDF를 iCloud와 로그인한 Google 계정에서 안전하게 이어서 사용합니다.")
                 .font(.system(size: 14, weight: .medium))
@@ -419,7 +419,7 @@ private struct PortalPDFCloudStatusCard: View {
     let action: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: 16) {
             Image(systemName: provider.systemImageName)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(isAvailable ? portalTheme.accentColor : portalTheme.mutedColor)
@@ -451,9 +451,9 @@ private struct PortalPDFCloudStatusCard: View {
         }
         .padding(15)
         .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(portalTheme.borderColor.opacity(0.9), lineWidth: 1)
         }
     }
@@ -468,7 +468,7 @@ private struct PortalPDFCloudSectionTitle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 17, weight: .bold))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(portalTheme.foregroundColor)
             Text(subtitle)
                 .font(.system(size: 12, weight: .medium))
@@ -523,12 +523,11 @@ private struct PortalPDFCloudLocalDocumentRow: View {
             .disabled(isProcessing)
             .accessibilityLabel("\(document.fileName) \(provider.title)에 저장")
         }
-        .padding(14)
-        .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(portalTheme.borderColor.opacity(0.9), lineWidth: 1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 16)
+        .background(Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(portalTheme.borderColor).frame(height: 1)
         }
     }
 
@@ -589,12 +588,11 @@ private struct PortalPDFICloudDocumentRow: View {
             .disabled(isProcessing)
             .accessibilityLabel("\(document.fileName) 더보기")
         }
-        .padding(14)
-        .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(portalTheme.borderColor.opacity(0.9), lineWidth: 1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 16)
+        .background(Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(portalTheme.borderColor).frame(height: 1)
         }
     }
 
@@ -632,12 +630,11 @@ private struct PortalPDFGoogleDriveLinkRow: View {
                 .foregroundStyle(Color.green)
                 .accessibilityLabel("동기화 완료")
         }
-        .padding(14)
-        .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(portalTheme.borderColor.opacity(0.9), lineWidth: 1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 16)
+        .background(Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(portalTheme.borderColor).frame(height: 1)
         }
     }
 }
@@ -650,7 +647,7 @@ private struct PortalPDFCloudEmptyCard: View {
     let systemImage: String
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Image(systemName: systemImage)
                 .font(.system(size: 25, weight: .semibold))
                 .foregroundStyle(portalTheme.mutedColor)
@@ -663,12 +660,12 @@ private struct PortalPDFCloudEmptyCard: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
         .padding(.vertical, 24)
         .background(portalTheme.documentLibraryCardBackgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(portalTheme.borderColor.opacity(0.9), lineWidth: 1)
         }
     }

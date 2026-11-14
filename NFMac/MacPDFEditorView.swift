@@ -54,7 +54,7 @@ struct MacPDFEditorView: View {
                             }
                         } else {
                             Button("프레젠테이션 종료") { state.presentation = false }
-                                .padding(8).background(.regularMaterial, in: Capsule()).padding(10)
+                                .padding(8).background(Color(nsColor: .windowBackgroundColor), in: Capsule()).padding(10)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -105,7 +105,7 @@ struct MacPDFEditorView: View {
     private var header: some View {
         HStack(spacing: 0) {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button { state.showPages.toggle() } label: { Image(systemName: "sidebar.left") }.help("페이지 목록")
                 MacPDFActionButton(title: "", symbol: "arrow.uturn.backward", identifier: "pdf.undo", accessibilityTitle: "실행 취소") { state.undo() }
                     .frame(width: 22, height: 22).disabled(!state.canUndo).help("실행 취소 ⌘Z")
@@ -141,7 +141,7 @@ struct MacPDFEditorView: View {
             }.buttonStyle(.borderless).padding(10)
         }
         .frame(maxWidth: .infinity)
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if state.tool == .neon {
                 MacPDFNeonTypePicker(selection: Binding(get: { state.neonType }, set: { state.selectNeonType($0) }))
                     .frame(width: 150, height: 22)
@@ -171,7 +171,7 @@ struct MacPDFEditorView: View {
     private func floatingToolbar(handle: MacPDFToolbarDragHandle, availableSize: CGSize) -> some View {
         Group {
             if state.verticalToolbar {
-                ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 6) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
+                ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 8) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
             } else {
                 ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: min(720, max(32, availableSize.width - 16)), height: 36)
             }
@@ -194,7 +194,7 @@ struct MacPDFEditorView: View {
     }
     private var options: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("\(state.tool.title) 설정").font(.headline)
                 if ![.view, .select, .image, .eraser, .lasso].contains(state.tool) {
                 HStack {
@@ -205,13 +205,13 @@ struct MacPDFEditorView: View {
                     ForEach(Array(state.palette.enumerated()), id: \.offset) { index, color in
                         Button { state.selectPalette(color) } label: { Circle().fill(Color(nsColor: color.color)).frame(width: 22, height: 22).overlay(Circle().stroke(state.style.stroke == color ? Color.accentColor : .clear, lineWidth: 2)) }.buttonStyle(.plain).help("선택한 색상을 다시 누르면 색상·두께 편집")
                             .popover(isPresented: Binding(get: { state.editingPaletteIndex == index }, set: { if !$0 { state.editingPaletteIndex = nil } })) {
-                                VStack(alignment: .leading, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 12) {
                                     ColorPicker("색상", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
                                     Text("두께 \(state.style.width, specifier: "%.1f")")
                                     Slider(value: styleBinding(\.width, field: "width"), in: state.tool == .highlighter ? 18...48 : 0.3...8)
                                     if state.tool == .highlighter { Toggle("끝모양 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap")) }
                                     else { Toggle("필압", isOn: styleBinding(\.pressure, field: "pressure")); Slider(value: styleBinding(\.pressureStrength, field: "pressureStrength"), in: 0...2) }
-                                }.padding(14).frame(width: 220)
+                                }.padding(16).frame(width: 220)
                             }
                     }
                     Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }.help("현재 색상을 팔레트에 추가")
@@ -254,7 +254,7 @@ struct MacPDFEditorView: View {
         .onDisappear { state.rememberSettings() }
     }
     private var textOptions: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             ColorPicker("텍스트 박스 테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { var style = state.style; style.textBorder = MacPDFRGBA(NSColor($0)); if style.width == 0 { style.width = 1 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true)
             MacPDFTextBoxControls(state: state)
             Picker("글꼴", selection: styleBinding(\.fontName, field: "fontName")) { ForEach(NSFontManager.shared.availableFonts.sorted(), id: \.self) { Text($0).tag($0) } }
@@ -322,12 +322,12 @@ struct MacPDFEditorView: View {
         }.buttonStyle(.borderless).padding(.horizontal, 12).frame(height: 30)
     }
     private var sidePageControls: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
             Button { state.goToPage(max(0, state.currentPage - 1)) } label: { Image(systemName: "chevron.up") }
             Text("\(state.currentPage + 1)/\(state.pageCount)").font(.caption)
             Button { state.goToPage(min(state.pageCount - 1, state.currentPage + 1)) } label: { Image(systemName: "chevron.down") }
             Button { state.showPages.toggle() } label: { Image(systemName: "rectangle.grid.1x2") }
-        }.buttonStyle(.borderless).padding(10).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).padding(8)
+        }.buttonStyle(.borderless).padding(10).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).padding(8)
     }
     private func detachedPalette(in size: CGSize) -> some View {
         let width = max(220, min(state.paletteSize.width, size.width - 20)), height = max(140, min(state.paletteSize.height, size.height - 70))
@@ -336,7 +336,7 @@ struct MacPDFEditorView: View {
             HStack { Image(systemName: "arrow.up.and.down.and.arrow.left.and.right"); Text("상세 팔레트").font(.headline); Spacer(); Button { state.paletteDetached = false; state.alwaysShowPalette = false; state.rememberSettings() } label: { Image(systemName: "xmark") } }
                 .contentShape(Rectangle()).gesture(DragGesture().updating($paletteDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in if !state.paletteLocked { state.paletteOffset.width += value.translation.width; state.paletteOffset.height += value.translation.height; state.rememberSettings() } })
             options
-        }.padding(12).frame(width: width, height: height).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
+        }.padding(12).frame(width: width, height: height).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
     }
     private func chooseImage() { chooseImage(replacing: false) }
     private func styleBinding<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
@@ -380,7 +380,7 @@ struct MacPDFPagesView: View {
         VStack {
             Toggle("즐겨찾기만", isOn: $state.favoritesOnly).padding(8)
             ScrollView {
-                LazyVStack(spacing: 14) {
+                LazyVStack(spacing: 16) {
                     ForEach((0..<state.pageCount).filter { !state.favoritesOnly || state.favorites.contains($0) }, id: \.self) { index in
                         VStack(spacing: 5) {
                             if let page = state.document.page(at: index) {

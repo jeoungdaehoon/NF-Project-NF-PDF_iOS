@@ -33,7 +33,7 @@ struct OnBoardingView: View {
                     setBrandView()
                         .padding(.top, 34)
                     Text("안전한 앱 사용을 위해\n아래의 권한 허용이 필요해요")
-                        .font(.system(size: 30, weight: .heavy))
+                        .font(.system(size: 25, weight: .medium))
                         .lineSpacing(6)
                         .foregroundStyle(NFColor.title)
                         .padding(.top, 56)
@@ -51,7 +51,7 @@ struct OnBoardingView: View {
             }
             setConfirmButton()
                 .padding(.horizontal, 28)
-                .padding(.bottom, 26)
+                .padding(.bottom, 24)
         }
     }
 }
@@ -71,7 +71,7 @@ extension OnBoardingView {
                 .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 3) {
                 Text("NoteFree")
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 14, weight: .medium))
                     .tracking(1.2)
                     .foregroundStyle(NFColor.title)
                 Text("PROJECT OPERATIONS")
@@ -97,7 +97,7 @@ extension OnBoardingView {
             PermissionNoticeText(text: "접근 권한 변경 방법: 휴대폰 설정 > NoteFree")
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 18)
+        .padding(.vertical, 16)
         .overlay(
             RoundedRectangle(cornerRadius: 22)
                 .stroke(NFColor.border, lineWidth: 1)
@@ -114,12 +114,12 @@ extension OnBoardingView {
     func setConfirmButton() -> some View {
         Button(action: onStartLogin) {
             Text("확인")
-                .font(.system(size: 19, weight: .bold))
+                .font(.system(size: 19, weight: .medium))
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 62)
                 .background(NFColor.blue)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 }
@@ -140,15 +140,15 @@ private struct PermissionGuideRow: View {
      - Returns: `some View`
      */
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 20) {
             setIconView()
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
                     Text(item.title)
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.system(size: 20, weight: .medium))
                         .foregroundStyle(NFColor.title)
                     Text("(\(item.requirement))")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 18, weight: .medium))
                         .foregroundStyle(item.isRequired ? NFColor.mint : NFColor.muted)
                 }
                 Text(item.description)
@@ -158,8 +158,8 @@ private struct PermissionGuideRow: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
         .background(NFColor.card)
         .clipShape(RoundedRectangle(cornerRadius: 24))
         .overlay(
@@ -180,7 +180,7 @@ private struct PermissionGuideRow: View {
             Circle()
                 .fill(item.accentColor.opacity(0.16))
             Text(item.iconText)
-                .font(.system(size: 24, weight: .heavy))
+                .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(item.accentColor)
         }
         .frame(width: 58, height: 58)
@@ -205,7 +205,7 @@ private struct PermissionNoticeText: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Text("•")
-                .font(.system(size: 14, weight: .bold))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(NFColor.muted)
             Text(text)
                 .font(.system(size: 13, weight: .medium))

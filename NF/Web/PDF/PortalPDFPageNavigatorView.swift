@@ -137,12 +137,12 @@ struct PortalPDFPageSideListView: View {
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(portalTheme.surfaceColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(portalTheme.surfaceColor, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(portalTheme.borderColor, lineWidth: 1)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .shadow(color: .black.opacity(0.2), radius: 18, x: isPresentedOnLeft ? 5 : -5, y: 5)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("PDF \(selectedTab.title)")

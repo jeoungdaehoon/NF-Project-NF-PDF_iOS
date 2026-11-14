@@ -28,7 +28,7 @@ struct IntroView: View {
         ZStack {
             /// Intro와 Login 전환 사이에 흰색 화면이 보이지 않도록 다크 배경을 유지합니다.
             NFColor.background.ignoresSafeArea()
-            VStack(spacing: 18) {
+            VStack(spacing: 20) {
                 setLogoView()
                 setBrandTitleView()
                 Text("PROJECT OPERATIONS")
@@ -76,7 +76,7 @@ struct IntroView: View {
      */
     @ViewBuilder
     private func setBrandTitleView() -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             if let animationNamespace {
                 Text("NF")
                     .matchedGeometryEffect(id: "nf-portal-login-title", in: animationNamespace, properties: .frame, anchor: .center)
@@ -85,7 +85,7 @@ struct IntroView: View {
             }
             Text("Portal")
         }
-        .font(.system(size: 34, weight: .bold))
+        .font(.system(size: 25, weight: .medium))
         .foregroundStyle(NFColor.title)
     }
 }

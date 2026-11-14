@@ -57,10 +57,10 @@ extension PortalPDFPreviewView {
         // 알약 외곽 크기만 변경하고 내부 버튼은 항상 40pt 크기를 유지합니다.
         .padding(4)
         .frame(width: currentMarkupToolbarSize.width, height: currentMarkupToolbarSize.height)
-        .background(inverseEditorBlurBackground(cornerRadius: 18))
+        .background(inverseEditorBlurBackground(cornerRadius: 10))
         // 작은 크기에서 스크롤 영역의 버튼이 알약 외부로 그려지지 않도록 마스킹합니다.
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .padding(.horizontal, 14)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 16)
         .padding(.bottom, 12)
         // 세로 모드에서는 왼쪽 상단, 가로 모드에서는 기존 오른쪽 상단에 크기 조절 핸들을 표시합니다.
         .overlay(alignment: isMarkupToolbarVertical ? .topLeading : .topTrailing) {
@@ -81,7 +81,7 @@ extension PortalPDFPreviewView {
                 .frame(width: 40, height: 40)
                 .foregroundStyle(isEnabled ? Color.white : Color.white.opacity(0.32))
                 .background(Color.white.opacity(isEnabled ? 0.12 : 0.06))
-                .clipShape(Capsule())
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .disabled(!isEnabled)
         .accessibilityLabel(operation == .undo ? "편집 이전으로 돌리기" : "편집 앞으로 돌리기")
@@ -90,7 +90,7 @@ extension PortalPDFPreviewView {
     /// 편집 알약 상단의 가로·세로 크기 조절 핸들입니다.
     var pdfMarkupResizeButton: some View {
         Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 16, weight: .bold))
+            .font(.system(size: 16, weight: .medium))
             .frame(width: 24, height: 24)
             .foregroundStyle(Color.gray)
             .contentShape(Rectangle())
@@ -145,7 +145,7 @@ extension PortalPDFPreviewView {
             .frame(width: 40, height: 40)
             .foregroundStyle(Color.white)
             .background(Color.white.opacity(0.12))
-            .clipShape(Capsule())
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .contentShape(Capsule())
             // 이동 제스처 상태는 전용 하위 컨테이너가 소유해 상위 PDF 화면 갱신을 차단합니다.
             .highPriorityGesture(moveGesture)
@@ -165,7 +165,7 @@ extension PortalPDFPreviewView {
                 .frame(width: 40, height: 40)
                 .foregroundStyle(Color.white)
                 .background(Color.white.opacity(0.12))
-                .clipShape(Capsule())
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(isPDFEditorFullscreenModeEnabled ? "전체화면 모드 종료" : "전체화면 모드 실행")
         .accessibilityHint("상단 타이틀 바를 표시하거나 숨깁니다.")
@@ -183,7 +183,7 @@ extension PortalPDFPreviewView {
                 .frame(width: 40, height: 40)
                 .foregroundStyle(selectedTool == tool ? Color.black : Color.white)
                 .background(selectedTool == tool ? Color.white : Color.white.opacity(0.12))
-                .clipShape(Capsule())
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(tool.accessibilityLabel)
         .accessibilityHint("\(tool.title) 도구")

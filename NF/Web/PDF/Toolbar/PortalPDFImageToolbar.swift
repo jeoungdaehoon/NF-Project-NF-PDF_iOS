@@ -49,7 +49,7 @@ extension PortalPDFPreviewView {
         }
         .scrollIndicators(.hidden)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
-        .background(inverseEditorBlurBackground(cornerRadius: 18))
+        .background(inverseEditorBlurBackground(cornerRadius: 10))
         .padding(.horizontal, 5)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("사진첩 사진 Grid")
@@ -64,7 +64,7 @@ extension PortalPDFPreviewView {
         } label: {
             VStack(spacing: 2) {
                 Image(systemName: "photo.on.rectangle.angled")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 18, weight: .medium))
                 Text("추가")
                     .font(.system(size: 9, weight: .semibold))
             }
