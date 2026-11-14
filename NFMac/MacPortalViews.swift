@@ -120,9 +120,7 @@ private struct MacIntroView: View {
 }
 
 private struct MacLoginView: View {
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @ObservedObject var authentication: MacAuthenticationModel
-    @State private var borderRotation = 0.0
     @State private var rawAppleNonce: String?
 
     private let privacyURL = URL(string: "\(MacPortalConfig.origin)/privacy")!
@@ -143,7 +141,7 @@ private struct MacLoginView: View {
                     .padding(.top, 20)
 
                 Text("NF Project Portal")
-                    .font(.system(size: 30, weight: .semibold))
+                    .font(.system(size: 28, weight: .medium))
                     .foregroundStyle(MacLoginPalette.title)
                     .padding(.top, 12)
 
@@ -220,13 +218,7 @@ private struct MacLoginView: View {
             .frame(width: 448)
             .background(MacLoginPalette.card)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay { loginCardBorder(lineWidth: 2) }
-            .background {
-                loginCardBorder(lineWidth: 3)
-                    .blur(radius: 5)
-                    .opacity(0.58)
-            }
-            .shadow(color: .black.opacity(0.35), radius: 25, x: 0, y: 12)
+            .overlay { RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(MacLoginPalette.border, lineWidth: 1) }
         }
         .overlay(alignment: .bottomTrailing) {
             Text(MacAppVersion.displayText)
@@ -234,38 +226,10 @@ private struct MacLoginView: View {
                 .foregroundStyle(MacLoginPalette.muted)
                 .padding(18)
         }
-        .onAppear(perform: updateBorderAnimation)
-        .onChange(of: accessibilityReduceMotion) { _, _ in updateBorderAnimation() }
+
     }
 
-    private func loginCardBorder(lineWidth: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(
-                AngularGradient(
-                    colors: [
-                        MacLoginPalette.borderLight,
-                        MacLoginPalette.borderDeep,
-                        MacLoginPalette.borderBlue,
-                        .white,
-                        MacLoginPalette.borderLight,
-                    ],
-                    center: .center,
-                    angle: .degrees(borderRotation)
-                ),
-                lineWidth: lineWidth
-            )
-            .allowsHitTesting(false)
-    }
 
-    private func updateBorderAnimation() {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { borderRotation = 0 }
-        guard !accessibilityReduceMotion else { return }
-        withAnimation(.linear(duration: 3.2).repeatForever(autoreverses: false)) {
-            borderRotation = 360
-        }
-    }
 }
 
 private enum MacLoginPalette {

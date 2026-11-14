@@ -104,12 +104,12 @@ struct PortalAppTheme: Codable, Equatable, Sendable {
 
     static let `default` = PortalAppTheme(
         presetID: "default",
-        background: PortalThemeColor(red: 0.098, green: 0.098, blue: 0.098),
-        surface: PortalThemeColor(red: 0.125, green: 0.125, blue: 0.125),
+        background: PortalThemeColor(red: 23.0 / 255.0, green: 23.0 / 255.0, blue: 25.0 / 255.0),
+        surface: PortalThemeColor(red: 30.0 / 255.0, green: 30.0 / 255.0, blue: 33.0 / 255.0),
         sidebarBackground: PortalThemeColor(red: 0.125, green: 0.125, blue: 0.125),
-        foreground: PortalThemeColor(red: 0.831, green: 0.831, blue: 0.831),
-        muted: PortalThemeColor(red: 0.561, green: 0.561, blue: 0.561),
-        border: PortalThemeColor(red: 0.184, green: 0.184, blue: 0.184),
+        foreground: PortalThemeColor(red: 237.0 / 255.0, green: 237.0 / 255.0, blue: 239.0 / 255.0),
+        muted: PortalThemeColor(red: 171.0 / 255.0, green: 171.0 / 255.0, blue: 178.0 / 255.0),
+        border: PortalThemeColor(red: 51.0 / 255.0, green: 51.0 / 255.0, blue: 55.0 / 255.0),
         accent: PortalThemeColor(red: 0.275, green: 0.404, blue: 0.925),
         usesDarkInterface: true
     )

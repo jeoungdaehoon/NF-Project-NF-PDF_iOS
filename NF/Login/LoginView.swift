@@ -14,8 +14,6 @@ import SwiftUI
  - Date: 2026.07.29
  */
 struct LoginView: View {
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-    @State private var loginCardBorderRotation: Double = 0
 
     /// OAuth 인증 정보를 서버 세션으로 교환 중인지 여부 입니다.
     let isProcessing: Bool
@@ -55,7 +53,7 @@ struct LoginView: View {
                         setNFTitleView()
                         Text("Project Portal")
                     }
-                        .font(.system(size: 31, weight: .heavy))
+                        .font(.system(size: 28, weight: .medium))
                         .foregroundStyle(NFColor.title)
                         .padding(.bottom, 22)
                     Text("Apple, Gmail 또는 Google Workspace 계정으로 가입할 수 있습니다. 계정별 데이터는 분리되며 상호 동의한 회원만 서로의 프로젝트를 볼 수 있습니다.")
@@ -99,35 +97,7 @@ struct LoginView: View {
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(NFColor.border, lineWidth: 1)
                 )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(
-                            AngularGradient(
-                                colors: [
-                                    NFColor.blue.opacity(0.2),
-                                    NFColor.blue,
-                                    .white,
-                                    NFColor.blue,
-                                    NFColor.blue.opacity(0.2),
-                                ],
-                                center: .center,
-                                angle: .degrees(loginCardBorderRotation)
-                            ),
-                            lineWidth: 2
-                        )
-                        .padding(1)
-                        .allowsHitTesting(false)
-                }
-                .onAppear {
-                    updateLoginCardBorderAnimation(isProcessing: isProcessing)
-                }
-                .onChange(of: isProcessing) { _, processing in
-                    updateLoginCardBorderAnimation(isProcessing: processing)
-                }
-                .onChange(of: accessibilityReduceMotion) { _, _ in
-                    updateLoginCardBorderAnimation(isProcessing: isProcessing)
-                }
-                .shadow(color: .black.opacity(0.32), radius: 30, x: 0, y: 16)
+                .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .bottomTrailing) {
@@ -141,25 +111,6 @@ struct LoginView: View {
         }
     }
 
-    private func updateLoginCardBorderAnimation(isProcessing: Bool) {
-        guard isProcessing, !accessibilityReduceMotion else {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                loginCardBorderRotation = 0
-            }
-            return
-        }
-
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            loginCardBorderRotation = 0
-        }
-        withAnimation(.linear(duration: 3.2).repeatForever(autoreverses: false)) {
-            loginCardBorderRotation = 360
-        }
-    }
 
     /**
      Login 카드 우측 상단에 NF 로고를 표시합니다.

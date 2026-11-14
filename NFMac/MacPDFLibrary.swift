@@ -350,11 +350,11 @@ struct MacPDFLibraryView: View {
                     Label("문서 추가", systemImage: "plus")
                 }
             }
-            .padding(14)
+            .padding(16)
 
             Divider()
 
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 Picker("문서 분류", selection: $section) {
                     ForEach(MacPDFLibrarySection.allCases) { item in
                         Text(item.title).tag(item)
@@ -370,7 +370,7 @@ struct MacPDFLibraryView: View {
                     ForEach(folders) { Text($0.name).tag($0.id) }
                 }.frame(maxWidth: 190)
             }
-            .padding(14)
+            .padding(16)
 
             if visibleDocuments.isEmpty {
                 ContentUnavailableView(
@@ -386,10 +386,10 @@ struct MacPDFLibraryView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "doc.richtext")
-                                .font(.title2)
-                                .foregroundStyle(.red)
+                                .font(.system(size: 20, weight: .regular))
+                                .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(document.fileName).font(.headline).lineLimit(1)
+                                Text(document.fileName).font(.system(size: 14, weight: .medium)).lineLimit(1)
                                 Text("\(document.modifiedAt.formatted(date: .abbreviated, time: .shortened)) · \(ByteCountFormatter.string(fromByteCount: document.fileSize, countStyle: .file))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -543,7 +543,7 @@ struct MacPDFDocumentView: View {
                         .disabled(fullscreen.isTransitioning)
                 } else { Button("닫기", action: onClose) }
                 Spacer()
-                Text(document.fileName).font(.headline).lineLimit(1)
+                Text(document.fileName).font(.system(size: 14, weight: .medium)).lineLimit(1)
                 Spacer()
                 if !fullscreen.isFullscreen {
                     Button { fullscreen.toggle() } label: {

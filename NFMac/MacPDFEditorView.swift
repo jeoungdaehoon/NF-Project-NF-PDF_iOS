@@ -173,10 +173,10 @@ struct MacPDFEditorView: View {
             if state.verticalToolbar {
                 ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 6) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
             } else {
-                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 7) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: min(720, max(32, availableSize.width - 16)), height: 36)
+                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: min(720, max(32, availableSize.width - 16)), height: 36)
             }
         }
-        .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14)).shadow(radius: 4)
+        .padding(8).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1)).shadow(color: .black.opacity(0.12), radius: 8, y: 4)
         .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) { options.frame(width: 350).padding(16) }
     }
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
@@ -188,7 +188,7 @@ struct MacPDFEditorView: View {
     private var toolButtons: some View {
         ForEach(MacPDFTool.allCases) { tool in
             MacPDFActionButton(title: "", symbol: tool.symbol, identifier: "pdf.tool.\(tool.rawValue)", accessibilityTitle: tool.title) { state.selectTool(tool) }
-                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool) ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
+                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool) ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
                 .accessibilityValue(tool == .connector ? (state.connectorEnabled ? "켜짐" : "꺼짐") : (state.tool == tool ? "선택됨" : ""))
         }
     }

@@ -125,15 +125,13 @@ struct PortalPDFPreviewView: View {
         self.usesCompactTitleBar = usesCompactTitleBar
     }
 
-    /// 시스템 색상 모드와 반대되는 밝기의 블러 배경을 편집 박스에 제공합니다.
+    /// 편집 도구는 원문·필기 색과 분리된 중립 표면을 사용합니다.
     func inverseEditorBlurBackground(cornerRadius: CGFloat) -> some View {
-        let tint = colorScheme == .dark
-            ? Color.white.opacity(0.24)
-            : Color.black.opacity(0.24)
+        let tint = Color(white: 0.14)
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return shape
-            .fill(.ultraThinMaterial)
-            .overlay(shape.fill(tint))
+            .fill(tint)
+            .overlay(shape.stroke(Color.white.opacity(0.14), lineWidth: 1))
             .clipShape(shape)
     }
     /// PDF 선택 시 로컬 파일 저장을 사용할지 여부입니다.
