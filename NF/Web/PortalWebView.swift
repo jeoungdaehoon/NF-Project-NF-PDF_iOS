@@ -44,6 +44,15 @@ private final class PortalMobileWorkspace: ObservableObject {
         publish()
     }
     func resize(_ width: CGFloat) { viewportWidth = max(1, width); publish() }
+    /// Relay only JSON from authenticated portal main frames between the two panes.
+    func relaySlide(_ message: [String: Any], source: String) {
+        guard enabled, let target = message["target"] as? String, ["primary", "secondary"].contains(target),
+              let record = message["record"] as? [String: Any], let view = views.object(forKey: target as NSString),
+              let url = view.url, url.scheme == "https", PortalConfig.isPortalURL(url),
+              let data = try? JSONSerialization.data(withJSONObject: ["sender": source, "record": record]), data.count <= 16_000_000,
+              let json = String(data: data, encoding: .utf8) else { return }
+        view.evaluateJavaScript("window.dispatchEvent(new CustomEvent('nfWorkspaceSlideMessage',{detail:\(json)}));")
+    }
     func receiveChrome(_ message: [String: Any], pane: String) {
         switch message["kind"] as? String {
         case "activate":
@@ -90,7 +99,7 @@ private final class PortalMobileWorkspace: ObservableObject {
                 view.pageZoom = scale
                 (view as? PortalWorkspaceWebView)?.invalidateWorkspaceViewport()
             }
-            var state: [String: Any] = ["enabled": enabled, "busy": busy, "sharedChrome": true, "pane": pane,
+            var state: [String: Any] = ["enabled": enabled, "busy": busy, "sharedChrome": true, "slideRouting": true, "pane": pane,
                 "activePane": activePane, "fraction": max(1, viewportWidth - 8) * fraction / viewportWidth]
             if let page = pages[activePane] { state["activePage"] = page }
             state["zoom"] = zoom
@@ -1275,7 +1284,9 @@ extension PortalWebViewContent {
             if message.name == "NFPortalWorkspace" || (message.name == "NFPortalMacPageZoom" && parent.workspace != nil) {
                 guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
                       url.scheme == "https", PortalConfig.isPortalURL(url), let record = message.body as? [String: Any] else { return }
-                if message.name == "NFPortalWorkspace", let chrome = record["chrome"] as? [String: Any] {
+                if message.name == "NFPortalWorkspace", let slide = record["slide"] as? [String: Any] {
+                    parent.workspace?.relaySlide(slide, source: parent.pane)
+                } else if message.name == "NFPortalWorkspace", let chrome = record["chrome"] as? [String: Any] {
                     parent.workspace?.receiveChrome(chrome, pane: parent.pane)
                 } else if message.name == "NFPortalWorkspace", let enabled = record["enabled"] as? Bool {
                     Task { @MainActor in await parent.workspace?.request(enabled, source: parent.pane) }
