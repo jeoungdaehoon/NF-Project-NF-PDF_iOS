@@ -24,5 +24,9 @@
 	<array>
 		<string>app-usage</string>
 	</array>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.co.kr.NF.documents</string>
+	</array>
 </dict>
 </plist>

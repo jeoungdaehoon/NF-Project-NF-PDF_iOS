@@ -86,4 +86,10 @@ enum PortalConfig {
     private static func isLocalDevelopmentHost(_ host: String) -> Bool {
         return host == "localhost" || host == "127.0.0.1" || host == "0.0.0.0" || host.hasSuffix(".local")
     }
+    static func pdfPreviewURL(_ url: URL) -> URL {
+        guard url.scheme == "https", isPortalURL(url), url.path.hasPrefix("/api/artifacts/files/"), var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.queryItems = (parts.queryItems ?? []).filter { $0.name != "pdfPreview" } + [URLQueryItem(name: "pdfPreview", value: "1")]
+        return parts.url ?? url
+    }
+
 }

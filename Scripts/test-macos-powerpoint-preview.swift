@@ -6,16 +6,19 @@ import SwiftUI
 
 private final class PowerPointProtocol: URLProtocol {
     nonisolated(unsafe) static var data = Data()
+    nonisolated(unsafe) static var receivedURL: URL?
     nonisolated(unsafe) static var receivedCookie = ""
     nonisolated(unsafe) static var fileName = "preview.pptx"
     nonisolated(unsafe) static var mimeType = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "powerpoint-preview.test" }
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "powerpoint-preview.test" || request.url?.path == "/api/artifacts/files/ppt-conversion-fixture" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        Self.receivedURL = request.url
         Self.receivedCookie = request.value(forHTTPHeaderField: "Cookie") ?? ""
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: [
             "Content-Type": Self.mimeType,
             "Content-Disposition": "inline; filename=\(Self.fileName)",
+            "X-NF-Converted-From": Self.mimeType == "application/pdf" ? "powerpoint" : "",
         ])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.data)
@@ -33,7 +36,8 @@ private final class PowerPointProtocol: URLProtocol {
             guard passed() else { throw NSError(domain: "PowerPointPreview", code: checks, userInfo: [NSLocalizedDescriptionKey: message]) }
             checks += 1; print("PASS \(checks): \(message)"); fflush(stdout)
         }
-        let source = URL(string: "https://powerpoint-preview.test/api/artifacts/files/id")!
+        let convertedMode = CommandLine.arguments.count > 2
+        let source = convertedMode ? URL(string: "https://\(MacPortalConfig.host)/api/artifacts/files/ppt-conversion-fixture?token=a%2Bb")! : URL(string: "https://powerpoint-preview.test/api/artifacts/files/id")!
         let ppt = MacAttachmentQuickLookKind.powerPoint(fileExtension: "ppt")
         let pptx = MacAttachmentQuickLookKind.powerPoint(fileExtension: "pptx")
         try check(MacAttachmentQuickLookKind.detect(fileName: "발표.PPTX", sourceURL: source, mimeType: "application/octet-stream") == pptx, "case-insensitive PPTX filename")
@@ -65,18 +69,38 @@ private final class PowerPointProtocol: URLProtocol {
         let ext = fixtureURL.pathExtension.lowercased()
         PowerPointProtocol.fileName = "preview.\(ext)"
         if ext == "ppt" { PowerPointProtocol.mimeType = "application/vnd.ms-powerpoint" }
+        if convertedMode {
+            PowerPointProtocol.data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2]))
+            PowerPointProtocol.fileName = "converted.pdf"
+            PowerPointProtocol.mimeType = "application/pdf"
+        }
         URLProtocol.registerClass(PowerPointProtocol.self)
         defer { URLProtocol.unregisterClass(PowerPointProtocol.self) }
         let app = NSApplication.shared; app.setActivationPolicy(.regular); app.finishLaunching()
         let window = NSWindow(contentRect: CGRect(x: 50, y: 100, width: 1000, height: 740), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
+        let testDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("nf-ppt-pdfview-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: testDirectory) }
+        let repository = MacPDFLocalStorageRepository(directoryURL: testDirectory.appendingPathComponent("library"))
         let host = NSHostingView(rootView: MacRemotePDFPreviewView(
             request: MacPDFRemoteRequest(url: source, cookieHeader: "fixture-auth=valid"), storesLocally: false,
-            isContainerResizing: false, onClose: {}, onTogglePaneExpanded: {}
+            isContainerResizing: false, onClose: {}, onTogglePaneExpanded: {}, editorDirectory: testDirectory.appendingPathComponent("editor"), repository: repository
         ))
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         pump(4)
         func previews() -> [QLPreviewView] { descendants(host).compactMap { $0 as? QLPreviewView } }
+        if convertedMode {
+            try check(previews().isEmpty, "converted PowerPoint does not use Quick Look")
+            try check(descendants(host).contains(where: { $0 is PDFView }), "converted PowerPoint opens the existing PDFView")
+            try check(repository.documents().count == 1, "converted PDF saved in isolated document library")
+            let query = URLComponents(url: PowerPointProtocol.receivedURL!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            try check(query.contains(where: { $0.name == "pdfPreview" && $0.value == "1" }), "conversion explicitly requested")
+            try check(query.contains(where: { $0.name == "token" && $0.value == "a+b" }), "original URL parameters preserved")
+            try check(PowerPointProtocol.receivedCookie == "fixture-auth=valid", "attachment cookie retained")
+            let unchanged = try Data(contentsOf: fixtureURL)
+            try check(unchanged == original, "original PPT unchanged")
+            window.close(); print("PASS: \(checks) converted PowerPoint PDFView checks"); return
+        }
         try check(previews().count == 1, "actual attachment load mounts embedded Quick Look")
         try check(!descendants(host).contains(where: { $0 is MacPDFEditingView }), "PowerPoint does not enter PDF editor/save path")
         try check(PowerPointProtocol.receivedCookie == "fixture-auth=valid", "authenticated attachment request retained")

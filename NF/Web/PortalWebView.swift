@@ -1026,6 +1026,9 @@ extension PortalWebViewContent {
             - navigation: 완료된 Navigation 정보 입니다.
          */
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+                IncomingDocuments.syncCookies(cookies)
+            }
             deliveredConfiguration.removeAll()
             (webView as? PortalWorkspaceWebView)?.invalidateWorkspaceViewport()
             parent.workspace?.publish(force: true)

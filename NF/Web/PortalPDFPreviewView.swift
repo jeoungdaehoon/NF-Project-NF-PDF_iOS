@@ -952,6 +952,13 @@ struct PortalPDFPreviewView: View {
             }
     }
 
+    private var convertedSourceURL: URL? {
+        var parts = URLComponents()
+        parts.scheme = "nf-converted"; parts.host = "attachment"
+        parts.queryItems = [URLQueryItem(name: "source", value: item.historyURL.absoluteString)]
+        return parts.url
+    }
+
     /// PDF 및 툴바 상태의 수명주기 이벤트를 분리해 컴파일러 타입 추론 부담을 줄입니다.
     var previewLifecycleLayer: some View {
         previewAlertLayer
@@ -2154,6 +2161,10 @@ struct PortalPDFPreviewView: View {
     /** 로컬 저장 여부를 먼저 확인하고 최초 문서에 필요한 안내를 표시합니다. */
     @MainActor
     func preparePDFDocumentOpening() async {
+        if item.localFileURL == nil, let converted = pdfLocalStorageRepository.documents().first(where: { $0.sourceURL == convertedSourceURL }) {
+            activeItem = PortalAttachmentPreviewItem(localDocument: converted)
+            return
+        }
         let token = UUID()
         documentOpeningToken = token
         let openingItemID = item.id
@@ -2230,7 +2241,7 @@ struct PortalPDFPreviewView: View {
         state = .loading
         localDownloadProgress = saveLocally ? 0 : nil
         do {
-            var request = URLRequest(url: item.url)
+            var request = URLRequest(url: PortalConfig.pdfPreviewURL(item.url), timeoutInterval: 120)
             request.setValue("application/pdf, application/octet-stream;q=0.8, */*;q=0.5", forHTTPHeaderField: "Accept")
             if let cookieHeader = item.cookieHeader {
                 request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
@@ -2259,6 +2270,12 @@ struct PortalPDFPreviewView: View {
             }
             guard data.startsWithPDFSignature || httpResponse.isPDFContentType else {
                 throw PortalPDFPreviewError.unsupportedFile
+            }
+            if httpResponse.value(forHTTPHeaderField: "X-NF-Converted-From") == "powerpoint" {
+                let stored = try pdfLocalStorageRepository.createDocument(data: data, fileName: httpResponse.suggestedFilename ?? "프레젠테이션.pdf", sourceURL: convertedSourceURL)
+                activeItem = PortalAttachmentPreviewItem(localDocument: stored)
+                return // The existing local-PDF task opens this copy, with local autosave and no PATCH to the PPT.
+
             }
             let documentData: Data
             if saveLocally {

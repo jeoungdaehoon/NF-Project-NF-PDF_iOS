@@ -590,7 +590,8 @@ struct MacRemotePDFPreviewView: View {
     var isPaneExpanded = false
     var onTogglePaneExpanded: (() -> Void)?
     var editorDirectory: URL?
-    private let repository = MacPDFLocalStorageRepository()
+    var repository = MacPDFLocalStorageRepository()
+    @State private var isConvertedPowerPoint = false
     @State private var pdfDocument: PDFDocument?
     @State private var storedPDF: MacLocalPDFDocument?
     @State private var image: NSImage?
@@ -767,7 +768,7 @@ struct MacRemotePDFPreviewView: View {
                         document: pdfDocument,
                         identifier: storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
                         fileName: title,
-                        sourceURL: request.url,
+                        sourceURL: isConvertedPowerPoint ? nil : request.url,
                         cookieHeader: request.cookieHeader,
                         sourceData: attachmentData,
                         isContainerResizing: isContainerResizing,
@@ -778,6 +779,10 @@ struct MacRemotePDFPreviewView: View {
                         onTogglePaneExpanded: onTogglePaneExpanded,
                         editorDirectory: editorDirectory,
                         onSave: { data in
+                            if isConvertedPowerPoint, let storedPDF {
+                                try repository.updateData(storedPDF, data: data)
+                                return
+                            }
                             try await MacPDFRemoteSave.shared.save(source: request.url, data: data)
                             // A local cache failure must not turn a confirmed server save into an upload failure.
                             if storesLocally { _ = try? repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
@@ -843,11 +848,17 @@ struct MacRemotePDFPreviewView: View {
     }
 
     private func load() async {
+        isConvertedPowerPoint = false
         pdfDocument = nil; storedPDF = nil; image = nil; markdown = nil; quickLookFile = nil; csvDocument = nil; isParsingCSV = false
         attachmentData = nil; attachmentIsMovie = false; errorMessage = nil; didStoreLocally = false
         title = "첨부 파일"
         do {
-            var urlRequest = URLRequest(url: request.url, cachePolicy: .reloadIgnoringLocalCacheData)
+            var previewURL = request.url
+            if request.url.scheme == "https", request.url.host == MacPortalConfig.host, request.url.path.hasPrefix("/api/artifacts/files/"), var parts = URLComponents(url: request.url, resolvingAgainstBaseURL: false) {
+                parts.queryItems = (parts.queryItems ?? []).filter { $0.name != "pdfPreview" } + [URLQueryItem(name: "pdfPreview", value: "1")]
+                previewURL = parts.url ?? request.url
+            }
+            var urlRequest = URLRequest(url: previewURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
             urlRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
             if let cookieHeader = request.cookieHeader {
                 urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
@@ -858,6 +869,7 @@ struct MacRemotePDFPreviewView: View {
                !(200..<300).contains(response.statusCode) {
                 throw URLError(.badServerResponse)
             }
+            isConvertedPowerPoint = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-NF-Converted-From") == "powerpoint"
             let responseName = response.suggestedFilename ?? request.url.lastPathComponent
             title = Self.safeFileName(responseName.isEmpty ? "첨부 파일" : responseName)
             attachmentData = data
@@ -873,7 +885,10 @@ struct MacRemotePDFPreviewView: View {
             let quickLookKind = MacAttachmentQuickLookKind.detect(fileName: title, sourceURL: request.url, mimeType: mimeType)
             if isPDF, let document = PDFDocument(data: data), document.pageCount > 0 {
                 pdfDocument = document
-                if storesLocally {
+                if isConvertedPowerPoint {
+                    storedPDF = try repository.createDocument(data: data, fileName: title)
+                    didStoreLocally = true
+                } else if storesLocally {
                     storedPDF = try repository.saveRemote(data: data, fileName: title, sourceURL: request.url)
                     didStoreLocally = true
                 }

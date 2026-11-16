@@ -17,6 +17,8 @@ import UniformTypeIdentifiers
  */
 struct PortalRouteView: View {
     /// 현재 웹 테마의 네이티브 색상 팔레트입니다.
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var importingShared = false
     @Environment(\.portalAppTheme) private var portalTheme
     /// Route 화면 상태와 UI 기능을 처리하는 ViewModel 입니다.
     @StateObject private var viewModel = PortalRouteViewModel()
@@ -163,6 +165,13 @@ struct PortalRouteView: View {
         }
         .task {
             refreshLocalPDFDocumentCount()
+            await importSharedDocuments()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await importSharedDocuments() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IncomingDocuments.sessionDidChange)) { _ in
+            Task { await importSharedDocuments() }
         }
         .onReceive(NotificationCenter.default.publisher(for: PortalPDFLocalStorageRepository.didChangeNotification)) { _ in
             refreshLocalPDFDocumentCount()
@@ -175,7 +184,7 @@ struct PortalRouteView: View {
         }
         .fileImporter(
             isPresented: $isDesktopPDFImporterPresented,
-            allowedContentTypes: [.pdf],
+            allowedContentTypes: [.pdf, .image, .plainText] + ["ppt", "pptx", "md"].compactMap { UTType(filenameExtension: $0) },
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -187,6 +196,9 @@ struct PortalRouteView: View {
             }
         }
         .alert("안내", isPresented: routeMessageBinding) {
+            if !IncomingDocuments.pending().isEmpty {
+                Button("문서 다시 가져오기") { Task { await importSharedDocuments() } }
+            }
             Button("확인") {
                 viewModel.onRouteMessageConsumed()
             }
@@ -315,18 +327,38 @@ struct PortalRouteView: View {
     private func importExternalPDF(_ url: URL) {
         Task {
             do {
-                let didAccess = url.startAccessingSecurityScopedResource()
-                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
-                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                _ = try pdfLocalStorageRepository.createDocument(
-                    data: data,
-                    fileName: url.lastPathComponent
-                )
-                refreshLocalPDFDocumentCount()
-                isPDFDocumentsPresented = true
-            } catch {
-                routeMessage = "선택한 PDF 문서를 NF로 가져오지 못했습니다."
-            }
+                _ = try IncomingDocuments.enqueue(url)
+                await importSharedDocuments()
+            } catch { routeMessage = error.localizedDescription }
+        }
+    }
+
+    @MainActor private func importSharedDocuments() async {
+        guard !importingShared else { return }
+        importingShared = true
+        defer { importingShared = false }
+        var first: PortalLocalPDFDocument?
+        var importError: String?
+        for var entry in IncomingDocuments.pending() {
+            do {
+                let existing = pdfLocalStorageRepository.documents().first { $0.sourceURL == entry.librarySourceURL }
+                let document: PortalLocalPDFDocument
+                if let existing { document = existing }
+                else {
+                    let data = try await IncomingDocuments.prepare(entry)
+                    document = try pdfLocalStorageRepository.createDocument(data: data, fileName: IncomingDocuments.pdfName(entry.name), sourceURL: entry.librarySourceURL)
+                }
+                entry.imported = true
+                try IncomingDocuments.save(entry)
+                if first == nil { first = document }
+            } catch { if importError == nil { importError = error.localizedDescription } }
+        }
+        refreshLocalPDFDocumentCount()
+        if first == nil, let importError { routeMessage = importError }
+        if let first {
+            isPDFDocumentsPresented = false
+            isAttachmentFullscreen = true
+            attachmentPreviewItem = PortalAttachmentPreviewItem(localDocument: first)
         }
     }
 

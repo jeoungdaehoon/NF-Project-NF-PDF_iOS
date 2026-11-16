@@ -404,6 +404,7 @@ final class PortalPDFLocalStorageRepository {
 
     /** 휴지통 문서와 메타데이터를 즉시 완전 삭제합니다. */
     func permanentlyDelete(documentID: String) throws {
+        let sharedSource = metadata(for: documentID)?.sourceURLString.flatMap(URL.init(string:))
         let pdfURL = pdfFileURL(for: documentID)
         let metadataURL = metadataFileURL(for: documentID)
         if fileManager.fileExists(atPath: pdfURL.path) {
@@ -412,6 +413,7 @@ final class PortalPDFLocalStorageRepository {
         if fileManager.fileExists(atPath: metadataURL.path) {
             try fileManager.removeItem(at: metadataURL)
         }
+        IncomingDocuments.removeOriginal(for: sharedSource)
         try? PortalPDFPageEditRepository().remove(identifier: documentID)
         notifyChange()
     }
@@ -421,6 +423,7 @@ final class PortalPDFLocalStorageRepository {
         if fileManager.fileExists(atPath: cacheDirectoryURL.path) {
             try fileManager.removeItem(at: cacheDirectoryURL)
         }
+        IncomingDocuments.removeAll()
         try? PortalPDFPageEditRepository().removeAll()
         notifyChange()
     }
@@ -541,6 +544,7 @@ final class PortalPDFLocalStorageRepository {
                   let metadata = try? JSONDecoder().decode(Metadata.self, from: data),
                   let deletedAt = metadata.deletedAt,
                   deletedAt <= expirationDate else { continue }
+            IncomingDocuments.removeOriginal(for: metadata.sourceURLString.flatMap(URL.init(string:)))
             try? fileManager.removeItem(at: pdfFileURL(for: metadata.id))
             try? fileManager.removeItem(at: metadataURL)
         }
