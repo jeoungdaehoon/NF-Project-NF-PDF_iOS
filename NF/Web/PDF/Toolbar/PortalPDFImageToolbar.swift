@@ -49,7 +49,7 @@ extension PortalPDFPreviewView {
         }
         .scrollIndicators(.hidden)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
-        .background(inverseEditorBlurBackground(cornerRadius: 10))
+        .background(pdfEditorPanelBackground(cornerRadius: 10))
         .padding(.horizontal, 5)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("사진첩 사진 Grid")
@@ -69,8 +69,8 @@ extension PortalPDFPreviewView {
                     .font(.system(size: 9, weight: .semibold))
             }
             .frame(width: 40, height: 40)
-            .foregroundStyle(Color.white)
-            .background(Color.white.opacity(0.12))
+            .foregroundStyle(portalTheme.foregroundColor)
+            .background(portalTheme.foregroundColor.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -109,7 +109,7 @@ extension PortalPDFPreviewView {
                 .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.white.opacity(0.28), lineWidth: 1)
+                        .stroke(portalTheme.borderColor, lineWidth: 1)
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         }
@@ -122,7 +122,7 @@ extension PortalPDFPreviewView {
     var photoLibraryEmptyState: some View {
         if isPhotoLibraryLoading {
             ProgressView()
-                .tint(.white)
+                .tint(portalTheme.accentColor)
                 .frame(width: markupOptionPanelWidth - 16, height: 40)
         } else {
             Text(photoLibraryMessage ?? "사진첩에 표시할 사진이 없습니다.")
@@ -219,7 +219,7 @@ extension PortalPDFPreviewView {
             selectedTool = tool
             isPenOptionPresented = tool.isInkTool && isPenPaletteAlwaysVisible
             isEraserOptionPresented = false
-            isShapeOptionPresented = false
+            isShapeOptionPresented = tool == .box
             isTextOptionPresented = tool == .text
             isImageGalleryPresented = false
             if tool != .image {

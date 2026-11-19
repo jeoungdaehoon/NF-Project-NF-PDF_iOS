@@ -278,133 +278,151 @@ struct PortalPDFPageNavigatorView: View {
         onFavoritePageIndexesChanged: @escaping (Set<Int>) -> Void
     ) {
         self.document = document
-        self.currentPage = document.page(at: currentPageIndex)
+        let openingPage = document.page(at: currentPageIndex)
+        self.currentPage = openingPage
         self.onSelectPage = onSelectPage
         self.onDocumentStructureChanged = onDocumentStructureChanged
         self.onFavoritePageIndexesChanged = onFavoritePageIndexesChanged
-        _items = State(initialValue: (0..<document.pageCount).compactMap { pageIndex in
+        let pages = (0..<document.pageCount).compactMap { pageIndex -> PortalPDFPageOrganizerItem? in
             guard let page = document.page(at: pageIndex) else { return nil }
             return PortalPDFPageOrganizerItem(
                 page: page,
                 isFavorite: favoritePageIndexes.contains(pageIndex)
             )
-        })
+        }
+        _items = State(initialValue: pages)
+        _selectedPageID = State(initialValue: pages.first { $0.page === openingPage }?.id)
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                Picker("페이지 목록", selection: $selectedTab) {
-                    ForEach(PortalPDFPageNavigatorTab.allCases) { tab in
-                        Text(tab.title).tag(tab)
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("페이지 관리").font(.headline)
+                        Text("\(items.count)페이지")
+                            .font(.caption)
+                            .foregroundStyle(portalTheme.mutedColor)
                     }
+                } icon: {
+                    Image(systemName: "rectangle.grid.2x2")
+                        .foregroundStyle(portalTheme.accentColor)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+                Spacer()
+                Button(isReordering ? "완료" : "닫기") {
+                    if isReordering { finishReordering() }
+                    else { dismiss() }
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(16)
 
-                Divider()
+            Picker("페이지 목록", selection: $selectedTab) {
+                ForEach(PortalPDFPageNavigatorTab.allCases) { tab in
+                    Text(tab == .allPages ? "전체" : tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
-                ScrollViewReader { proxy in
-                    Group {
-                        if displayedItems.isEmpty {
-                            ContentUnavailableView(
-                                "즐겨찾기 페이지가 없습니다",
-                                systemImage: "star",
-                                description: Text("PDF 설정에서 현재 페이지를 즐겨찾기에 추가해 주세요.")
-                            )
+            ScrollViewReader { proxy in
+                Group {
+                    if displayedItems.isEmpty {
+                        ContentUnavailableView("즐겨찾기 페이지가 없습니다", systemImage: "star")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else {
-                            ScrollView {
-                                LazyVGrid(columns: columns, spacing: 20) {
-                                    ForEach(displayedItems) { item in
-                                        organizerCell(for: item)
-                                            .id(item.id)
-                                    }
+                    } else {
+                        ScrollView {
+                            LazyVGrid(columns: columns, spacing: 16) {
+                                ForEach(displayedItems) { item in
+                                    organizerCell(for: item).id(item.id)
                                 }
-                                .padding(20)
                             }
-                        }
-                    }
-                    .onAppear {
-                        scrollToCurrentPage(using: proxy)
-                    }
-                    .onChange(of: selectedTab) { _, _ in
-                        resetInteractionForTabChange()
-                        scrollToCurrentPage(using: proxy)
-                    }
-                }
-            }
-            .background(portalTheme.backgroundColor)
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if isReordering {
-                        Button(role: .destructive) {
-                            deleteSelectedPage()
-                        } label: {
-                            Label("삭제", systemImage: "trash")
-                        }
-                        .disabled(selectedPageID == nil || items.count <= 1)
-                    } else {
-                        Button("닫기") {
-                            dismiss()
+                            .padding(16)
                         }
                     }
                 }
-
-                ToolbarItem(placement: .principal) {
-                    Button {
-                        guard isReordering else { return }
-                        finishReordering()
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(isReordering ? "페이지 편집 완료" : "페이지 관리")
-                            if isReordering {
-                                Image(systemName: "checkmark.circle.fill")
-                            }
-                        }
-                        .font(.headline)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint(isReordering ? "누르면 페이지 순서 편집을 종료합니다." : "")
+                .onAppear { scrollToCurrentPage(using: proxy) }
+                .onChange(of: selectedTab) { _, _ in
+                    resetInteractionForTabChange()
+                    scrollToCurrentPage(using: proxy)
                 }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    if isReordering {
-                        Button {
-                            duplicateSelectedPage()
-                        } label: {
-                            Label("복제", systemImage: "doc.on.doc")
-                        }
-                        .disabled(selectedPageID == nil)
-                    } else {
-                        Button("이동") {
-                            moveToSelectedPage()
-                        }
-                        .disabled(selectedPageID == nil)
-                    }
-                }
-            }
-            .toolbarBackground(portalTheme.backgroundColor, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(portalTheme.colorScheme, for: .navigationBar)
-            .tint(portalTheme.accentColor)
-            .safeAreaInset(edge: .bottom) {
-                Text(isReordering
-                    ? "페이지를 드래그해 원하는 순서로 이동하고, 상단 제목을 누르면 편집이 완료됩니다."
-                    : "페이지를 선택한 뒤 이동을 누르거나, 별표로 즐겨찾기를 관리하세요.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity)
-                    .background(portalTheme.surfaceColor)
             }
         }
+        .foregroundStyle(portalTheme.foregroundColor)
+        .background(portalTheme.backgroundColor)
+        .tint(portalTheme.accentColor)
+        .safeAreaInset(edge: .bottom, spacing: 0) { pageActions }
         .preferredColorScheme(portalTheme.colorScheme)
+    }
+
+    private var pageActions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if isReordering {
+                if let index = items.firstIndex(where: { $0.id == selectedPageID }) {
+                    Text("\(index + 1)페이지 선택")
+                        .font(.caption)
+                        .foregroundStyle(portalTheme.mutedColor)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { orderActions; editActions }
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack { orderActions }
+                        HStack { editActions }
+                    }
+                }
+            } else {
+                HStack {
+                    Button("페이지 편집", systemImage: "pencil") {
+                        selectedPageID = selectedPageID ?? displayedItems.first?.id
+                        isReordering = true
+                    }
+                    .disabled(displayedItems.isEmpty)
+                    Spacer(minLength: 4)
+                    Button("이동", systemImage: "arrow.right", action: moveToSelectedPage)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(selectedPageID == nil)
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(portalTheme.surfaceColor)
+        .overlay(alignment: .top) { Rectangle().fill(portalTheme.borderColor).frame(height: 1) }
+    }
+
+    private var orderActions: some View {
+        Group {
+            Button("앞으로", systemImage: "arrow.up") { moveSelectedPage(by: -1) }
+                .disabled(neighboringPage(by: -1) == nil)
+            Button("뒤로", systemImage: "arrow.down") { moveSelectedPage(by: 1) }
+                .disabled(neighboringPage(by: 1) == nil)
+        }
+    }
+
+    private var editActions: some View {
+        Group {
+            Button("복제", systemImage: "doc.on.doc", action: duplicateSelectedPage)
+                .disabled(selectedPageID == nil)
+            Button(role: .destructive, action: deleteSelectedPage) {
+                Label("삭제", systemImage: "trash")
+            }
+            .disabled(selectedPageID == nil || items.count <= 1)
+        }
+    }
+
+    private func neighboringPage(by offset: Int) -> UUID? {
+        let pages = displayedItems
+        guard let index = pages.firstIndex(where: { $0.id == selectedPageID }),
+              pages.indices.contains(index + offset) else { return nil }
+        return pages[index + offset].id
+    }
+
+    private func moveSelectedPage(by offset: Int) {
+        guard let selectedPageID, let targetID = neighboringPage(by: offset) else { return }
+        moveOrganizerPage(&items, from: selectedPageID, to: targetID, tab: selectedTab)
+        commitReorderedPages()
     }
 
     private var displayedItems: [PortalPDFPageOrganizerItem] {
@@ -599,7 +617,7 @@ private struct PortalPDFPageThumbnailCell: View {
                         lineWidth: isSelected ? 4 : 1
                     )
             }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: .bottomTrailing) {
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title2)
@@ -607,11 +625,11 @@ private struct PortalPDFPageThumbnailCell: View {
                         .padding(8)
                 }
             }
-            .overlay(alignment: .topLeading) {
+            .overlay(alignment: .topTrailing) {
                 Button(action: onToggleFavorite) {
                     Image(systemName: isFavorite ? "star.fill" : "star")
                         .font(.title3.weight(.semibold))
-                        .foregroundStyle(isFavorite ? Color.yellow : Color.secondary)
+                        .foregroundStyle(isFavorite ? portalTheme.accentColor : portalTheme.mutedColor)
                         .padding(8)
                         .background(.ultraThinMaterial, in: Circle())
                 }
@@ -692,12 +710,7 @@ private struct PortalPDFPageDropDelegate: DropDelegate {
     func dropEntered(info: DropInfo) {
         guard let draggedPageID, draggedPageID != targetID else { return }
         withAnimation(.easeInOut(duration: 0.16)) {
-            switch selectedTab {
-            case .allPages:
-                moveItem(in: &items, from: draggedPageID, to: targetID)
-            case .favorites:
-                moveFavoriteItem(in: &items, from: draggedPageID, to: targetID)
-            }
+            moveOrganizerPage(&items, from: draggedPageID, to: targetID, tab: selectedTab)
         }
     }
 
@@ -711,36 +724,21 @@ private struct PortalPDFPageDropDelegate: DropDelegate {
         return true
     }
 
-    /// 전체 페이지 탭에서는 실제 문서 배열 순서를 그대로 이동합니다.
-    private func moveItem(
-        in items: inout [PortalPDFPageOrganizerItem],
-        from sourceID: UUID,
-        to targetID: UUID
-    ) {
-        guard let sourceIndex = items.firstIndex(where: { $0.id == sourceID }),
-              let targetIndex = items.firstIndex(where: { $0.id == targetID }) else { return }
-        items.move(
-            fromOffsets: IndexSet(integer: sourceIndex),
-            toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
-        )
-    }
+}
 
-    /// 즐겨찾기 탭에서는 즐겨찾기 페이지가 있던 슬롯끼리만 순서를 바꿔 일반 페이지 위치를 유지합니다.
-    private func moveFavoriteItem(
-        in items: inout [PortalPDFPageOrganizerItem],
-        from sourceID: UUID,
-        to targetID: UUID
-    ) {
-        let favoriteSlots = items.indices.filter { items[$0].isFavorite }
-        var favoriteItems = favoriteSlots.map { items[$0] }
-        guard let sourceIndex = favoriteItems.firstIndex(where: { $0.id == sourceID }),
-              let targetIndex = favoriteItems.firstIndex(where: { $0.id == targetID }) else { return }
-        favoriteItems.move(
-            fromOffsets: IndexSet(integer: sourceIndex),
-            toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
-        )
-        for (slot, item) in zip(favoriteSlots, favoriteItems) {
-            items[slot] = item
-        }
+private func moveOrganizerPage(
+    _ items: inout [PortalPDFPageOrganizerItem],
+    from sourceID: UUID,
+    to targetID: UUID,
+    tab: PortalPDFPageNavigatorTab
+) {
+    // 즐겨찾기에서 이동해도 일반 페이지의 자리와 PDF 주석 참조는 그대로 유지합니다.
+    let slots = items.indices.filter { tab == .allPages || items[$0].isFavorite }
+    var pages = slots.map { items[$0] }
+    guard let source = pages.firstIndex(where: { $0.id == sourceID }),
+          let target = pages.firstIndex(where: { $0.id == targetID }) else { return }
+    pages.move(fromOffsets: IndexSet(integer: source), toOffset: target > source ? target + 1 : target)
+    for (slot, page) in zip(slots, pages) {
+        items[slot] = page
     }
 }

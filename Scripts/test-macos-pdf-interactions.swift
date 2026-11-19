@@ -200,16 +200,7 @@ import SwiftUI
         guard let closeBox = find(host, "pdf.text.box.close") as? NSButton else { throw CocoaError(.validationMissingMandatoryProperty) }
         try check(closeBox.window === window, "text border settings panel is open in the editor without stealing a native window")
         let wasDashed = state.style.dashed
-        // SwiftUI's primitive-control AX elements are absent in this off-screen
-        // fixture. Dispatch a real click relative to the panel's native close
-        // button, not an absolute screen position or a direct model mutation.
-        let closeFrame = closeBox.convert(closeBox.bounds, to: host)
-        let togglePoint = CGPoint(x: closeFrame.minX - 190, y: closeFrame.midY + (host.isFlipped ? 84 : -84))
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = NSEvent.mouseEvent(with: type, location: host.convert(togglePoint, to: nil), modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
-            app.postEvent(event, atStart: false)
-        }
-        while let event = app.nextEvent(matching: .any, until: Date(), inMode: .default, dequeue: true) { app.sendEvent(event) }; settle()
+        try press("pdf.text.border.dashed")
         try check(state.style.dashed != wasDashed && (text as? MacPDFTextInput)?.boxStyle.dashed == state.style.dashed, "actual text border toggle updates live native input")
         if let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) { host.cacheDisplay(in: host.bounds, to: bitmap); try bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: "/private/tmp/nf-pdf-text-box-popup-test.png")) }
         try press("pdf.text.box.close")

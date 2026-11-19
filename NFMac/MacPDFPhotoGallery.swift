@@ -59,16 +59,28 @@ struct MacPDFSystemImageEditView: View {
     private let targetID: UUID?
     init(parent: MacPDFEditorState) { self.parent = parent; targetID = parent.selected?.id }
     var body: some View {
-        VStack(spacing: 16) {
-            Text("macOS 시스템 이미지 편집").font(.headline)
-            if let image { Image(nsImage: image).resizable().scaledToFit().frame(height: 240) }
-            Text(message).font(.caption)
-            HStack {
-                Button("취소") { dismiss() }
-                Button("미리보기에서 편집") { openPreview() }.disabled(workingURL == nil)
-                Button("편집 결과 적용") { apply() }.disabled(workingURL == nil)
+        VStack(alignment: .leading, spacing: 12) {
+            Label("macOS 시스템 이미지 편집", systemImage: "macwindow").font(.headline)
+            Divider()
+            if let image {
+                Image(nsImage: image).resizable().scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 240)
+                    .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
             }
-        }.padding(20).task { prepare() }
+            Text(message).font(.caption).foregroundStyle(.secondary)
+            Button("미리보기에서 편집", systemImage: "arrow.up.right.square", action: openPreview)
+                .disabled(workingURL == nil)
+            HStack {
+                Spacer()
+                Button("취소") { dismiss() }
+                Button("편집 결과 적용", systemImage: "checkmark", action: apply)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(workingURL == nil)
+            }
+        }
+        .padding(16)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .task { prepare() }
     }
     private func prepare() {
         guard let object = parent.objects.first(where: { $0.id == targetID }), let data = object.imageData, let source = NSImage(data: data), let tiff = source.tiffRepresentation,

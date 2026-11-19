@@ -126,12 +126,11 @@ struct PortalPDFPreviewView: View {
     }
 
     /// 편집 도구는 원문·필기 색과 분리된 중립 표면을 사용합니다.
-    func inverseEditorBlurBackground(cornerRadius: CGFloat) -> some View {
-        let tint = Color(white: 0.14)
+    func pdfEditorPanelBackground(cornerRadius: CGFloat) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return shape
-            .fill(tint)
-            .overlay(shape.stroke(Color.white.opacity(0.14), lineWidth: 1))
+            .fill(portalTheme.surfaceColor)
+            .overlay(shape.strokeBorder(portalTheme.borderColor, lineWidth: 1))
             .clipShape(shape)
     }
     /// PDF 선택 시 로컬 파일 저장을 사용할지 여부입니다.
@@ -1277,6 +1276,8 @@ struct PortalPDFPreviewView: View {
         }
         .frame(width: 300, height: 520)
         .scrollBounceBehavior(.basedOnSize)
+        .presentationBackground(portalTheme.surfaceColor)
+        .tint(portalTheme.accentColor)
         .presentationCompactAdaptation(.popover)
     }
 
@@ -1304,7 +1305,7 @@ struct PortalPDFPreviewView: View {
             }
             .tint(.accentColor)
 
-            Divider()
+            pdfSettingsSection("페이지")
 
             Button {
                 prepareFavoritePDFPagesForInsertion(duplicatesCurrentPage: false)
@@ -1353,7 +1354,7 @@ struct PortalPDFPreviewView: View {
             }
             .disabled(loadedDocument?.pageCount == 0)
 
-            Divider()
+            pdfSettingsSection("보기")
 
             Menu {
                 ForEach(PortalPDFDisplayStyle.allCases) { style in
@@ -1418,6 +1419,8 @@ struct PortalPDFPreviewView: View {
                 )
             }
 
+            pdfSettingsSection("편집 도구")
+
             Toggle(isOn: $isPenPaletteAlwaysVisible) {
                 pdfSettingsRow(
                     "펜슬 팔레트 상세 활성화",
@@ -1460,7 +1463,7 @@ struct PortalPDFPreviewView: View {
                     .padding(.bottom, 4)
             }
 
-            Divider()
+            pdfSettingsSection("문서")
 
             if item.localFileURL != nil {
                 Button {
@@ -1511,6 +1514,14 @@ struct PortalPDFPreviewView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
+    }
+
+    private func pdfSettingsSection(_ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Rectangle().fill(portalTheme.borderColor).frame(height: 1)
+            Text(title).font(.caption).foregroundStyle(portalTheme.mutedColor)
+        }
+        .padding(.top, 6)
     }
 
     var pdfDisplayStyle: PortalPDFDisplayStyle {

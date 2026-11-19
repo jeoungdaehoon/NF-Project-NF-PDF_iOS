@@ -25,51 +25,80 @@ struct MacPDFObjectMenu: View {
     let onImageAction: (MacPDFImageAction) -> Void
     var body: some View {
         let image = state.selection.count == 1 && state.selected?.kind == .image
-        // Keep the bubble clear of the four drag-to-connect handles.
         let menuAnchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
-        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize, preferredWidth: image ? 600 : 414)
+        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize,
+                                         preferredWidth: 250, height: image ? 390 : 280)
         let viewport = CGRect(origin: .zero, size: canvasSize)
         Group {
             if state.selectionViewRect.intersects(viewport) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
                         if image {
-                            ForEach(MacPDFImageAction.allCases, id: \.rawValue) { action in item(action.title, action.symbol, id: action.rawValue) { onImageAction(action) } }
+                            imageActions("이미지", [.replace, .crop, .rotate, .flip, .resetSize])
+                            imageActions("편집", [.edit, .systemEdit])
+                            imageActions("쌓는 순서", [.front, .back])
                         } else {
-                            item("삭제", "trash", id: "delete") { state.deleteSelected() }
-                            item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected(); state.menuVisible = true }
-                            item("복사", "doc.on.doc", id: "copy") { state.copySelected() }
                             if state.selection.count == 1 {
                                 item("편집", "pencil", id: "edit") {
                                     if let object = state.selected, object.kind == .text { state.canvas?.beginTextEditing(object) }
                                     else { state.optionsTool = state.tool; state.menuVisible = false }
                                 }
                             }
+                            item("복사", "doc.on.doc", id: "copy") { state.copySelected() }
+                            item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected(); state.menuVisible = true }
+                            section("쌓는 순서")
                             item("최상단", "square.3.layers.3d.top.filled", id: "front") { state.reorderSelected(front: true) }
                             item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
+                            Divider()
+                            item("삭제", "trash", id: "delete") { state.deleteSelected() }
                         }
                         item("닫기", "xmark", id: "close") { state.menuVisible = false }
-                    }.padding(.horizontal, 8).padding(.vertical, 5)
+                    }
+                    .padding(8)
                 }
                 .frame(width: rect.width, height: rect.height)
-                .background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 10))
-                .overlay(alignment: rect.minY > state.selectionViewRect.maxY ? .top : .bottom) {
-                    MenuTail().fill(Color(nsColor: .windowBackgroundColor).opacity(0.82)).frame(width: 14, height: 8)
-                        .rotationEffect(.degrees(rect.minY > state.selectionViewRect.maxY ? 180 : 0)).offset(y: rect.minY > state.selectionViewRect.maxY ? -7 : 7).allowsHitTesting(false)
-                }
-                .shadow(radius: 5).position(x: rect.midX, y: rect.midY)
+                .background(MacPDFPanelSurface(radius: 10))
+                .shadow(radius: 5)
+                .position(x: rect.midX, y: rect.midY)
                 .transition(.scale(scale: 0.85).combined(with: .opacity))
             }
-        }.frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
-            .animation(.easeOut(duration: 0.16), value: state.menuVisible)
+        }
+        .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.16), value: state.menuVisible)
     }
+
+    private func section(_ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Divider()
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.top, 4)
+    }
+
+    private func imageActions(_ title: String, _ actions: [MacPDFImageAction]) -> some View {
+        Group {
+            section(title)
+            ForEach(actions, id: \.rawValue) { action in
+                item(action.title, action.symbol, id: action.rawValue) { onImageAction(action) }
+            }
+        }
+    }
+
     private func item(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
-        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", action: action).frame(width: 50, height: 44)
+        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", inline: true, action: action)
+            .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+            .padding(.horizontal, 6)
     }
 }
 
-private struct MenuTail: Shape {
-    func path(in rect: CGRect) -> Path { Path { p in p.move(to: CGPoint(x: rect.minX, y: rect.minY)); p.addLine(to: CGPoint(x: rect.maxX, y: rect.minY)); p.addLine(to: CGPoint(x: rect.midX, y: rect.maxY)); p.closeSubpath() } }
+struct MacPDFPanelSurface: View {
+    var radius: CGFloat = 10
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius)
+        shape.fill(Color(nsColor: .windowBackgroundColor))
+            .overlay(shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+    }
 }
 
 struct MacPDFTextAssistant: View {
@@ -90,20 +119,28 @@ struct MacPDFTextAssistant: View {
                 ColorPicker("배경", selection: color(\.fill, "fill"), supportsOpacity: true).fixedSize()
                 ColorPicker("테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { value in var style = state.style; style.textBorder = .init(NSColor(value)); if style.width == 0 { style.width = 0.5 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true).fixedSize()
                 MacPDFActionButton(title: "테두리 설정", identifier: "pdf.text.box") { boxOptionsVisible.toggle() }.frame(width: 80, height: 28)
-                Menu("정렬") { Button("왼쪽") { set(\.alignment, 0, "alignment") }; Button("가운데") { set(\.alignment, 2, "alignment") }; Button("오른쪽") { set(\.alignment, 1, "alignment") } }
+                Picker("정렬", selection: Binding(get: { state.style.alignment }, set: { set(\.alignment, $0, "alignment") })) {
+                    Text("왼쪽").tag(0); Text("가운데").tag(2); Text("오른쪽").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
                 Button { state.canvas?.toggleTextLink() } label: { Image(systemName: "link") }.help("선택 URL 링크 적용·해제")
                 MacPDFActionButton(title: "완료", identifier: "pdf.text.done") { state.canvas?.finishTextEditing(); state.menuVisible = true }.frame(width: 42, height: 28)
             }.buttonStyle(.borderless).padding(10)
-        }.frame(height: 48).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
+        }.frame(height: 48).background(MacPDFPanelSurface(radius: 12)).shadow(radius: 3)
             .overlay(alignment: .topTrailing) {
                 if boxOptionsVisible {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack { Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") {
+                        HStack { Text("테두리 설정").font(.headline); Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") {
                             boxOptionsVisible = false
                             DispatchQueue.main.async { if let input = state.canvas?.activeTextView { input.window?.makeFirstResponder(input) } }
                         }.frame(width: 42, height: 24) }
+                        MacPDFTextPreview(style: state.style)
+                            .frame(maxWidth: .infinity, minHeight: 46)
+                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                         MacPDFTextBoxControls(state: state)
-                    }.padding(12).frame(width: 260).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
+                    }.padding(12).frame(width: 260).background(MacPDFPanelSurface(radius: 12)).shadow(radius: 5).offset(y: 56)
                 }
             }
     }
@@ -119,18 +156,43 @@ struct MacPDFTextBoxControls: View {
     @ObservedObject var state: MacPDFEditorState
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("텍스트 박스 테두리").font(.headline)
             Stepper("두께 \(state.style.width, specifier: "%.1f") pt", value: value(\.width, field: "width"), in: 0...12, step: 0.5)
                 .accessibilityIdentifier("pdf.text.border.width")
-            Toggle("점선", isOn: value(\.dashed, field: "dashed"))
-                .accessibilityIdentifier("pdf.text.border.dashed")
-            Text("모서리 라운드 \(state.style.textCornerRadius ?? 0, specifier: "%.0f") pt")
-            Slider(value: Binding(get: { state.style.textCornerRadius ?? 0 }, set: { radius in var style = state.style; style.textCornerRadius = radius; state.setStyle(style, field: "textCornerRadius") }), in: 0...48, step: 1)
-                .accessibilityLabel("텍스트 박스 모서리 라운드").accessibilityIdentifier("pdf.text.border.radius")
+            MacPDFActionButton(title: "점선", identifier: "pdf.text.border.dashed", checked: state.style.dashed) {
+                value(\.dashed, field: "dashed").wrappedValue.toggle()
+            }
+            .frame(height: 22)
+            HStack {
+                Text("모서리 라운드")
+                Slider(value: Binding(get: { state.style.textCornerRadius ?? 0 }, set: { radius in var style = state.style; style.textCornerRadius = radius; state.setStyle(style, field: "textCornerRadius") }), in: 0...48, step: 1)
+                    .accessibilityLabel("텍스트 박스 모서리 라운드").accessibilityIdentifier("pdf.text.border.radius")
+                Text("\(state.style.textCornerRadius ?? 0, specifier: "%.0f") pt")
+                    .monospacedDigit().foregroundStyle(.secondary)
+            }
             Text("두께 0은 테두리 없음, 라운드 0은 직각입니다.").font(.caption).foregroundStyle(.secondary)
         }
     }
     private func value<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
         Binding(get: { state.style[keyPath: key] }, set: { value in var style = state.style; style[keyPath: key] = value; state.setStyle(style, field: field) })
+    }
+}
+
+struct MacPDFTextPreview: View {
+    let style: MacPDFStyle
+
+    var body: some View {
+        Text("텍스트 박스")
+            .font(.custom(style.fontName, size: min(28, max(11, style.fontSize))))
+            .bold(style.bold).italic(style.italic).underline(style.underline).strikethrough(style.strike)
+            .foregroundStyle(Color(nsColor: style.stroke.color))
+            .frame(maxWidth: 190, alignment: style.alignment == 2 ? .center : style.alignment == 1 ? .trailing : .leading)
+            .padding(6)
+            .background(Color(nsColor: style.fill.color), in: RoundedRectangle(cornerRadius: style.textCornerRadius ?? 0))
+            .overlay {
+                RoundedRectangle(cornerRadius: style.textCornerRadius ?? 0)
+                    .strokeBorder(Color(nsColor: style.textBorder?.color ?? .clear),
+                                  style: StrokeStyle(lineWidth: min(6, style.width), dash: style.dashed ? [4, 3] : []))
+            }
+            .accessibilityHidden(true)
     }
 }

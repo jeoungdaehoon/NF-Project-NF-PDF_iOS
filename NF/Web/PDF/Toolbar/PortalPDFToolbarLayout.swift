@@ -790,22 +790,19 @@ extension PortalPDFPreviewView {
         if selectedTool.isInkTool && isPenOptionPresented {
             return currentPenOptionPanelSize.width
         }
-        if selectedTool == .text {
-            return textOptionPanelSize.width
+        if selectedTool == .text || selectedTool == .box || selectedTool == .eraser {
+            if isMarkupToolbarVertical {
+                let left = shouldPlaceMarkupPanelOnLeft(in: markupToolbarContainerSize)
+                return max(1, min(270, markupPanelAvailableContentWidth(onLeft: left, in: markupToolbarContainerSize)))
+            }
+            return max(140, min(280, markupOptionPanelContentWidth))
         }
-        if !isMarkupToolbarVertical,
-           selectedTool == .box || selectedTool == .text || selectedTool == .eraser || (!isMarkupToolbarVertical && selectedTool.isInkTool) {
+        if !isMarkupToolbarVertical && selectedTool.isInkTool {
             return max(180, min(280, markupOptionPanelContentWidth))
         }
         if isMarkupToolbarVertical {
             if selectedTool.isInkTool { return 50 }
-            if selectedTool == .box { return 60 }
-            if selectedTool == .text { return 60 }
-            if selectedTool == .eraser { return 50 }
             return max(60, markupOptionPanelHeight)
-        }
-        if selectedTool == .eraser {
-            return max(240, min(320, markupOptionPanelContentWidth))
         }
         return markupOptionPanelContentWidth
     }
@@ -818,7 +815,7 @@ extension PortalPDFPreviewView {
         if selectedTool == .pen {
             return selectedPenType == .pressure ? 236 : 184
         }
-        return 132
+        return 164
     }
 
     var penEditingPanelWidth: CGFloat {
@@ -877,19 +874,13 @@ extension PortalPDFPreviewView {
         if selectedTool.isInkTool && isPenOptionPresented {
             return currentPenOptionPanelSize.height
         }
-        if selectedTool == .text {
-            return textOptionPanelSize.height
+        if selectedTool == .text || selectedTool == .eraser {
+            return min(174, max(114, markupToolbarContainerSize.height * 0.42))
         }
+        if selectedTool == .box { return min(232, max(120, markupToolbarContainerSize.height * 0.44)) }
         return isMarkupToolbarVertical
             ? verticalMarkupToolbarHeight
             : markupOptionPanelHeight
-    }
-
-    /// 문자 상세 편집창은 기본 툴바 크기가 아닌 내부 컬러 2개와 추가 버튼 크기에 맞춥니다.
-    var textOptionPanelSize: CGSize {
-        isMarkupToolbarVertical
-            ? CGSize(width: 68, height: 230)
-            : CGSize(width: 200, height: 68)
     }
 
     /// 세로 기본 편집창이 화면에서 실제로 차지하는 높이입니다.
@@ -996,7 +987,7 @@ extension PortalPDFPreviewView {
                     .foregroundStyle(.primary)
             } else {
                 ProgressView()
-                    .tint(.white)
+                    .tint(portalTheme.accentColor)
             }
             Text(localDownloadProgress == nil ? "첨부 파일을 확인하고 있습니다." : "PDF를 기기에 저장하고 있습니다.")
                 .font(.footnote)

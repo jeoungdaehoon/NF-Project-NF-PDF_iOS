@@ -16,51 +16,80 @@ import UIKit
 
 extension PortalPDFPreviewView {
     var pdfShapeOptionPanel: some View {
-        VStack(alignment: isMarkupToolbarVertical ? .center : .leading, spacing: 6) {
-            if isMarkupToolbarVertical {
-                VStack(alignment: .center, spacing: 8) {
-                    shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
-                    shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("도형 설정", systemImage: "square.on.circle").font(.headline)
+                Rectangle().fill(portalTheme.borderColor).frame(height: 1)
+                Image(systemName: selectedShapeType.systemImageName)
+                    .font(.system(size: 25))
+                    .foregroundStyle(selectedShapeLineColor)
+                    .frame(maxWidth: .infinity, minHeight: 38)
+                    .background(selectedShapeFillColor, in: RoundedRectangle(cornerRadius: 6))
+                    .accessibilityHidden(true)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
+                        shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
+                    }
+                    VStack(alignment: .leading) {
+                        shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
+                        shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
+                    }
                 }
-            } else {
-                HStack(spacing: 16) {
-                    shapeColorPicker(title: "선", selection: $selectedShapeLineColor)
-                    shapeColorPicker(title: "배경", selection: $selectedShapeFillColor)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 4)], spacing: 4) {
+                    ForEach(PortalPDFShapeType.allCases) { shape in
+                        Button {
+                            selectedShapeType = shape
+                            pendingShapeAnnotation = PortalPDFPendingShape(shapeType: shape)
+                        } label: {
+                            Image(systemName: shape.systemImageName)
+                                .frame(maxWidth: .infinity, minHeight: 36)
+                                .foregroundStyle(shape == selectedShapeType ? portalTheme.accentColor : portalTheme.foregroundColor)
+                                .background(portalTheme.foregroundColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(shape.title)
+                        .accessibilityAddTraits(shape == selectedShapeType ? [.isSelected] : [])
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
+            .padding(10)
         }
-        .padding(10)
+        .scrollBounceBehavior(.basedOnSize)
+        .foregroundStyle(portalTheme.foregroundColor)
+        .tint(portalTheme.accentColor)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
         .padding(.horizontal, 5)
-        .background(inverseEditorBlurBackground(cornerRadius: 10))
+        .background(pdfEditorPanelBackground(cornerRadius: 10))
     }
 
     /// 텍스트 박스의 배경·테두리 컬러와 명시적 추가 기능을 제공하는 상세 패널입니다.
     var pdfTextOptionPanel: some View {
-        Group {
-            if isMarkupToolbarVertical {
-                VStack(spacing: 8) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("텍스트 설정", systemImage: "textbox").font(.headline)
+                Text("텍스트 박스")
+                    .font(.caption)
+                    .foregroundStyle(selectedTextColor)
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .background(selectedTextFillColor, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(selectedTextBorderColor, lineWidth: 1))
+                    .accessibilityHidden(true)
+                HStack(spacing: 6) {
                     compactTextColorPicker(title: "문자", selection: $selectedTextColor)
-                    compactTextColorPicker(title: "라인", selection: $selectedTextBorderColor)
+                    compactTextColorPicker(title: "테두리", selection: $selectedTextBorderColor)
                     compactTextColorPicker(title: "배경", selection: $selectedTextFillColor)
-                    addTextAnnotationButton
                 }
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                HStack(spacing: 8) {
-                    compactTextColorPicker(title: "문자", selection: $selectedTextColor)
-                    compactTextColorPicker(title: "라인", selection: $selectedTextBorderColor)
-                    compactTextColorPicker(title: "배경", selection: $selectedTextFillColor)
-                    addTextAnnotationButton
-                }
+                addTextAnnotationButton
             }
+            .padding(10)
         }
-        .padding(10)
+        .scrollBounceBehavior(.basedOnSize)
+        .foregroundStyle(portalTheme.foregroundColor)
+        .tint(portalTheme.accentColor)
         .frame(width: markupOptionPanelWidth, height: markupOptionPanelHeightForOrientation)
         .padding(.horizontal, 5)
-        .background(inverseEditorBlurBackground(cornerRadius: 10))
+        .background(pdfEditorPanelBackground(cornerRadius: 10))
     }
 
     /// 문자 패널 폭을 유지하면서 문자·라인·배경 컬러를 구분해 선택합니다.
@@ -84,12 +113,11 @@ extension PortalPDFPreviewView {
             )
             isTextOptionPresented = false
         } label: {
-            Image(systemName: "plus.rectangle.on.rectangle")
-                .font(.system(size: 22, weight: .semibold))
-                .frame(width: 48, height: 48)
-                .foregroundStyle(Color.white)
-                .background(Color.white.opacity(0.10))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Label("텍스트 박스 추가", systemImage: "plus.rectangle.on.rectangle")
+                .font(.caption.weight(.medium))
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundStyle(portalTheme.accentColor)
+                .background(portalTheme.accentColor.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("텍스트 박스 주석 추가")

@@ -195,6 +195,8 @@ final class PortalPDFView: PDFView {
  - SeeAlso: ``PortalPDFPreviewView``
  */
 struct PortalPDFKitView: UIViewRepresentable {
+    @Environment(\.portalAppTheme) private var editorTheme
+
     /// PDFKit이 표시할 PDF 문서입니다.
     let document: PDFDocument
     /// PDF 페이지의 이동 방향과 연속/한 장 표시 방식입니다.
@@ -320,6 +322,7 @@ struct PortalPDFKitView: UIViewRepresentable {
         - context: UIViewRepresentable Context 정보입니다.
      */
     func updateUIView(_ pdfView: PDFView, context: Context) {
+        context.coordinator.editorTheme = editorTheme
         // 저장된 뷰포트가 있는 문서는 PDFKit의 최초 자동 맞춤을 실행하지 않습니다.
         // document 연결 직후 autoScales를 켜면 PDFKit이 문서를 화면 중앙으로 먼저 이동한 뒤
         // Coordinator의 비동기 위치 복원이 실행되어, 재진입할 때 중앙으로 튀는 화면이 노출됩니다.
@@ -463,7 +466,9 @@ struct PortalPDFKitView: UIViewRepresentable {
      - Returns: ``Coordinator``
      */
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        let coordinator = Coordinator()
+        coordinator.editorTheme = editorTheme
+        return coordinator
     }
 
     /// PDFKit 내부 문서 컨테이너가 시스템 기본색으로 캔버스를 덮지 않도록 함께 갱신합니다.
@@ -703,7 +708,116 @@ final class PortalPDFTextTouchDownGestureRecognizer: UIGestureRecognizer {
 }
 
 /// 텍스트 박스를 이동하지 않고 탭했을 때 박스 위에 표시하는 말풍선형 작업 메뉴입니다.
-final class PortalPDFTextActionMenuView: UIView {
+class PortalPDFActionPanel: UIView {
+    var showsTailAtTop = false
+    var preferredHeight: CGFloat = 12
+
+    private let panel = UIView()
+    private let scroll = UIScrollView()
+    private let stack = UIStackView()
+    private var rows: [(button: UIButton, destructive: Bool)] = []
+    private var headings: [UILabel] = []
+    private var dividers: [UIView] = []
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.2
+        layer.shadowRadius = 7
+        layer.shadowOffset = CGSize(width: 0, height: 3)
+        panel.layer.cornerRadius = 10
+        panel.layer.borderWidth = 1
+        panel.clipsToBounds = true
+        addSubview(panel)
+        panel.addSubview(scroll)
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = false
+        stack.axis = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func addSection(_ title: String) {
+        if !stack.arrangedSubviews.isEmpty {
+            let divider = UIView()
+            divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            stack.addArrangedSubview(divider)
+            dividers.append(divider)
+            preferredHeight += 3
+        }
+        let label = UILabel()
+        label.text = title
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.accessibilityTraits = .header
+        label.heightAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
+        stack.addArrangedSubview(label)
+        headings.append(label)
+        preferredHeight += 24
+    }
+
+    func addRow(
+        _ title: String,
+        symbol: String,
+        accessibilityLabel: String,
+        destructive: Bool = false,
+        action: @escaping () -> Void
+    ) {
+        var config = UIButton.Configuration.plain()
+        config.title = title
+        config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15))
+        config.imagePlacement = .leading
+        config.imagePadding = 9
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 5)
+        let button = UIButton(configuration: config)
+        button.contentHorizontalAlignment = .leading
+        button.accessibilityLabel = accessibilityLabel
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        stack.addArrangedSubview(button)
+        rows.append((button, destructive))
+        preferredHeight += 46
+    }
+
+    func applyTheme(_ theme: PortalAppTheme) {
+        panel.backgroundColor = UIColor(theme.surfaceColor)
+        panel.layer.borderColor = UIColor(theme.borderColor).cgColor
+        for (button, destructive) in rows {
+            button.configuration?.baseForegroundColor = destructive ? .systemRed : UIColor(theme.foregroundColor)
+        }
+        headings.forEach { $0.textColor = UIColor(theme.mutedColor) }
+        dividers.forEach { $0.backgroundColor = UIColor(theme.borderColor) }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        panel.frame = bounds
+        scroll.frame = panel.bounds.insetBy(dx: 6, dy: 6)
+    }
+
+    func position(around object: CGRect, in pdfView: PDFView) {
+        let available = pdfView.bounds.inset(by: pdfView.safeAreaInsets).insetBy(dx: 8, dy: 8)
+        let width = min(246, max(1, available.width))
+        let height = min(preferredHeight, max(1, available.height))
+        let x = min(max(object.midX - width / 2, available.minX), max(available.minX, available.maxX - width))
+        let above = object.minY - height - 8
+        showsTailAtTop = above < available.minY
+        let desired = showsTailAtTop ? object.maxY + 8 : above
+        let y = min(max(desired, available.minY), max(available.minY, available.maxY - height))
+        frame = CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+final class PortalPDFTextActionMenuView: PortalPDFActionPanel {
     enum Action: CaseIterable {
         case delete
         case duplicate
@@ -736,80 +850,21 @@ final class PortalPDFTextActionMenuView: UIView {
     }
 
     var onAction: ((Action) -> Void)?
-    var showsTailAtTop = false {
-        didSet { setNeedsLayout() }
-    }
-    private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
-    private let stackView = UIStackView()
-    private let tailView = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
-        clipsToBounds = false
-        panelView.layer.cornerRadius = 13
-        panelView.layer.masksToBounds = true
-        addSubview(panelView)
-
-        stackView.axis = .horizontal
-        stackView.alignment = .fill
-        stackView.distribution = .fillEqually
-        stackView.spacing = 4
-        panelView.contentView.addSubview(stackView)
-
-        Action.allCases.forEach { action in
-            var configuration = UIButton.Configuration.plain()
-            configuration.image = UIImage(
-                systemName: action.systemImageName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-            )
-            configuration.imagePlacement = .top
-            configuration.imagePadding = 5
-            configuration.title = action.title
-            configuration.baseForegroundColor = action == .delete ? .systemRed : .white
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 1, bottom: 5, trailing: 1)
-            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = .systemFont(ofSize: 9, weight: .medium)
-                return outgoing
-            }
-            let button = UIButton(configuration: configuration)
-            button.accessibilityLabel = "텍스트 박스 \(action.title)"
-            button.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
-            stackView.addArrangedSubview(button)
-        }
-
-        tailView.backgroundColor = UIColor(white: 0.16, alpha: 0.96)
-        tailView.isUserInteractionEnabled = false
-        addSubview(tailView)
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.28
-        layer.shadowRadius = 8
-        layer.shadowOffset = CGSize(width: 0, height: 3)
+        ([.edit, .copy, .duplicate] as [Action]).forEach(addAction)
+        addSection("쌓는 순서")
+        ([.bringToFront, .sendToBack] as [Action]).forEach(addAction)
+        addSection("텍스트 박스")
+        addAction(.delete)
     }
 
-    required init?(coder: NSCoder) {
-        nil
-    }
+    required init?(coder: NSCoder) { nil }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let tailSide: CGFloat = 12
-        let panelHeight = bounds.height - 6
-        panelView.frame = CGRect(
-            x: 0,
-            y: showsTailAtTop ? 6 : 0,
-            width: bounds.width,
-            height: panelHeight
-        )
-        stackView.frame = panelView.bounds.insetBy(dx: 7, dy: 2)
-        tailView.bounds = CGRect(x: 0, y: 0, width: tailSide, height: tailSide)
-        tailView.center = CGPoint(
-            x: bounds.midX,
-            y: showsTailAtTop ? 6 : panelHeight
-        )
-        tailView.transform = CGAffineTransform(rotationAngle: .pi / 4)
-        sendSubviewToBack(tailView)
+    private func addAction(_ action: Action) {
+        addRow(action.title, symbol: action.systemImageName, accessibilityLabel: "텍스트 박스 \(action.title)",
+               destructive: action == .delete) { [weak self] in self?.onAction?(action) }
     }
 }
 
@@ -852,82 +907,25 @@ enum PortalPDFImageAction: CaseIterable {
 }
 
 /// 이미지를 선택했을 때 이미지 위에 표시하는 말풍선형 편집 메뉴입니다.
-final class PortalPDFImageActionMenuView: UIView {
+final class PortalPDFImageActionMenuView: PortalPDFActionPanel {
     var onAction: ((PortalPDFImageAction) -> Void)?
-    var showsTailAtTop = false {
-        didSet { setNeedsLayout() }
-    }
-    private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
-    private let stackView = UIStackView()
-    private let tailView = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = .clear
-        clipsToBounds = false
-        panelView.layer.cornerRadius = 13
-        panelView.layer.masksToBounds = true
-        addSubview(panelView)
+        addSection("이미지")
+        ([.replace, .crop, .rotateClockwise, .flipHorizontal, .resetSize] as [PortalPDFImageAction]).forEach(addAction)
+        addSection("편집")
+        addAction(.openSystemEditor)
+        addSection("쌓는 순서")
+        ([.bringToFront, .sendToBack] as [PortalPDFImageAction]).forEach(addAction)
+    }
 
-        stackView.axis = .horizontal
-        stackView.alignment = .fill
-        stackView.distribution = .fillEqually
-        stackView.spacing = 4
-        panelView.contentView.addSubview(stackView)
+    required init?(coder: NSCoder) { nil }
 
-        PortalPDFImageAction.allCases.forEach { action in
-            var configuration = UIButton.Configuration.plain()
-            configuration.image = UIImage(
-                systemName: action.systemImageName,
-                withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-            )
-            configuration.imagePlacement = .top
-            configuration.imagePadding = 5
-            configuration.title = action.title
-            configuration.baseForegroundColor = .white
-            configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 1, bottom: 5, trailing: 1)
-            configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = .systemFont(ofSize: 9, weight: .medium)
-                return outgoing
-            }
-            let button = UIButton(configuration: configuration)
-            button.accessibilityLabel = "선택 이미지 \(action.title)"
-            button.addAction(UIAction { [weak self] _ in self?.onAction?(action) }, for: .touchUpInside)
-            stackView.addArrangedSubview(button)
+    private func addAction(_ action: PortalPDFImageAction) {
+        addRow(action.title, symbol: action.systemImageName, accessibilityLabel: "선택 이미지 \(action.title)") {
+            [weak self] in self?.onAction?(action)
         }
-
-        tailView.backgroundColor = UIColor(white: 0.16, alpha: 0.96)
-        tailView.isUserInteractionEnabled = false
-        addSubview(tailView)
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.28
-        layer.shadowRadius = 8
-        layer.shadowOffset = CGSize(width: 0, height: 3)
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let tailSide: CGFloat = 12
-        let panelHeight = bounds.height - 6
-        panelView.frame = CGRect(
-            x: 0,
-            y: showsTailAtTop ? 6 : 0,
-            width: bounds.width,
-            height: panelHeight
-        )
-        stackView.frame = panelView.bounds.insetBy(dx: 7, dy: 2)
-        tailView.bounds = CGRect(x: 0, y: 0, width: tailSide, height: tailSide)
-        tailView.center = CGPoint(
-            x: bounds.midX,
-            y: showsTailAtTop ? 6 : panelHeight
-        )
-        tailView.transform = CGAffineTransform(rotationAngle: .pi / 4)
-        sendSubviewToBack(tailView)
     }
 }
 
@@ -2605,6 +2603,18 @@ extension PortalPDFKitView {
      - Date: 2026.07.30
      */
     final class Coordinator: NSObject, UIGestureRecognizerDelegate, UITextViewDelegate, UIFontPickerViewControllerDelegate, PDFPageOverlayViewProvider, UIPencilInteractionDelegate {
+        var editorTheme: PortalAppTheme = .default {
+            didSet {
+                guard oldValue != editorTheme else { return }
+                textActionMenuView?.applyTheme(editorTheme)
+                imageActionMenuView?.applyTheme(editorTheme)
+                if let editor = activeTextEditor, editor.portalAccessoryView != nil {
+                    editor.portalAccessoryView = makeTextAssistantView()
+                    editor.reloadInputViews()
+                }
+            }
+        }
+
         enum AnnotationHistoryRecord {
             case retained(PDFAnnotation)
             case image(PortalPDFImageAnnotation.HistoryState)
@@ -5289,6 +5299,7 @@ extension PortalPDFKitView {
             pdfView.bringSubviewToFront(host)
 
             let menu = PortalPDFTextActionMenuView(frame: .zero)
+            menu.applyTheme(editorTheme)
             menu.onAction = { [weak self, weak annotation, weak page, weak pdfView] action in
                 guard let self, let annotation, let page, let pdfView,
                       annotation.page === page else { return }
@@ -5331,21 +5342,7 @@ extension PortalPDFKitView {
                   let annotation = textActionMenuAnnotation,
                   let page = annotation.page else { return }
             let textRect = pdfView.convert(annotation.editingBounds, from: page).standardized
-            let horizontalMargin: CGFloat = 12
-            let menuSize = CGSize(
-                width: min(420, max(300, pdfView.bounds.width - horizontalMargin * 2)),
-                height: 64
-            )
-            let minimumX = pdfView.bounds.minX + horizontalMargin
-            let maximumX = pdfView.bounds.maxX - horizontalMargin - menuSize.width
-            let centeredX = textRect.midX - menuSize.width / 2
-            let x = min(max(centeredX, minimumX), max(minimumX, maximumX))
-            let topLimit = pdfView.bounds.minY + pdfView.safeAreaInsets.top + 8
-            let proposedAboveY = textRect.minY - menuSize.height - 10
-            let showBelow = proposedAboveY < topLimit
-            let y = showBelow ? textRect.maxY + 10 : proposedAboveY
-            menu.showsTailAtTop = showBelow
-            menu.frame = CGRect(origin: CGPoint(x: x, y: y), size: menuSize)
+            menu.position(around: textRect, in: pdfView)
         }
 
         /// 말풍선 메뉴와 투명 터치 호스트를 함께 제거합니다.
@@ -5412,6 +5409,7 @@ extension PortalPDFKitView {
             pdfView.bringSubviewToFront(host)
 
             let menu = PortalPDFImageActionMenuView(frame: .zero)
+            menu.applyTheme(editorTheme)
             menu.onAction = { [weak self, weak annotation] action in
                 guard let self,
                       let annotation,
@@ -5457,21 +5455,7 @@ extension PortalPDFKitView {
                   let annotation = imageActionMenuAnnotation,
                   let page = annotation.page else { return }
             let imageRect = pdfView.convert(annotation.editingBounds, from: page).standardized
-            let horizontalMargin: CGFloat = 12
-            let menuSize = CGSize(
-                width: min(420, max(300, pdfView.bounds.width - horizontalMargin * 2)),
-                height: 64
-            )
-            let minimumX = pdfView.bounds.minX + horizontalMargin
-            let maximumX = pdfView.bounds.maxX - horizontalMargin - menuSize.width
-            let centeredX = imageRect.midX - menuSize.width / 2
-            let x = min(max(centeredX, minimumX), max(minimumX, maximumX))
-            let topLimit = pdfView.bounds.minY + pdfView.safeAreaInsets.top + 8
-            let proposedAboveY = imageRect.minY - menuSize.height - 10
-            let showBelow = proposedAboveY < topLimit
-            let y = showBelow ? imageRect.maxY + 10 : proposedAboveY
-            menu.showsTailAtTop = showBelow
-            menu.frame = CGRect(origin: CGPoint(x: x, y: y), size: menuSize)
+            menu.position(around: imageRect, in: pdfView)
         }
 
         /// 이미지 말풍선 메뉴와 투명 터치 호스트를 함께 제거합니다.
@@ -5949,7 +5933,10 @@ extension PortalPDFKitView {
 
         /// 웹 입력 어시스트의 텍스트 관련 기능을 동일한 순서의 가로 스크롤 바로 제공합니다.
         func makeTextAssistantView() -> UIView {
-            let effectView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
+            let effectView = UIView()
+            effectView.backgroundColor = UIColor(editorTheme.surfaceColor)
+            effectView.layer.borderWidth = 1
+            effectView.layer.borderColor = UIColor(editorTheme.borderColor).cgColor
             effectView.frame.size.height = 54
             let scrollView = UIScrollView()
             scrollView.showsHorizontalScrollIndicator = false
@@ -5960,12 +5947,12 @@ extension PortalPDFKitView {
             stackView.alignment = .center
             stackView.spacing = 6
             stackView.translatesAutoresizingMaskIntoConstraints = false
-            effectView.contentView.addSubview(scrollView)
+            effectView.addSubview(scrollView)
             scrollView.addSubview(stackView)
             NSLayoutConstraint.activate([
-                scrollView.leadingAnchor.constraint(equalTo: effectView.contentView.leadingAnchor, constant: 8),
-                scrollView.topAnchor.constraint(equalTo: effectView.contentView.topAnchor),
-                scrollView.bottomAnchor.constraint(equalTo: effectView.contentView.bottomAnchor),
+                scrollView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor, constant: 8),
+                scrollView.topAnchor.constraint(equalTo: effectView.topAnchor),
+                scrollView.bottomAnchor.constraint(equalTo: effectView.bottomAnchor),
                 stackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
                 stackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
                 stackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
@@ -5976,9 +5963,9 @@ extension PortalPDFKitView {
             func button(_ systemName: String, label: String, action: @escaping () -> Void) -> UIButton {
                 let control = UIButton(type: .system)
                 control.setImage(UIImage(systemName: systemName), for: .normal)
-                control.tintColor = .white
-                control.backgroundColor = UIColor.white.withAlphaComponent(0.11)
-                control.layer.cornerRadius = 16
+                control.tintColor = UIColor(editorTheme.foregroundColor)
+                control.backgroundColor = UIColor(editorTheme.foregroundColor).withAlphaComponent(0.08)
+                control.layer.cornerRadius = 6
                 control.accessibilityLabel = label
                 control.translatesAutoresizingMaskIntoConstraints = false
                 NSLayoutConstraint.activate([
@@ -6084,10 +6071,10 @@ extension PortalPDFKitView {
             ) { [weak self] in
                 self?.activeTextEditor?.resignFirstResponder()
             }
-            effectView.contentView.addSubview(dismissKeyboardButton)
+            effectView.addSubview(dismissKeyboardButton)
             NSLayoutConstraint.activate([
-                dismissKeyboardButton.trailingAnchor.constraint(equalTo: effectView.contentView.trailingAnchor, constant: -8),
-                dismissKeyboardButton.centerYAnchor.constraint(equalTo: effectView.contentView.centerYAnchor),
+                dismissKeyboardButton.trailingAnchor.constraint(equalTo: effectView.trailingAnchor, constant: -8),
+                dismissKeyboardButton.centerYAnchor.constraint(equalTo: effectView.centerYAnchor),
                 scrollView.trailingAnchor.constraint(equalTo: dismissKeyboardButton.leadingAnchor, constant: -8),
             ])
             return effectView

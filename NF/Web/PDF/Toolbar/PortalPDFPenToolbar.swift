@@ -33,7 +33,7 @@ extension PortalPDFPreviewView {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .frame(width: currentPenOptionPanelSize.width, height: currentPenOptionPanelSize.height)
         .padding(.horizontal, 5)
-        .background(inverseEditorBlurBackground(cornerRadius: 14))
+        .background(pdfEditorPanelBackground(cornerRadius: 14))
         .overlay(alignment: .topLeading) {
                     Button {
                         if penOptionPanelLocked, !penOptionPanelDetached {
@@ -57,7 +57,7 @@ extension PortalPDFPreviewView {
             } label: {
                 Image(systemName: penOptionPanelLocked ? "lock.fill" : "lock.open.fill")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.gray)
+                    .foregroundStyle(portalTheme.mutedColor)
                     .frame(width: 24, height: 24)
                     .contentShape(Rectangle())
             }
@@ -84,7 +84,7 @@ extension PortalPDFPreviewView {
                 } label: {
                     Image(systemName: penOptionPanelScrollIsVertical ? "arrow.left.and.right" : "arrow.up.and.down")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.gray)
+                        .foregroundStyle(portalTheme.mutedColor)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
@@ -105,7 +105,7 @@ extension PortalPDFPreviewView {
         Image(systemName: "arrow.up.left.and.arrow.down.right")
             .font(.system(size: 16, weight: .medium))
             .frame(width: 24, height: 24)
-            .foregroundStyle(Color.gray)
+            .foregroundStyle(portalTheme.mutedColor)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .global)
@@ -264,45 +264,37 @@ extension PortalPDFPreviewView {
 
     /// 세로 편집창에서 컬러 팔레트 오른쪽에 표시할 컬러·두께·타입 상세 편집입니다.
     func pdfPenEditingDetails(for editingPenColor: PortalPDFPenColor) -> some View {
-        VStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                ColorPicker(
-                    "\(editingPenColor.title) 컬러 값 변경",
-                    selection: $editingPenColorValue,
-                    supportsOpacity: true
+        VStack(alignment: .leading, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(portalTheme.foregroundColor.opacity(0.06))
+                Capsule()
+                    .fill(editingPenColorValue)
+                    .frame(height: min(28, max(2, editingPenLineWidth)))
+                    .padding(.horizontal, 18)
+            }
+            .frame(height: 38)
+            .accessibilityHidden(true)
+
+            ColorPicker("색상", selection: $editingPenColorValue, supportsOpacity: true)
+                .onChange(of: editingPenColorValue) { _, _ in updatePenColorEditingImmediately() }
+
+            HStack(spacing: 8) {
+                Text("두께").font(.caption)
+                Slider(
+                    value: $editingPenLineWidth,
+                    in: selectedTool == .highlighter ? 18...48 : 0.3...8.0,
+                    step: selectedTool == .highlighter ? 1 : 0.1
                 )
-                .labelsHidden()
-                .onChange(of: editingPenColorValue) { _, _ in
-                    updatePenColorEditingImmediately()
-                }
+                .tint(portalTheme.accentColor)
+                .accessibilityLabel("두께")
+                .onChange(of: editingPenLineWidth) { _, _ in updatePenColorEditingImmediately() }
+                Text(String(format: "%.1f pt", editingPenLineWidth))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(portalTheme.mutedColor)
+                    .fixedSize()
             }
-            .frame(maxWidth: .infinity, alignment: .center)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Slider(
-                        value: $editingPenLineWidth,
-                        in: selectedTool == .highlighter ? 18...48 : 0.3...8.0,
-                        step: selectedTool == .highlighter ? 1 : 0.1
-                    )
-                    .tint(editingPenColorValue)
-                    .frame(maxWidth: .infinity)
-                    .onChange(of: editingPenLineWidth) { _, _ in
-                        updatePenColorEditingImmediately()
-                    }
-                    Text(String(format: "%.1f", editingPenLineWidth))
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, alignment: .trailing)
-                    Capsule(style: .continuous)
-                        .fill(editingPenColorValue)
-                        .frame(width: 20, height: max(2, editingPenLineWidth))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(editingPenColor.title) 펜 두께 \(String(format: "%.1f", editingPenLineWidth))")
-
+            DisclosureGroup(selectedTool == .highlighter ? "선 끝" : "필압·팬슬 타입") {
             if selectedTool == .highlighter {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("끝모양")
@@ -351,7 +343,7 @@ extension PortalPDFPreviewView {
                             in: 0...2,
                             step: 0.05
                         )
-                        .tint(editingPenColorValue)
+                        .tint(portalTheme.accentColor)
                         .onChange(of: editingPenPressureStrength) { _, _ in
                             updatePenColorEditingImmediately()
                         }
@@ -363,7 +355,10 @@ extension PortalPDFPreviewView {
                     )
                 }
             }
+            }
         }
+        .foregroundStyle(portalTheme.foregroundColor)
+        .tint(portalTheme.accentColor)
         .padding(8)
     }
 
@@ -377,7 +372,7 @@ extension PortalPDFPreviewView {
             }
             .scrollIndicators(.hidden)
             .frame(width: penEditingPanelWidth, height: penEditingPanelHeight)
-            .background(inverseEditorBlurBackground(cornerRadius: 14))
+            .background(pdfEditorPanelBackground(cornerRadius: 14))
             .transition(.opacity.combined(with: .scale(scale: 0.82, anchor: .center)))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("\(editingPenColor.title) 상세 편집")
@@ -406,15 +401,15 @@ extension PortalPDFPreviewView {
                         .frame(width: 28, height: 28)
                         .overlay {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(selectedPenColor == penColor ? Color.white : Color.clear, lineWidth: 3)
+                                .stroke(selectedPenColor == penColor ? portalTheme.foregroundColor : Color.clear, lineWidth: 3)
                         }
                         .overlay {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                                .stroke(portalTheme.borderColor, lineWidth: 1)
                         }
                     Text(String(format: "%.1f", penLineWidth(for: penColor)))
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(portalTheme.foregroundColor)
                 }
                 .frame(width: 32, height: 42, alignment: .center)
             }
@@ -431,7 +426,7 @@ extension PortalPDFPreviewView {
                     Text("추가")
                         .font(.system(size: 9, weight: .semibold))
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(portalTheme.foregroundColor)
                 .frame(width: 32, height: 42, alignment: .center)
             }
             .accessibilityLabel("컬러 추가")

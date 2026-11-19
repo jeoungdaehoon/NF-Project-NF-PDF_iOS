@@ -575,11 +575,12 @@ final class MacPDFEditorState: ObservableObject {
         var next = paletteOptions[color.key] ?? style; next.stroke = color
         setStyle(next, field: "stroke")
     }
-    func selectNeonType(_ type: MacPDFNeonType) {
+    func selectNeonType(_ type: MacPDFNeonType, keepsOptionsOpen: Bool = false) {
         guard tool == .neon else { return }
         canvas?.finishTextEditing(); canvas?.cancelGesture()
         neonType = type
-        optionsTool = nil; menuVisible = false
+        if !keepsOptionsOpen { optionsTool = nil }
+        menuVisible = false
         rememberSettings()
     }
     func selectTool(_ next: MacPDFTool) {

@@ -123,7 +123,7 @@ final class MacPortalPreferences: ObservableObject {
 
     private let defaults: UserDefaults
     private static let zoomKey = "nf.mac.portal.zoomPercent.v2"
-    private static let appearanceKey = "nf.mac.portal.appearance.v1"
+    static let appearanceKey = "nf.mac.portal.appearance.v1"
     static let pdfLocalStorageKey = "nf.portal.pdf.localStorage.enabled"
 
     init(defaults: UserDefaults = .standard) {

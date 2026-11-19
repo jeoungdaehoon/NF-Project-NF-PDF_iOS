@@ -19,12 +19,26 @@ struct MacPDFImageEditView: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button("취소") { dismiss() }; Text("이미지에 필기·도형·문구 추가").font(.headline); Spacer()
-                Button("이미지에 적용") { apply(); dismiss() }.keyboardShortcut(.defaultAction)
-            }.padding(12)
+            Label("이미지에 필기·도형·문구 추가", systemImage: "photo.on.rectangle")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+            Divider()
             MacPDFEditorView(state: editor)
+            Divider()
+            HStack {
+                Spacer()
+                Button("취소") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("이미지에 적용") {
+                    apply()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
         }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
     private func apply() {
         guard let targetID, let data = editor.exportPDF(), let pdf = PDFDocument(data: data), let page = pdf.page(at: 0) else { parent.error = "편집한 이미지를 만들지 못했습니다."; return }

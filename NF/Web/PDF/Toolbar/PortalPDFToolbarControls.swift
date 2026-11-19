@@ -57,7 +57,7 @@ extension PortalPDFPreviewView {
         // 알약 외곽 크기만 변경하고 내부 버튼은 항상 40pt 크기를 유지합니다.
         .padding(4)
         .frame(width: currentMarkupToolbarSize.width, height: currentMarkupToolbarSize.height)
-        .background(inverseEditorBlurBackground(cornerRadius: 10))
+        .background(pdfEditorPanelBackground(cornerRadius: 10))
         // 작은 크기에서 스크롤 영역의 버튼이 알약 외부로 그려지지 않도록 마스킹합니다.
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .padding(.horizontal, 16)
@@ -79,8 +79,8 @@ extension PortalPDFPreviewView {
             Image(systemName: operation == .undo ? "arrow.uturn.backward" : "arrow.uturn.forward")
                 .font(.system(size: 19, weight: .semibold))
                 .frame(width: 40, height: 40)
-                .foregroundStyle(isEnabled ? Color.white : Color.white.opacity(0.32))
-                .background(Color.white.opacity(isEnabled ? 0.12 : 0.06))
+                .foregroundStyle(isEnabled ? portalTheme.foregroundColor : portalTheme.foregroundColor.opacity(0.32))
+                .background(portalTheme.foregroundColor.opacity(isEnabled ? 0.12 : 0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .disabled(!isEnabled)
@@ -143,8 +143,8 @@ extension PortalPDFPreviewView {
             .font(.system(size: 18, weight: .semibold))
             // 알약 외곽 크기와 관계없이 이동 버튼의 터치 영역은 항상 40pt로 고정합니다.
             .frame(width: 40, height: 40)
-            .foregroundStyle(Color.white)
-            .background(Color.white.opacity(0.12))
+            .foregroundStyle(portalTheme.foregroundColor)
+            .background(portalTheme.foregroundColor.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .contentShape(Capsule())
             // 이동 제스처 상태는 전용 하위 컨테이너가 소유해 상위 PDF 화면 갱신을 차단합니다.
@@ -163,8 +163,8 @@ extension PortalPDFPreviewView {
                 : "arrow.up.left.and.arrow.down.right")
                 .font(.system(size: 18, weight: .semibold))
                 .frame(width: 40, height: 40)
-                .foregroundStyle(Color.white)
-                .background(Color.white.opacity(0.12))
+                .foregroundStyle(portalTheme.foregroundColor)
+                .background(portalTheme.foregroundColor.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(isPDFEditorFullscreenModeEnabled ? "전체화면 모드 종료" : "전체화면 모드 실행")
@@ -181,8 +181,8 @@ extension PortalPDFPreviewView {
                 .font(.system(size: 20, weight: .semibold))
                 // 알약 크기가 변경되어도 개별 도구 버튼의 가로·세로 크기는 40pt를 유지합니다.
                 .frame(width: 40, height: 40)
-                .foregroundStyle(selectedTool == tool ? Color.black : Color.white)
-                .background(selectedTool == tool ? Color.white : Color.white.opacity(0.12))
+                .foregroundStyle(selectedTool == tool ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .background(selectedTool == tool ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(tool.accessibilityLabel)

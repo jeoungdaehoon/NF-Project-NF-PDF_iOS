@@ -24,6 +24,7 @@ struct MacPDFWorkspace: View {
 }
 
 struct MacPDFEditorView: View {
+    @AppStorage(MacPortalPreferences.appearanceKey) private var appearance = MacPortalAppearance.system
     @ObservedObject var state: MacPDFEditorState
     var isContainerResizing = false
     var isFullscreen = false
@@ -35,6 +36,7 @@ struct MacPDFEditorView: View {
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
     @State private var showReset = false
+    @State private var connectorSettingsExpanded = false
     @GestureState private var paletteDrag = CGSize.zero
     private var detachedPaletteVisible: Bool { (state.alwaysShowPalette || state.paletteDetached) && !state.presentation }
     enum Modal: String, Identifiable { case crop, board, imageEditor, systemImageEditor; var id: String { rawValue } }
@@ -43,7 +45,7 @@ struct MacPDFEditorView: View {
             if !state.presentation { header; Divider() }
             MacPDFFindBar(find: state.find)
             HStack(spacing: 0) {
-                if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 160); Divider() }
+                if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 190); Divider() }
                 GeometryReader { geometry in
                     ZStack(alignment: .bottom) {
                         MacPDFCanvas(state: state, isContainerResizing: isContainerResizing, onExitPaneExpansion: onExitPaneExpansion)
@@ -101,6 +103,7 @@ struct MacPDFEditorView: View {
         .onChange(of: state.selection) { _, _ in state.canvas?.refreshAnnotations() }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pdf.editor")
+        .preferredColorScheme(appearance.colorScheme)
     }
     private var header: some View {
         HStack(spacing: 0) {
@@ -112,31 +115,40 @@ struct MacPDFEditorView: View {
                 MacPDFActionButton(title: "", symbol: "arrow.uturn.forward", identifier: "pdf.redo", accessibilityTitle: "다시 실행") { state.redo() }
                     .frame(width: 22, height: 22).disabled(!state.canRedo).help("다시 실행 ⇧⌘Z")
                 Menu("페이지") {
-                    Button("빈 페이지 추가") { state.pageOperation("add") }
-                    Button("현재 페이지 복제") { state.pageOperation("duplicate") }
-                    Button("현재 페이지 삭제", role: .destructive) { state.pageOperation("delete") }.disabled(state.pageCount <= 1)
-                    Button(state.favorites.contains(state.currentPage) ? "즐겨찾기 해제" : "즐겨찾기 추가") { state.toggleFavorite() }
+                    Button("빈 페이지 추가", systemImage: "doc.badge.plus") { state.pageOperation("add") }
+                    Button("현재 페이지 복제", systemImage: "doc.on.doc") { state.pageOperation("duplicate") }
+                    Divider()
+                    Button(state.favorites.contains(state.currentPage) ? "즐겨찾기 해제" : "즐겨찾기 추가", systemImage: "star") { state.toggleFavorite() }
+                    Button(role: .destructive) { state.pageOperation("delete") } label: { Label("현재 페이지 삭제", systemImage: "trash") }
+                        .disabled(state.pageCount <= 1)
                 }
                 Menu("보기") {
                     Toggle("가로 보기", isOn: $state.horizontal)
                     Toggle("페이지 단위 보기", isOn: $state.paged)
                     Toggle("두 페이지 보기", isOn: $state.twoPages)
+                    Divider()
+                    Button("화면에 맞춤", systemImage: "viewfinder") { state.canvas?.autoScales = true }
+                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") { toggleFullscreen() }
+                    Button("프레젠테이션", systemImage: "rectangle.on.rectangle") { state.presentation = true }
+                    Divider()
                     Picker("페이지 이동 버튼 위치", selection: $state.pageControlPosition) { Text("아래").tag("bottom"); Text("왼쪽").tag("left"); Text("오른쪽").tag("right") }
-                    Button("화면에 맞춤") { state.canvas?.autoScales = true }
-                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기") { toggleFullscreen() }
-                    Button("프레젠테이션") { state.presentation = true }
+                    .pickerStyle(.menu)
                 }
                 Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
                     .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
                 MacPDFActionButton(title: "PDF 다운로드", identifier: "pdf.download") { sharing.download(state) }.frame(width: 90, height: 22)
                 Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
-                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기") { toggleFullscreen() }
-                    Button("문서 연결 보드") { modal = .board }
-                    Button("Google Drive에 저장") { Task { await state.syncToGoogleDrive() } }
-                    Button("Google Drive 연결 해제") { state.unlinkGoogleDrive() }
-                    Toggle("도구창 세로 배치", isOn: $state.verticalToolbar)
-                    Button("편집 도구 설정 초기화") { showReset = true }
+                    Button(isFullscreen ? "전체화면 종료" : "전체화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") { toggleFullscreen() }
+                    Button("문서 연결 보드", systemImage: "point.3.connected.trianglepath.dotted") { modal = .board }
+                    Section("Google Drive") {
+                        Button("저장", systemImage: "icloud.and.arrow.up") { Task { await state.syncToGoogleDrive() } }
+                        Button("연결 해제", systemImage: "link.badge.minus") { state.unlinkGoogleDrive() }
+                    }
+                    Menu("편집 도구", systemImage: "slider.horizontal.3") {
+                        Toggle("도구창 세로 배치", isOn: $state.verticalToolbar)
+                        Button("편집 도구 설정 초기화", systemImage: "arrow.counterclockwise") { showReset = true }
+                    }
                 }
             }.buttonStyle(.borderless).padding(10)
         }
@@ -178,7 +190,8 @@ struct MacPDFEditorView: View {
         }
         .padding(8).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1)).shadow(color: .black.opacity(0.12), radius: 8, y: 4)
         .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) {
-            options.frame(width: 300).padding(12).presentationBackground(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+            options.frame(width: 320).padding(12)
+                .presentationBackground(Color(nsColor: .windowBackgroundColor))
         }
     }
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
@@ -197,73 +210,232 @@ struct MacPDFEditorView: View {
     private var options: some View {
         MacPDFCompactOptions {
             VStack(alignment: .leading, spacing: 10) {
-                Text("\(state.tool.title) 설정").font(.headline)
-                if ![.view, .select, .image, .eraser, .lasso].contains(state.tool) {
-                HStack {
-                    ColorPicker("선·문구", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
-                    ColorPicker("배경", selection: colorBinding(\.fill, field: "fill"), supportsOpacity: true)
-                }
-                if [.pen, .highlighter, .neon].contains(state.tool) { HStack {
-                    ForEach(Array(state.palette.enumerated()), id: \.offset) { index, color in
-                        Button { state.selectPalette(color) } label: { Circle().fill(Color(nsColor: color.color)).frame(width: 22, height: 22).overlay(Circle().stroke(state.style.stroke == color ? Color.accentColor : .clear, lineWidth: 2)) }.buttonStyle(.plain).help("선택한 색상을 다시 누르면 색상·두께 편집")
-                            .popover(isPresented: Binding(get: { state.editingPaletteIndex == index }, set: { if !$0 { state.editingPaletteIndex = nil } })) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    ColorPicker("색상", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
-                                    Text("두께 \(state.style.width, specifier: "%.1f")")
-                                    Slider(value: styleBinding(\.width, field: "width"), in: state.tool == .highlighter ? 18...48 : 0.3...8)
-                                    if state.tool == .highlighter { Toggle("끝모양 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap")) }
-                                    else { Toggle("필압", isOn: styleBinding(\.pressure, field: "pressure")); Slider(value: styleBinding(\.pressureStrength, field: "pressureStrength"), in: 0...2) }
-                                }.padding(16).frame(width: 220)
-                            }
-                    }
-                    Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }.help("현재 색상을 팔레트에 추가")
-                } }
-                if state.tool != .text {
-                    Text("두께 \(state.style.width, specifier: "%.1f")")
-                    Slider(value: styleBinding(\.width, field: "width"), in: 0...48)
-                }
-                }
-                if [.pen, .highlighter, .neon].contains(state.tool) {
-                    Toggle("필압 사용 (지원 입력 장치)", isOn: styleBinding(\.pressure, field: "pressure"))
-                    Text("필압 강도 \(state.style.pressureStrength, specifier: "%.1f")"); Slider(value: styleBinding(\.pressureStrength, field: "pressureStrength"), in: 0...2)
-                    Toggle("선 끝 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap"))
-                }
-                if state.tool == .eraser { Text("지우개 크기 \(Int(state.eraserSize))"); Slider(value: $state.eraserSize, in: 6...100) }
-                if state.tool == .shape {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 94))]) {
-                        ForEach(MacPDFShape.allCases) { shape in MacPDFActionButton(title: shape.title, identifier: "pdf.add.shape.\(shape.rawValue)") { state.shape = shape; state.addVisibleObject(.shape, shape: shape) }.frame(height: 28) }
-                    }
-                }
-                if state.tool == .text { MacPDFActionButton(title: "텍스트 박스 추가", identifier: "pdf.add.text") { state.addVisibleObject(.text) }.frame(height: 30) }
-                if state.tool == .text || state.selected?.kind == .text { textOptions }
-                if state.connectorEnabled || state.selected?.kind == .connector { connectorOptions }
-                if !state.selection.isEmpty { selectedOptions }
+                Label("\(state.tool.title) 설정", systemImage: state.tool.symbol)
+                    .font(.headline)
                 Divider()
-                if state.tool == .image {
-                    PhotosPicker("사진 보관함에서 추가", selection: $photo, matching: .images)
-                    Button("이미지 파일 가져오기", action: chooseImage)
-                    MacPDFPhotoGallery { image in state.insertImage(image) }
+                toolOptions
+                if state.tool == .text || state.selected?.kind == .text { textOptions }
+                if state.connectorEnabled || state.selected?.kind == .connector {
+                    DisclosureGroup("연결선 설정", isExpanded: $connectorSettingsExpanded) {
+                        connectorOptions.padding(.top, 8)
+                    }
                 }
-                Text("도구창 크기"); Slider(value: $state.toolbarScale, in: 0.7...1.5)
-                Toggle("필기 팔레트 항상 열기", isOn: $state.alwaysShowPalette)
-                Toggle("상세 팔레트 분리", isOn: $state.paletteDetached)
-                Text("상세 팔레트 너비"); Slider(value: $state.paletteSize.width, in: 280...600)
-                Text("상세 팔레트 높이"); Slider(value: $state.paletteSize.height, in: 220...650)
-                Button("현재 색상·두께·필압 설정 저장") { state.rememberSettings() }
-                Text("PDF 원본 내용은 배경으로 유지됩니다. iOS 편집 주석과 추가한 편집 객체를 선택·수정할 수 있습니다.").font(.caption).foregroundStyle(.secondary)
+                if !state.selection.isEmpty {
+                    DisclosureGroup("선택 객체") { selectedOptions.padding(.top, 8) }
+                }
+                Divider()
+                DisclosureGroup("도구창 설정") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        panelSlider("도구창 크기", value: $state.toolbarScale, in: 0.7...1.5, display: "\(Int(state.toolbarScale * 100))%")
+                        Toggle("세로 배치", isOn: $state.verticalToolbar)
+                        Toggle("위치 잠금", isOn: $state.paletteLocked)
+                        Toggle("필기 팔레트 항상 열기", isOn: $state.alwaysShowPalette)
+                        Toggle("상세 팔레트 분리", isOn: $state.paletteDetached)
+                        DisclosureGroup("팔레트 크기") {
+                            panelSlider("너비", value: Binding(get: { Double(state.paletteSize.width) }, set: { state.paletteSize.width = $0 }),
+                                        in: 280...600, display: "\(Int(state.paletteSize.width)) pt")
+                            panelSlider("높이", value: Binding(get: { Double(state.paletteSize.height) }, set: { state.paletteSize.height = $0 }),
+                                        in: 220...650, display: "\(Int(state.paletteSize.height)) pt")
+                        }
+                        Button("현재 색상·두께·필압 설정 저장") { state.rememberSettings() }
+                    }
+                    .padding(.top, 8)
+                }
+            }
+            .padding(1)
+            .onChange(of: state.selected?.kind) { _, kind in
+                if kind == .connector { connectorSettingsExpanded = true }
             }
         }
         .onDisappear { state.rememberSettings() }
     }
+
+    @ViewBuilder
+    private var toolOptions: some View {
+        switch state.tool {
+        case .view, .select, .lasso:
+            EmptyView()
+        case .image:
+            Button("이미지 파일 가져오기", systemImage: "folder", action: chooseImage)
+            PhotosPicker(selection: $photo, matching: .images) {
+                Label("사진 보관함에서 추가", systemImage: "photo.on.rectangle")
+            }
+            DisclosureGroup("최근 사진") {
+                MacPDFPhotoGallery { image in state.insertImage(image) }.padding(.top, 8)
+            }
+        case .eraser:
+            toolPreview
+            panelSlider("지우개 크기", value: $state.eraserSize, in: 6...100, display: "\(Int(state.eraserSize)) pt")
+        default:
+            toolPreview
+            if state.tool == .neon {
+                MacPDFNeonTypePicker(selection: Binding(get: { state.neonType }, set: { state.selectNeonType($0, keepsOptionsOpen: true) }))
+                    .frame(height: 23)
+                Button("네온 전체 삭제", systemImage: "eraser") { state.clearNeon() }
+            }
+            HStack(spacing: 14) {
+                ColorPicker(state.tool == .text ? "문자" : "선", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
+                ColorPicker("배경", selection: colorBinding(\.fill, field: "fill"), supportsOpacity: true)
+            }
+            if [.pen, .highlighter, .neon].contains(state.tool) { inkPalette }
+            if state.tool != .text {
+                panelSlider("두께", value: styleBinding(\.width, field: "width"), in: 0...48, display: String(format: "%.1f pt", state.style.width))
+            }
+            if [.pen, .highlighter, .neon].contains(state.tool) {
+                DisclosureGroup("필압·선 끝") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle("필압 사용 (지원 입력 장치)", isOn: styleBinding(\.pressure, field: "pressure"))
+                        panelSlider("필압 강도", value: styleBinding(\.pressureStrength, field: "pressureStrength"), in: 0...2,
+                                    display: String(format: "%.1f", state.style.pressureStrength))
+                            .disabled(!state.style.pressure)
+                        Toggle("선 끝 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap"))
+                    }.padding(.top, 8)
+                }
+            }
+            if state.tool == .shape {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 94))]) {
+                    ForEach(MacPDFShape.allCases) { shape in
+                        MacPDFActionButton(title: shape.title, identifier: "pdf.add.shape.\(shape.rawValue)") {
+                            state.shape = shape
+                            state.addVisibleObject(.shape, shape: shape)
+                        }
+                        .frame(height: 28)
+                        .background(state.shape == shape ? Color.accentColor.opacity(0.16) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
+                    }
+                }
+            }
+        }
+    }
+
+    private var inkPalette: some View {
+        HStack {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack {
+                    ForEach(Array(state.palette.enumerated()), id: \.offset) { index, color in
+                        Button { state.selectPalette(color) } label: {
+                            Circle().fill(Color(nsColor: color.color)).frame(width: 22, height: 22)
+                                .overlay(Circle().strokeBorder(state.style.stroke == color ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: state.style.stroke == color ? 2 : 1))
+                        }
+                        .buttonStyle(.plain)
+                        .help("선택한 색상을 다시 누르면 색상·두께 편집")
+                        .popover(isPresented: Binding(get: { state.editingPaletteIndex == index }, set: { if !$0 { state.editingPaletteIndex = nil } })) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Label("색상·두께 편집", systemImage: "paintpalette").font(.headline)
+                                Divider()
+                                toolPreview
+                                ColorPicker("색상", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
+                                panelSlider("두께", value: styleBinding(\.width, field: "width"),
+                                            in: state.tool == .highlighter ? 18...48 : 0.3...8,
+                                            display: String(format: "%.1f pt", state.style.width))
+                                DisclosureGroup(state.tool == .highlighter ? "선 끝" : "필압") {
+                                    if state.tool == .highlighter {
+                                        Toggle("끝모양 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap"))
+                                    } else {
+                                        Toggle("필압", isOn: styleBinding(\.pressure, field: "pressure"))
+                                        panelSlider("필압 강도", value: styleBinding(\.pressureStrength, field: "pressureStrength"),
+                                                    in: 0...2, display: String(format: "%.1f", state.style.pressureStrength))
+                                            .disabled(!state.style.pressure)
+                                    }
+                                }
+                            }
+                            .padding(14).frame(width: 260)
+                            .presentationBackground(Color(nsColor: .windowBackgroundColor))
+                        }
+                    }
+                }
+                .padding(1)
+            }
+            Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }
+                .help("현재 색상을 팔레트에 추가")
+        }
+    }
+
+    private var toolPreview: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor))
+            switch state.tool {
+            case .eraser:
+                Circle().strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                    .frame(width: min(40, state.eraserSize), height: min(40, state.eraserSize))
+            case .shape:
+                let shape = Path(MacPDFObjectRenderer.shapePath(state.shape, bounds: CGRect(x: 0, y: 0, width: 52, height: 30)))
+                shape.fill(Color(nsColor: state.style.fill.color))
+                    .overlay(shape.stroke(Color(nsColor: state.style.stroke.color), lineWidth: min(8, state.style.width)))
+                    .frame(width: 52, height: 30)
+            case .text:
+                MacPDFTextPreview(style: state.style)
+            case .neon:
+                neonPreview
+            default:
+                RoundedRectangle(cornerRadius: state.style.roundCap ? 20 : 0)
+                    .fill(Color(nsColor: state.style.stroke.color))
+                    .frame(height: min(22, max(1, state.style.width)))
+                    .padding(.horizontal, 36)
+            }
+        }
+        .frame(height: 54)
+        .accessibilityHidden(true)
+    }
+
+    private var neonPreview: some View {
+        let color = Color(nsColor: state.style.stroke.color)
+        return Canvas { context, size in
+            let width = min(12, max(1, state.style.width))
+            let left = size.width * 0.2
+            let right = size.width * 0.8
+            let center = size.height / 2
+            var path = Path()
+            switch state.neonType {
+            case .line:
+                path.move(to: CGPoint(x: left, y: center + 8))
+                path.addLine(to: CGPoint(x: right, y: center - 8))
+            case .box:
+                path.addRoundedRect(in: CGRect(x: left, y: 12, width: right - left, height: size.height - 24),
+                                    cornerSize: CGSize(width: 4, height: 4))
+            case .arrow:
+                path.move(to: CGPoint(x: left, y: center))
+                path.addLine(to: CGPoint(x: right, y: center))
+                path.move(to: CGPoint(x: right - 10, y: center - 7))
+                path.addLine(to: CGPoint(x: right, y: center))
+                path.addLine(to: CGPoint(x: right - 10, y: center + 7))
+            }
+            context.addFilter(.shadow(color: color, radius: 4))
+            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: width, lineCap: state.style.roundCap ? .round : .butt))
+        }
+    }
+
+    private func panelSlider(_ title: String, value: Binding<Double>, in range: ClosedRange<Double>, display: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title).fixedSize()
+            Slider(value: value, in: range).accessibilityLabel(title)
+            Text(display).monospacedDigit().foregroundStyle(.secondary).fixedSize()
+        }
+        .font(.caption)
+    }
+
     private var textOptions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ColorPicker("텍스트 박스 테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { var style = state.style; style.textBorder = MacPDFRGBA(NSColor($0)); if style.width == 0 { style.width = 0.5 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true)
-            MacPDFTextBoxControls(state: state)
             Picker("글꼴", selection: styleBinding(\.fontName, field: "fontName")) { ForEach(NSFontManager.shared.availableFonts.sorted(), id: \.self) { Text($0).tag($0) } }
             Stepper("글자 크기 \(Int(state.style.fontSize))", value: styleBinding(\.fontSize, field: "fontSize"), in: 6...144)
             HStack { Toggle("굵게", isOn: styleBinding(\.bold, field: "bold")); Toggle("기울임", isOn: styleBinding(\.italic, field: "italic")) }
             HStack { Toggle("밑줄", isOn: styleBinding(\.underline, field: "underline")); Toggle("취소선", isOn: styleBinding(\.strike, field: "strike")) }
             Picker("정렬", selection: styleBinding(\.alignment, field: "alignment")) { Text("왼쪽").tag(0); Text("오른쪽").tag(1); Text("중앙").tag(2) }
+            MacPDFActionButton(title: "텍스트 박스 추가", identifier: "pdf.add.text") { state.addVisibleObject(.text) }
+                .frame(height: 30)
+            DisclosureGroup("텍스트 박스 테두리") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ColorPicker("색상", selection: Binding(
+                        get: { Color(nsColor: state.style.textBorder?.color ?? .clear) },
+                        set: {
+                            var style = state.style
+                            style.textBorder = MacPDFRGBA(NSColor($0))
+                            if style.width == 0 { style.width = 0.5 }
+                            state.setStyle(style, field: "textBorder")
+                        }
+                    ), supportsOpacity: true)
+                    MacPDFTextBoxControls(state: state)
+                }.padding(.top, 8)
+            }
             if state.selected?.kind == .text {
                 TextField("연결 URL", text: Binding(get: { state.selected?.link ?? "" }, set: { value in state.updateSelected { $0.link = value.isEmpty ? nil : value } }))
                 Button("문구 편집") { if let object = state.selected { state.canvas?.beginTextEditing(object) } }
@@ -272,17 +444,45 @@ struct MacPDFEditorView: View {
     }
     private var connectorOptions: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("연결선", selection: connectionStyleBinding(\.connectorRoute, field: "connectorRoute")) { Text("직선").tag("straight"); Text("꺾인선").tag("elbow"); Text("곡선").tag("curve") }
-            Toggle("화살표", isOn: connectionStyleBinding(\.arrow, field: "arrow")); Toggle("점선", isOn: connectionStyleBinding(\.dashed, field: "dashed"))
-            ColorPicker("연결선 색상", selection: Binding(get: { Color(nsColor: state.connectionStyle.stroke.color) }, set: { value in var next = state.connectionStyle; next.stroke = .init(NSColor(value)); state.setConnectionStyle(next, field: "stroke") }), supportsOpacity: true)
-            Slider(value: connectionStyleBinding(\.width, field: "width"), in: 0.5...12) { Text("연결선 두께") }
+            Canvas { context, size in
+                context.withCGContext { graphics in
+                    let style = state.connectionStyle
+                    graphics.setStrokeColor(style.stroke.color.cgColor)
+                    graphics.setFillColor(style.stroke.color.cgColor)
+                    graphics.setLineWidth(style.width)
+                    MacPDFObjectRenderer.drawConnection(
+                        from: CGPoint(x: 24, y: size.height * 0.25),
+                        to: CGPoint(x: size.width - 24, y: size.height * 0.75),
+                        style: style, context: graphics
+                    )
+                }
+            }
+            .frame(height: 48)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityHidden(true)
+            Picker("연결선", selection: connectionStyleBinding(\.connectorRoute, field: "connectorRoute")) {
+                Text("직선").tag("straight"); Text("꺾인선").tag("elbow"); Text("곡선").tag("curve")
+            }
+            .pickerStyle(.segmented)
+            HStack {
+                Toggle("화살표", isOn: connectionStyleBinding(\.arrow, field: "arrow"))
+                Toggle("점선", isOn: connectionStyleBinding(\.dashed, field: "dashed"))
+                Spacer()
+                ColorPicker("색상", selection: Binding(get: { Color(nsColor: state.connectionStyle.stroke.color) }, set: { value in var next = state.connectionStyle; next.stroke = .init(NSColor(value)); state.setConnectionStyle(next, field: "stroke") }), supportsOpacity: true)
+            }
+            panelSlider("두께", value: connectionStyleBinding(\.width, field: "width"), in: 0.5...12,
+                        display: String(format: "%.1f pt", state.connectionStyle.width))
             Text("연결점을 켠 뒤 아이템을 선택하세요. 상하좌우 화살표를 다른 아이템으로 드래그하고, 대상이 강조되면 놓아 연결합니다. 다른 도구를 선택해도 연결점은 켜진 상태로 유지됩니다.").font(.caption)
             if state.selected?.kind == .connector {
+                DisclosureGroup("연결점과 경로") {
+                    VStack(alignment: .leading, spacing: 6) {
                 Text("선 중간의 원형 점을 드래그하면 양 끝 연결을 유지하면서 경로를 조정합니다.").font(.caption)
                 Button("중간 경로 초기화") { state.updateSelected { $0.connectorOffset = nil } }
                 Picker("시작 연결점", selection: Binding(get: { state.selected.map { anchorIndex($0.sourceAnchor) } ?? 0 }, set: { index in state.updateSelected { $0.sourceAnchor = anchor(index) } })) { anchorLabels }
                 Picker("끝 연결점", selection: Binding(get: { state.selected.map { anchorIndex($0.targetAnchor) } ?? 1 }, set: { index in state.updateSelected { $0.targetAnchor = anchor(index) } })) { anchorLabels }
-                Button("연결 해제", role: .destructive) { state.deleteSelected() }
+                        Button("연결 해제", role: .destructive) { state.deleteSelected() }
+                    }.padding(.top, 8)
+                }
             }
         }
     }
@@ -338,7 +538,8 @@ struct MacPDFEditorView: View {
             HStack { Image(systemName: "arrow.up.and.down.and.arrow.left.and.right"); Text("상세 팔레트").font(.headline); Spacer(); Button { state.paletteDetached = false; state.alwaysShowPalette = false; state.rememberSettings() } label: { Image(systemName: "xmark") } }
                 .contentShape(Rectangle()).gesture(DragGesture().updating($paletteDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in if !state.paletteLocked { state.paletteOffset.width += value.translation.width; state.paletteOffset.height += value.translation.height; state.rememberSettings() } })
             options
-        }.padding(12).frame(width: width, height: height, alignment: .top).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
+        }.padding(12).frame(width: width, height: height, alignment: .top)
+            .background(MacPDFPanelSurface(radius: 12)).shadow(radius: 4).offset(offset).padding(10)
     }
     private func chooseImage() { chooseImage(replacing: false) }
     private func styleBinding<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
@@ -397,29 +598,84 @@ private struct MacPDFCompactOptions<Content: View>: View {
 
 struct MacPDFPagesView: View {
     @ObservedObject var state: MacPDFEditorState
+
     var body: some View {
-        VStack {
-            Toggle("즐겨찾기만", isOn: $state.favoritesOnly).padding(8)
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    ForEach((0..<state.pageCount).filter { !state.favoritesOnly || state.favorites.contains($0) }, id: \.self) { index in
-                        VStack(spacing: 5) {
-                            if let page = state.document.page(at: index) {
-                                MacPDFThumbnail(page: page)
-                                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(state.currentPage == index ? Color.accentColor : .clear, lineWidth: 2))
-                                    .onTapGesture { state.goToPage(index) }
-                            }
-                            HStack {
-                                Button { state.goToPage(index); state.toggleFavorite() } label: { Image(systemName: state.favorites.contains(index) ? "star.fill" : "star") }
-                                Text("\(index + 1)")
-                                Button { state.movePage(from: index, to: index - 1) } label: { Image(systemName: "arrow.up") }.disabled(index == 0)
-                                Button { state.movePage(from: index, to: index + 1) } label: { Image(systemName: "arrow.down") }.disabled(index == state.pageCount - 1)
-                            }.buttonStyle(.borderless)
-                        }.padding(.horizontal, 10)
+        VStack(alignment: .leading, spacing: 8) {
+            Label("페이지 목록", systemImage: "sidebar.left")
+                .font(.headline)
+            Picker("페이지 목록", selection: $state.favoritesOnly) {
+                Text("전체").tag(false)
+                Text("즐겨찾기").tag(true)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            if state.favoritesOnly && state.favorites.isEmpty {
+                Text("즐겨찾기 페이지가 없습니다.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach((0..<state.pageCount).filter { !state.favoritesOnly || state.favorites.contains($0) }, id: \.self) { index in
+                            if let page = state.document.page(at: index) { row(page, index: index) }
+                        }
                     }
                 }
             }
+            Divider()
+            Text("\(state.currentPage + 1)페이지 선택")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("위로", systemImage: "arrow.up") { state.movePage(from: state.currentPage, to: state.currentPage - 1) }
+                    .disabled(state.currentPage <= 0 || !visibleCurrentPage)
+                Button("아래로", systemImage: "arrow.down") { state.movePage(from: state.currentPage, to: state.currentPage + 1) }
+                    .disabled(state.currentPage >= state.pageCount - 1 || !visibleCurrentPage)
+            }
+            .buttonStyle(.bordered)
         }
+        .padding(10)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var visibleCurrentPage: Bool {
+        !state.favoritesOnly || state.favorites.contains(state.currentPage)
+    }
+
+    private func row(_ page: PDFPage, index: Int) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                state.goToPage(index)
+            } label: {
+                HStack(spacing: 8) {
+                    MacPDFThumbnail(page: page)
+                        .id(ObjectIdentifier(page))
+                        .frame(width: 40, height: 52)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("\(index + 1)페이지").font(.caption)
+                        if state.currentPage == index {
+                            Text("현재").font(.caption2).foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button {
+                state.goToPage(index)
+                state.toggleFavorite()
+            } label: {
+                Image(systemName: state.favorites.contains(index) ? "star.fill" : "star")
+                    .foregroundStyle(state.favorites.contains(index) ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(state.favorites.contains(index) ? "즐겨찾기 해제" : "즐겨찾기 추가")
+        }
+        .padding(5)
+        .background(state.currentPage == index ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -453,14 +709,25 @@ struct MacPDFCropView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.frame(height: 280)
             }
-            Text("왼쪽 \(Int(x * 100))% · 위 \(Int(y * 100))%")
-            Slider(value: $x, in: 0...0.95); Slider(value: $y, in: 0...0.95)
-            Text("너비 \(Int(width * 100))% · 높이 \(Int(height * 100))%")
-            Slider(value: $width, in: 0.05...1); Slider(value: $height, in: 0.05...1)
+            cropSlider("너비", value: $width, in: 0.05...1)
+            cropSlider("높이", value: $height, in: 0.05...1)
+            DisclosureGroup("자르기 위치") {
+                cropSlider("왼쪽", value: $x, in: 0...0.95)
+                cropSlider("위", value: $y, in: 0...0.95)
+            }
             Toggle("원본 이미지 보관", isOn: $keepOriginal)
             HStack { Button("취소") { dismiss() }; Spacer(); Button("자르기 적용") { crop(); dismiss() }.keyboardShortcut(.defaultAction) }
-        }.padding(20)
+        }.padding(20).background(Color(nsColor: .windowBackgroundColor))
     }
+
+    private func cropSlider(_ label: String, value: Binding<Double>, in range: ClosedRange<Double>) -> some View {
+        HStack {
+            Text(label).frame(width: 36, alignment: .leading)
+            Slider(value: value, in: range).accessibilityLabel(label)
+            Text("\(Int(value.wrappedValue * 100))%").monospacedDigit().frame(width: 42, alignment: .trailing)
+        }
+    }
+
     private func crop() {
         guard let data = state.selected?.imageData, let image = NSImage(data: data), let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         let rect = CGRect(x: Double(cg.width) * x, y: Double(cg.height) * y, width: Double(cg.width) * min(width, 1 - x), height: Double(cg.height) * min(height, 1 - y)).integral
