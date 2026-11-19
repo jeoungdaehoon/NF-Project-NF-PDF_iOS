@@ -18,7 +18,8 @@ final class MacPDFDrawingOverlay: NSView {
             context.saveGState()
             context.concatenate(CGAffineTransform(a: x.x - origin.x, b: x.y - origin.y, c: y.x - origin.x, d: y.y - origin.y, tx: origin.x, ty: origin.y))
             context.clip(to: page.bounds(for: .cropBox))
-            for object in editor.pageObjects(index) where object.id != canvas.editingObjectID { MacPDFObjectRenderer.draw(object, objects: editor.objects, context: context) }
+            let objects = canvas.renderingObjects
+            for object in objects where object.page == index && object.id != canvas.editingObjectID { MacPDFObjectRenderer.draw(object, objects: objects, context: context) }
             if let draft = canvas.drawingDraft, draft.page == index { MacPDFObjectRenderer.draw(draft, objects: editor.objects, context: context) }
             context.restoreGState()
         }

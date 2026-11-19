@@ -266,7 +266,7 @@ import SwiftUI
             return bitmap.colorAt(x: Int(point.x * sx), y: Int((view.isFlipped ? point.y : view.bounds.height - point.y) * sy))?.usingColorSpace(.deviceRGB)
         }
         let paintedHandle = overlayColor(at: view.connectionHandles[0].center)
-        try check(paintedHandle != nil && paintedHandle!.blueComponent > paintedHandle!.redComponent + 0.1, "connector arrows are visibly painted, not only hit-test regions")
+        try check(paintedHandle != nil && paintedHandle!.alphaComponent > 0.25 && abs(paintedHandle!.blueComponent - paintedHandle!.redComponent) < 0.04, "neutral gray connector triangles are visibly painted, not only hit-test regions")
         gesture([view.convert(CGPoint(x: target.bounds.midX, y: target.bounds.midY), from: page)])
         try check(!state.objects.contains { $0.kind == .connector }, "clicking two objects no longer creates a connection")
         gesture([view.convert(CGPoint(x: source.bounds.midX, y: source.bounds.midY), from: page)])
@@ -348,7 +348,7 @@ import SwiftUI
         let bendViewPoint = view.convert(bendPoint, from: page)
         dispatch(.leftMouseDown, view.connectorRouteHandle!)
         dispatch(.leftMouseDragged, bendViewPoint)
-        try check(state.undoCount == beforeBendUndo && state.selected?.connectorOffset != nil, "middle grip previews route change without adding undo entries during drag")
+        try check(state.undoCount == beforeBendUndo && state.objects == beforeBendObjects && view.renderingObjects.first { $0.id == beforeBend.id }?.connectorOffset != nil, "middle grip previews its route without publishing intermediate document edits")
         dispatch(.leftMouseUp, bendViewPoint)
         let bent = state.selected!
         try check(abs(bent.connectorOffset!.x - 35) < 0.5 && abs(bent.connectorOffset!.y - 45) < 0.5 && state.undoCount == beforeBendUndo + 1, "middle grip moves route in both axes as one undo operation")
@@ -369,7 +369,7 @@ import SwiftUI
         let beforeCancelRoute = state.selected!, beforeCancelUndo = state.undoCount
         dispatch(.leftMouseDown, view.connectorRouteHandle!)
         dispatch(.leftMouseDragged, view.convert(CGPoint(x: bendPoint.x + 40, y: bendPoint.y + 40), from: page))
-        try check(state.selected != beforeCancelRoute && state.undoCount == beforeCancelUndo, "route drag is active before Escape cancellation")
+        try check(view.renderingObjects.first { $0.id == beforeCancelRoute.id } != beforeCancelRoute && state.selected == beforeCancelRoute && state.undoCount == beforeCancelUndo, "route drag preview is active while the committed document remains unchanged before Escape")
         let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: Date.timeIntervalSinceReferenceDate, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
         // This off-screen, prohibited-activation fixture has no key window for
         // NSApplication keyboard routing. Dispatch through its actual NSWindow.

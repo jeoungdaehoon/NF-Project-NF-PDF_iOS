@@ -177,7 +177,9 @@ struct MacPDFEditorView: View {
             }
         }
         .padding(8).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1)).shadow(color: .black.opacity(0.12), radius: 8, y: 4)
-        .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) { options.frame(width: 350).padding(16) }
+        .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) {
+            options.frame(width: 300).padding(12).presentationBackground(Color(nsColor: .windowBackgroundColor).opacity(0.82))
+        }
     }
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
                 handle.frame(width: 32, height: 30)
@@ -193,8 +195,8 @@ struct MacPDFEditorView: View {
         }
     }
     private var options: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+        MacPDFCompactOptions {
+            VStack(alignment: .leading, spacing: 10) {
                 Text("\(state.tool.title) 설정").font(.headline)
                 if ![.view, .select, .image, .eraser, .lasso].contains(state.tool) {
                 HStack {
@@ -250,12 +252,12 @@ struct MacPDFEditorView: View {
                 Button("현재 색상·두께·필압 설정 저장") { state.rememberSettings() }
                 Text("PDF 원본 내용은 배경으로 유지됩니다. iOS 편집 주석과 추가한 편집 객체를 선택·수정할 수 있습니다.").font(.caption).foregroundStyle(.secondary)
             }
-        }.frame(maxHeight: 500)
+        }
         .onDisappear { state.rememberSettings() }
     }
     private var textOptions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ColorPicker("텍스트 박스 테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { var style = state.style; style.textBorder = MacPDFRGBA(NSColor($0)); if style.width == 0 { style.width = 1 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true)
+            ColorPicker("텍스트 박스 테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { var style = state.style; style.textBorder = MacPDFRGBA(NSColor($0)); if style.width == 0 { style.width = 0.5 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true)
             MacPDFTextBoxControls(state: state)
             Picker("글꼴", selection: styleBinding(\.fontName, field: "fontName")) { ForEach(NSFontManager.shared.availableFonts.sorted(), id: \.self) { Text($0).tag($0) } }
             Stepper("글자 크기 \(Int(state.style.fontSize))", value: styleBinding(\.fontSize, field: "fontSize"), in: 6...144)
@@ -336,7 +338,7 @@ struct MacPDFEditorView: View {
             HStack { Image(systemName: "arrow.up.and.down.and.arrow.left.and.right"); Text("상세 팔레트").font(.headline); Spacer(); Button { state.paletteDetached = false; state.alwaysShowPalette = false; state.rememberSettings() } label: { Image(systemName: "xmark") } }
                 .contentShape(Rectangle()).gesture(DragGesture().updating($paletteDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in if !state.paletteLocked { state.paletteOffset.width += value.translation.width; state.paletteOffset.height += value.translation.height; state.rememberSettings() } })
             options
-        }.padding(12).frame(width: width, height: height).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
+        }.padding(12).frame(width: width, height: height, alignment: .top).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 4).offset(offset).padding(10)
     }
     private func chooseImage() { chooseImage(replacing: false) }
     private func styleBinding<T>(_ key: WritableKeyPath<MacPDFStyle, T>, field: String) -> Binding<T> {
@@ -371,6 +373,25 @@ struct MacPDFEditorView: View {
                 else { state.insertImage(image) }
             }
         }
+    }
+}
+
+private struct MacPDFOptionsHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// Short palettes hug their contents; longer palettes remain fully scrollable.
+private struct MacPDFCompactOptions<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    @State private var contentHeight: CGFloat = 360
+    var body: some View {
+        ScrollView {
+            content().fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in Color.clear.preference(key: MacPDFOptionsHeight.self, value: geometry.size.height) })
+        }
+        .frame(height: min(360, max(1, contentHeight)))
+        .onPreferenceChange(MacPDFOptionsHeight.self) { if $0 > 0 { contentHeight = $0 } }
     }
 }
 

@@ -12,7 +12,7 @@ enum MacPDFImageAction: String, CaseIterable {
 }
 
 enum MacPDFMenuLayout {
-    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 78) -> CGRect {
+    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 54) -> CGRect {
         let width = max(1, min(preferredWidth, viewport.width - 16)), h = max(1, min(height, viewport.height - 16))
         let above = object.minY - h - 16, proposedY = above >= 8 ? above : object.maxY + 16
         return CGRect(x: min(max(8, object.midX - width / 2), max(8, viewport.width - width - 8)), y: min(max(8, proposedY), max(8, viewport.height - h - 8)), width: width, height: h)
@@ -27,7 +27,7 @@ struct MacPDFObjectMenu: View {
         let image = state.selection.count == 1 && state.selected?.kind == .image
         // Keep the bubble clear of the four drag-to-connect handles.
         let menuAnchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
-        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize, preferredWidth: image ? 560 : 390)
+        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize, preferredWidth: image ? 600 : 414)
         let viewport = CGRect(origin: .zero, size: canvasSize)
         Group {
             if state.selectionViewRect.intersects(viewport) {
@@ -49,12 +49,12 @@ struct MacPDFObjectMenu: View {
                             item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
                         }
                         item("닫기", "xmark", id: "close") { state.menuVisible = false }
-                    }.padding(8)
+                    }.padding(.horizontal, 8).padding(.vertical, 5)
                 }
                 .frame(width: rect.width, height: rect.height)
-                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                .background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: rect.minY > state.selectionViewRect.maxY ? .top : .bottom) {
-                    MenuTail().fill(Color(nsColor: .controlBackgroundColor)).frame(width: 14, height: 8)
+                    MenuTail().fill(Color(nsColor: .windowBackgroundColor).opacity(0.82)).frame(width: 14, height: 8)
                         .rotationEffect(.degrees(rect.minY > state.selectionViewRect.maxY ? 180 : 0)).offset(y: rect.minY > state.selectionViewRect.maxY ? -7 : 7).allowsHitTesting(false)
                 }
                 .shadow(radius: 5).position(x: rect.midX, y: rect.midY)
@@ -64,7 +64,7 @@ struct MacPDFObjectMenu: View {
             .animation(.easeOut(duration: 0.16), value: state.menuVisible)
     }
     private func item(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
-        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", action: action).frame(width: 50, height: 48)
+        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", action: action).frame(width: 50, height: 44)
     }
 }
 
@@ -88,19 +88,22 @@ struct MacPDFTextAssistant: View {
                 format("U", \MacPDFStyle.underline, "underline"); format("S", \MacPDFStyle.strike, "strike")
                 ColorPicker("문자", selection: color(\.stroke, "stroke"), supportsOpacity: true).fixedSize()
                 ColorPicker("배경", selection: color(\.fill, "fill"), supportsOpacity: true).fixedSize()
-                ColorPicker("테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { value in var style = state.style; style.textBorder = .init(NSColor(value)); style.width = max(1, style.width); state.setStyle(style, field: "textBorder") }), supportsOpacity: true).fixedSize()
+                ColorPicker("테두리", selection: Binding(get: { Color(nsColor: state.style.textBorder?.color ?? .clear) }, set: { value in var style = state.style; style.textBorder = .init(NSColor(value)); if style.width == 0 { style.width = 0.5 }; state.setStyle(style, field: "textBorder") }), supportsOpacity: true).fixedSize()
                 MacPDFActionButton(title: "테두리 설정", identifier: "pdf.text.box") { boxOptionsVisible.toggle() }.frame(width: 80, height: 28)
                 Menu("정렬") { Button("왼쪽") { set(\.alignment, 0, "alignment") }; Button("가운데") { set(\.alignment, 2, "alignment") }; Button("오른쪽") { set(\.alignment, 1, "alignment") } }
                 Button { state.canvas?.toggleTextLink() } label: { Image(systemName: "link") }.help("선택 URL 링크 적용·해제")
                 MacPDFActionButton(title: "완료", identifier: "pdf.text.done") { state.canvas?.finishTextEditing(); state.menuVisible = true }.frame(width: 42, height: 28)
             }.buttonStyle(.borderless).padding(10)
-        }.frame(height: 48).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
+        }.frame(height: 48).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 3)
             .overlay(alignment: .topTrailing) {
                 if boxOptionsVisible {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack { Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") { boxOptionsVisible = false }.frame(width: 42, height: 24) }
+                        HStack { Spacer(); MacPDFActionButton(title: "닫기", identifier: "pdf.text.box.close") {
+                            boxOptionsVisible = false
+                            DispatchQueue.main.async { if let input = state.canvas?.activeTextView { input.window?.makeFirstResponder(input) } }
+                        }.frame(width: 42, height: 24) }
                         MacPDFTextBoxControls(state: state)
-                    }.padding(16).frame(width: 260).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
+                    }.padding(12).frame(width: 260).background(Color(nsColor: .windowBackgroundColor).opacity(0.82), in: RoundedRectangle(cornerRadius: 12)).shadow(radius: 5).offset(y: 56)
                 }
             }
     }

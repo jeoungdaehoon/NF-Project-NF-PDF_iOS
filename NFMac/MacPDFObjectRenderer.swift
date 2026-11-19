@@ -3,6 +3,21 @@ import CoreText
 import PDFKit
 
 enum MacPDFObjectRenderer {
+    private final class ImageEntry {
+        let data: Data, image: CGImage
+        init(data: Data, image: CGImage) { self.data = data; self.image = image }
+    }
+    private static let imageCache: NSCache<NSUUID, ImageEntry> = {
+        let cache = NSCache<NSUUID, ImageEntry>(); cache.totalCostLimit = 32 * 1024 * 1024; return cache
+    }()
+    private static func image(for object: MacPDFObject) -> CGImage? {
+        guard let data = object.imageData else { return nil }
+        let key = object.id as NSUUID
+        if let cached = imageCache.object(forKey: key), cached.data == data { return cached.image }
+        guard let image = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        imageCache.setObject(ImageEntry(data: data, image: image), forKey: key, cost: image.bytesPerRow * image.height)
+        return image
+    }
     static func corners(_ object: MacPDFObject) -> [CGPoint] {
         [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 0), CGPoint(x: 1, y: 1), CGPoint(x: 0, y: 1)].map { anchor(object, MacPDFPoint($0)) }
     }
@@ -193,7 +208,7 @@ enum MacPDFObjectRenderer {
             let frame = CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(attributed), CFRange(location: 0, length: 0), CGPath(rect: MacPDFTextLayout.contentRect(object.bounds, style: style), transform: nil), nil)
             context.textMatrix = .identity; CTFrameDraw(frame, context)
         case .image:
-            guard let data = object.imageData, let image = NSImage(data: data), let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+            guard let cgImage = image(for: object) else { return }
             if object.flipped { context.translateBy(x: object.bounds.midX * 2, y: 0); context.scaleBy(x: -1, y: 1) }
             var imageBounds = object.bounds
             if object.attachmentName != nil { imageBounds.origin.y += 24; imageBounds.size.height -= 24 }

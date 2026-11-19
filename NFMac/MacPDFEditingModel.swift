@@ -80,6 +80,14 @@ struct MacPDFPoint: Codable, Equatable {
 
 struct MacPDFStyle: Codable, Equatable {
     static var connectorDefault: Self { var style = Self(); style.width = 1.5; style.roundCap = false; return style }
+    static var shapeDefault: Self {
+        var style = Self(); style.stroke = .init(NSColor(white: 0.5, alpha: 1)); style.fill = .init(NSColor(white: 0.5, alpha: 0.08)); style.width = 0.75
+        return style
+    }
+    static var textDefault: Self {
+        var style = Self(); style.stroke = .init(.darkGray); style.textBorder = .init(NSColor(white: 0.5, alpha: 1)); style.width = 0.5; style.dashed = true
+        return style
+    }
     var stroke = MacPDFRGBA(.systemBlue)
     var fill = MacPDFRGBA(.clear)
     var width: Double = 2.4
@@ -112,7 +120,7 @@ struct MacPDFStyle: Codable, Equatable {
         case "dashed": dashed = other.dashed
         case "arrow": arrow = other.arrow
         case "connectorRoute": connectorRoute = other.connectorRoute
-        case "textBorder": textBorder = other.textBorder; width = max(1, width)
+        case "textBorder": textBorder = other.textBorder; if width == 0 { width = 0.5 }
         case "textCornerRadius": textCornerRadius = other.textCornerRadius
         default: break
         }
@@ -240,6 +248,14 @@ final class MacPDFEditorState: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.palette"), let saved = try? JSONDecoder().decode([MacPDFRGBA].self, from: data), !saved.isEmpty { palette = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.paletteOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { paletteOptions = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.toolOptions"), let saved = try? JSONDecoder().decode([String: MacPDFStyle].self, from: data) { toolOptions = saved }
+        // Older builds persisted the generic blue pen style as an untouched
+        // shape/text default. Upgrade that exact default, preserving custom styles.
+        for key in [MacPDFTool.shape.rawValue, MacPDFTool.text.rawValue] {
+            if let saved = toolOptions[key], saved.textBorder == nil || saved.textBorder?.a == 0 {
+                var baseline = saved; baseline.textBorder = nil
+                if baseline == MacPDFStyle() { toolOptions[key] = key == MacPDFTool.shape.rawValue ? .shapeDefault : .textDefault }
+            }
+        }
         connectionStyle = toolOptions[MacPDFTool.connector.rawValue] ?? .connectorDefault
         // Upgrade the previous generic pen-width default, not existing PDF objects.
         if connectionStyle.width == MacPDFStyle().width { connectionStyle.width = MacPDFStyle.connectorDefault.width }
@@ -582,6 +598,8 @@ final class MacPDFEditorState: ObservableObject {
         canvas?.finishTextEditing(); canvas?.cancelGesture(); selection = []; menuVisible = false; editingPaletteIndex = nil
         rememberSettings(); tool = next
         if let saved = toolOptions[next.rawValue] { style = saved }
+        else if next == .shape { style = .shapeDefault }
+        else if next == .text { style = .textDefault }
         else if next == .highlighter { style.width = 18; style.pressure = false }
         optionsTool = [.shape, .text, .image, .connector].contains(next) || alwaysShowPalette ? next : nil
         canvas?.refreshAnnotations()
