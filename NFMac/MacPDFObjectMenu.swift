@@ -23,48 +23,80 @@ struct MacPDFObjectMenu: View {
     @ObservedObject var state: MacPDFEditorState
     let canvasSize: CGSize
     let onImageAction: (MacPDFImageAction) -> Void
+    @State private var showsMore = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         let image = state.selection.count == 1 && state.selected?.kind == .image
-        let menuAnchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
-        let rect = MacPDFMenuLayout.frame(object: menuAnchor, viewport: canvasSize,
-                                         preferredWidth: 250, height: image ? 390 : 280)
-        let viewport = CGRect(origin: .zero, size: canvasSize)
+        let anchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
+        let rect = MacPDFMenuLayout.frame(object: anchor, viewport: canvasSize, preferredWidth: 260)
+        let below = rect.minY >= anchor.maxY
+        let above = rect.maxY <= anchor.minY
+        let pointerX = min(max(state.selectionViewRect.midX - rect.minX, 12), max(rect.width - 12, 12))
         Group {
-            if state.selectionViewRect.intersects(viewport) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
+            if state.selectionViewRect.intersects(CGRect(origin: .zero, size: canvasSize)) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
                         if image {
-                            imageActions("이미지", [.replace, .crop, .rotate, .flip, .resetSize])
-                            imageActions("편집", [.edit, .systemEdit])
-                            imageActions("쌓는 순서", [.front, .back])
-                        } else {
-                            if state.selection.count == 1 {
-                                item("편집", "pencil", id: "edit") {
-                                    if let object = state.selected, object.kind == .text { state.canvas?.beginTextEditing(object) }
-                                    else { state.optionsTool = state.tool; state.menuVisible = false }
-                                }
+                            bubble("교체", MacPDFImageAction.replace.symbol, id: "replace") { onImageAction(.replace) }
+                            bubble("자르기", MacPDFImageAction.crop.symbol, id: "crop") { onImageAction(.crop) }
+                        } else if state.selection.count == 1 {
+                            bubble("편집", "pencil", id: "edit") {
+                                if let object = state.selected, object.kind == .text { state.canvas?.beginTextEditing(object) }
+                                else { state.optionsTool = state.tool; state.menuVisible = false }
                             }
-                            item("복사", "doc.on.doc", id: "copy") { state.copySelected() }
-                            item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected(); state.menuVisible = true }
-                            section("쌓는 순서")
-                            item("최상단", "square.3.layers.3d.top.filled", id: "front") { state.reorderSelected(front: true) }
-                            item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
-                            Divider()
-                            item("삭제", "trash", id: "delete") { state.deleteSelected() }
                         }
-                        item("닫기", "xmark", id: "close") { state.menuVisible = false }
+                        bubble("복사", "doc.on.doc", id: "copy") { state.copySelected() }
+                        if !image {
+                            bubble("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected(); state.menuVisible = true }
+                        }
+                        bubble("삭제", "trash", id: "delete") { state.deleteSelected() }
+                        bubble("더보기", "ellipsis", id: "more") { showsMore.toggle() }
+                            .popover(isPresented: $showsMore) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if image {
+                                        imageActions("이미지", [.rotate, .flip, .resetSize])
+                                        imageActions("편집", [.edit, .systemEdit])
+                                        item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected() }
+                                    }
+                                    section("쌓는 순서")
+                                    item("최상단", "square.3.layers.3d.top.filled", id: "front") { state.reorderSelected(front: true) }
+                                    item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
+                                    Divider()
+                                    item("닫기", "xmark", id: "close") { state.menuVisible = false }
+                                }
+                                .padding(8)
+                                .frame(width: 186)
+                                .background(MacPDFPanelSurface(radius: 9))
+                            }
                     }
-                    .padding(8)
+                    .padding(.horizontal, 5)
                 }
                 .frame(width: rect.width, height: rect.height)
-                .background(MacPDFPanelSurface(radius: 10))
+                .background(MacPDFPanelSurface(radius: 9))
+                .overlay(alignment: below ? .topLeading : .bottomLeading) {
+                    if below || above {
+                        ObjectMenuPointer(pointsUp: below)
+                            .fill(Color(nsColor: .windowBackgroundColor))
+                            .overlay { ObjectMenuPointer(pointsUp: below).stroke(Color(nsColor: .separatorColor), lineWidth: 1) }
+                            .frame(width: 12, height: 7)
+                            .offset(x: pointerX - 6, y: below ? -6 : 6)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .shadow(radius: 5)
                 .position(x: rect.midX, y: rect.midY)
-                .transition(.scale(scale: 0.85).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.94).combined(with: .opacity))
             }
         }
         .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
-        .animation(.easeOut(duration: 0.16), value: state.menuVisible)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: state.menuVisible)
+        .onChange(of: state.selection) { _, _ in showsMore = false }
+    }
+
+    private func bubble(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
+        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", action: action)
+            .frame(width: 48, height: 46)
     }
 
     private func section(_ title: String) -> some View {
@@ -85,9 +117,25 @@ struct MacPDFObjectMenu: View {
     }
 
     private func item(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
-        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", inline: true, action: action)
+        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", inline: true) {
+            showsMore = false
+            action()
+        }
             .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
             .padding(.horizontal, 6)
+    }
+}
+
+private struct ObjectMenuPointer: Shape {
+    let pointsUp: Bool
+    func path(in rect: CGRect) -> Path {
+        let base = pointsUp ? rect.maxY : rect.minY
+        let tip = pointsUp ? rect.minY : rect.maxY
+        return Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: base))
+            path.addLine(to: CGPoint(x: rect.midX, y: tip))
+            path.addLine(to: CGPoint(x: rect.maxX, y: base))
+        }
     }
 }
 

@@ -416,6 +416,7 @@ struct PortalPDFImageEditCommand: Equatable {
         case rotateClockwise
         case flipHorizontal
         case openCropEditor
+        case openMarkupEditor
         case openSystemEditor
         case bringToFront
         case sendToBack

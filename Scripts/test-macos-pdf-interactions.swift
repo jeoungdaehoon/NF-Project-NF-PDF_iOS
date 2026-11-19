@@ -186,8 +186,8 @@ import SwiftUI
         try press("pdf.object.duplicate"); try check(state.objects.filter { $0.kind == .shape }.count == 2, "bubble duplicate action creates a shape copy")
         try press("pdf.object.delete"); try check(state.objects.filter { $0.kind == .shape }.count == 1, "bubble delete preserves original")
         try press("pdf.tool.text"); try press("pdf.add.text")
-        try check(state.selected?.kind == .text && !state.isTextEditing && state.menuVisible, "text add selects without entering input")
-        try press("pdf.object.edit"); try check(state.isTextEditing && window.firstResponder is NSTextView, "bubble edit activates native text editor")
+        try check(state.selected?.kind == .text && state.isTextEditing && !state.menuVisible, "text add opens the inline text editor")
+        try check(window.firstResponder is NSTextView, "inline editing focuses the native text editor")
         guard let text = view.activeTextView else { throw CocoaError(.fileReadUnknown) }
         text.string = "한글 ABC"; text.setSelectedRange(NSRange(location: 0, length: 2))
         let before = text.attributedString().attribute(.foregroundColor, at: 4, effectiveRange: nil) as? NSColor
@@ -215,9 +215,9 @@ import SwiftUI
         try check(placement.1.contains(CGPoint(x: inserted.bounds.midX, y: inserted.bounds.midY)), "image inserted within actual visible PDF region")
         try check(abs(inserted.bounds.midY - page.bounds(for: .mediaBox).midY) > 100, "image is not forced to full-page center")
         let imageBounds = inserted.bounds
-        try press("pdf.object.rotate"); try check(state.selected?.bounds == imageBounds && state.selected?.rotation == 0, "image rotation changes content, not selection box")
-        try press("pdf.object.flip"); try check(state.selected?.flipped == true, "image bubble flip connected")
-        try press("pdf.object.resetSize"); try check(state.selected?.bounds.width != 240, "image reset uses viewport not fixed 240 points")
+        try press("pdf.object.more"); try press("pdf.object.rotate"); try check(state.selected?.bounds == imageBounds && state.selected?.rotation == 0, "image rotation changes content, not selection box")
+        try press("pdf.object.more"); try press("pdf.object.flip"); try check(state.selected?.flipped == true, "image bubble flip connected")
+        try press("pdf.object.more"); try press("pdf.object.resetSize"); try check(state.selected?.bounds.width != 240, "image reset uses viewport not fixed 240 points")
         // Freehand lasso followed by group movement through real window dispatch.
         state.selection = []; state.menuVisible = false; state.tool = .lasso; state.optionsTool = nil; settle()
         let visible = view.visibleInsertion().1

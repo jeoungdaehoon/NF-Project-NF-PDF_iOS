@@ -31,6 +31,7 @@ extension PortalPDFPreviewView {
                         ForEach(PortalPDFMarkupTool.visibleTools) { tool in
                             pdfMarkupToolButton(tool)
                         }
+                        pdfConnectorToolButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -48,6 +49,7 @@ extension PortalPDFPreviewView {
                         ForEach(PortalPDFMarkupTool.visibleTools) { tool in
                             pdfMarkupToolButton(tool)
                         }
+                        pdfConnectorToolButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -172,8 +174,124 @@ extension PortalPDFPreviewView {
     }
 
     /// 단일 PDF 편집 도구 아이콘을 공통 스타일과 동작으로 생성합니다.
+    var pdfConnectorToolButton: some View {
+        Button {
+            if connectorMode {
+                isConnectorPanelPresented.toggle()
+            } else {
+                selectedTool = .lasso
+                connectorMode = true
+                isConnectorSelected = false
+                isConnectorPanelPresented = true
+            }
+        } label: {
+            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                .font(.system(size: 17))
+                .foregroundStyle(connectorMode ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .frame(width: 40, height: 40)
+                .background(connectorMode ? portalTheme.accentColor.opacity(0.14) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("연결선")
+        .accessibilityAddTraits(connectorMode ? .isSelected : [])
+        .popover(isPresented: $isConnectorPanelPresented) {
+            pdfConnectorPanel
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private var pdfConnectorPanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Label("연결선", systemImage: "point.topleft.down.to.point.bottomright.curvepath").font(.headline)
+                    Spacer()
+                    Button("닫기", systemImage: "xmark") { isConnectorPanelPresented = false }
+                        .labelStyle(.iconOnly)
+                }
+                Canvas { context, size in
+                    let source = CGRect(x: 0, y: 3, width: 32, height: 18)
+                    let destination = CGRect(x: size.width - 32, y: size.height - 21, width: 32, height: 18)
+                    context.fill(Path(roundedRect: source, cornerRadius: 4), with: .color(portalTheme.accentColor.opacity(0.17)))
+                    context.fill(Path(roundedRect: destination, cornerRadius: 4), with: .color(portalTheme.accentColor.opacity(0.17)))
+                    let path = connectorStyle.path(from: source, to: destination)
+                    context.stroke(Path(path.cgPath), with: .color(connectorColor.wrappedValue), lineWidth: connectorStyle.width)
+                }
+                .frame(height: 44)
+                HStack(spacing: 6) {
+                    ForEach(PortalPDFConnectorStyle.Route.allCases) { route in
+                        Button(route.rawValue) { updateConnector { $0.route = route } }
+                            .buttonStyle(.bordered)
+                            .tint(connectorStyle.route == route ? portalTheme.accentColor : portalTheme.mutedColor)
+                            .accessibilityAddTraits(connectorStyle.route == route ? .isSelected : [])
+                    }
+                }
+                Toggle("화살표", isOn: connectorSetting(\.arrow))
+                Toggle("점선", isOn: connectorSetting(\.dashed))
+                ColorPicker("색상", selection: connectorColor, supportsOpacity: true)
+                HStack {
+                    Text("두께")
+                    Spacer()
+                    Text(connectorStyle.width, format: .number.precision(.fractionLength(1)))
+                        .monospacedDigit()
+                }
+                Slider(value: connectorSetting(\.width), in: 0.5...12, step: 0.5)
+                    .accessibilityLabel("연결선 두께")
+                DisclosureGroup("연결점과 경로") {
+                    Picker("시작 연결점", selection: connectorSetting(\.from)) {
+                        ForEach(PortalPDFConnectorStyle.Anchor.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Picker("끝 연결점", selection: connectorSetting(\.to)) {
+                        ForEach(PortalPDFConnectorStyle.Anchor.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    if isConnectorSelected {
+                        Button("중간 경로 초기화", systemImage: "arrow.counterclockwise") {
+                            connectorEditCommand = PortalPDFConnectorEditCommand(action: .resetBend)
+                        }
+                        Button("연결 해제", systemImage: "trash", role: .destructive) {
+                            connectorEditCommand = PortalPDFConnectorEditCommand(action: .remove)
+                        }
+                    }
+                }
+                Text(isConnectorSelected ? "선을 끌어 중간 경로를 조정합니다." : "PDF에서 연결할 두 객체를 차례로 누르세요.")
+                    .font(.caption)
+                    .foregroundStyle(portalTheme.mutedColor)
+            }
+            .padding(14)
+        }
+        .frame(width: 270, height: 355)
+        .foregroundStyle(portalTheme.foregroundColor)
+        .tint(portalTheme.accentColor)
+        .background(portalTheme.surfaceColor)
+    }
+
+    private var connectorColor: Binding<Color> {
+        Binding {
+            Color(uiColor: UIColor.portalColor(rgba: connectorStyle.color) ?? .systemBlue)
+        } set: { color in
+            updateConnector { $0.color = UIColor(color).portalRGBA }
+        }
+    }
+
+    private func connectorSetting<T>(_ keyPath: WritableKeyPath<PortalPDFConnectorStyle, T>) -> Binding<T> {
+        Binding { connectorStyle[keyPath: keyPath] } set: { value in
+            updateConnector { $0[keyPath: keyPath] = value }
+        }
+    }
+
+    private func updateConnector(_ apply: (inout PortalPDFConnectorStyle) -> Void) {
+        apply(&connectorStyle)
+        if isConnectorSelected {
+            connectorEditCommand = PortalPDFConnectorEditCommand(action: .style(connectorStyle))
+        }
+    }
+
     func pdfMarkupToolButton(_ tool: PortalPDFMarkupTool) -> some View {
         Button {
+            connectorMode = false
+            isConnectorPanelPresented = false
+
             selectMarkupTool(tool)
         } label: {
             // 하단 편집 도구는 아이콘만 표시해 PDF 화면을 가리지 않도록 구성합니다.

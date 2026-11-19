@@ -60,6 +60,7 @@ struct PortalPDFPreviewView: View {
     let onClose: (() -> Void)?
     /// 슬라이드 패널은 너비 상태와 무관하게 X·탭·설정 한 줄 상단 UI를 사용합니다.
     let usesCompactTitleBar: Bool
+    let onApplyImageMarkup: ((PDFDocument) -> Void)?
 
     var usesFullscreenTitleBar: Bool {
         usesCompactTitleBar || isPDFEditorFullscreenModeEnabled
@@ -110,7 +111,9 @@ struct PortalPDFPreviewView: View {
         item: PortalAttachmentPreviewItem,
         onPDFLocalStorageEnabled: @escaping () -> Void = {},
         onClose: (() -> Void)? = nil,
-        usesCompactTitleBar: Bool = false
+        usesCompactTitleBar: Bool = false,
+        imageMarkupDocument: PDFDocument? = nil,
+        onApplyImageMarkup: ((PDFDocument) -> Void)? = nil
     ) {
         var displayItem = item
         displayItem.title = item.title.removingPercentEncoding ?? item.title
@@ -123,6 +126,8 @@ struct PortalPDFPreviewView: View {
         self.onPDFLocalStorageEnabled = onPDFLocalStorageEnabled
         self.onClose = onClose
         self.usesCompactTitleBar = usesCompactTitleBar
+        self.onApplyImageMarkup = onApplyImageMarkup
+        if let imageMarkupDocument { _state = State(initialValue: .loaded(imageMarkupDocument)) }
     }
 
     /// 편집 도구는 원문·필기 색과 분리된 중립 표면을 사용합니다.
@@ -146,6 +151,13 @@ struct PortalPDFPreviewView: View {
     @State var localDownloadProgress: Double?
     /// 현재 선택된 PDF 편집 도구입니다.
     @State var selectedTool: PortalPDFMarkupTool = .view
+    @AppStorage("portal.pdf.neon.kind") var neonKind: PortalPDFNeonKind = .line
+    @State var neonClearRevision = 0
+    @State var connectorMode = false
+    @State var isConnectorPanelPresented = false
+    @State var connectorStyle = PortalPDFConnectorStyle()
+    @State var isConnectorSelected = false
+    @State var connectorEditCommand: PortalPDFConnectorEditCommand?
     /// 펜 도구가 활성화된 상태에서 한 번 더 선택했을 때 표시할 펜 상세 편집 박스 표시 여부입니다.
     @State var isPenOptionPresented: Bool = false
     /// 지우개 도구를 한 번 더 선택했을 때 표시할 지우개 크기 편집 박스 표시 여부입니다.
@@ -219,6 +231,7 @@ struct PortalPDFPreviewView: View {
     @State var systemImageEditorItem: PortalPDFSystemImageEditorItem?
     /// 선택 이미지를 사각형 또는 자유선 영역으로 자르기 위한 전용 편집 화면입니다.
     @State var imageCropEditorItem: PortalPDFImageCropEditorItem?
+    @State var imageMarkupItem: PortalPDFImageMarkupItem?
     /// 사진 모드에서 두 번째 사진 도구 탭으로 표시할 현재 사진 Grid 팝업 여부입니다.
     @State var isImageGalleryPresented: Bool = false
     /// 실제 기기 사진첩에서 읽어온 최근 사진 썸네일입니다.
@@ -408,7 +421,23 @@ struct PortalPDFPreviewView: View {
     var previewNavigationLayer: some View {
         ZStack {
             VStack(spacing: 0) {
-                if !isPDFPresentationModeEnabled, !isMarkdownPreview {
+                if onApplyImageMarkup != nil {
+                    HStack {
+                        Button("취소", action: closePDFPreview)
+                        Spacer()
+                        Text("이미지 편집").font(.headline)
+                        Spacer()
+                        Button("이미지에 적용") {
+                            guard let document = loadedDocument else { return }
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                            DispatchQueue.main.async { onApplyImageMarkup?(document) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(portalTheme.surfaceColor)
+                } else if !isPDFPresentationModeEnabled, !isMarkdownPreview {
                     pdfDocumentHistoryTabBar
                 }
                 previewStateContent
@@ -962,8 +991,9 @@ struct PortalPDFPreviewView: View {
     var previewLifecycleLayer: some View {
         previewAlertLayer
             .task(id: item.id) {
-                documentHistoryRecords = PortalPDFDocumentHistoryStore.record(item)
                 restoreMarkupToolbarState()
+                guard onApplyImageMarkup == nil else { return }
+                documentHistoryRecords = PortalPDFDocumentHistoryStore.record(item)
                 restoreFavoritePDFPages()
                 await preparePDFDocumentOpening()
                 updateFavoritePDFPages(favoritePDFPageIndexes)
@@ -1171,6 +1201,12 @@ struct PortalPDFPreviewView: View {
                 )
                 .onDisappear {
                     try? FileManager.default.removeItem(at: editorItem.fileURL)
+                }
+            }
+            .fullScreenCover(item: $imageMarkupItem) { item in
+                PortalPDFImageMarkupView(item: item, onDismiss: { imageMarkupItem = nil }) { image in
+                    pendingImageEditCommand = PortalPDFImageEditCommand(operation: .applyCrop(image, keepsOriginal: true))
+                    imageMarkupItem = nil
                 }
             }
             .fullScreenCover(item: $imageCropEditorItem) { editorItem in
@@ -1689,6 +1725,18 @@ struct PortalPDFPreviewView: View {
                     pageLayout: pdfPageLayout,
                     viewerBackgroundColor: pdfWorkspaceBackgroundColor,
                     selectedTool: isPDFPresentationModeEnabled ? .view : selectedTool,
+                    neonKind: neonKind,
+                    neonClearRevision: neonClearRevision,
+                    connectorMode: connectorMode,
+                    connectorStyle: connectorStyle,
+                    connectorEditCommand: connectorEditCommand,
+                    onConnectorSelected: { style in
+                        isConnectorSelected = style != nil
+                        if let style { connectorStyle = style }
+                    },
+                    onImageMarkupRequested: onApplyImageMarkup == nil ? { image in
+                        DispatchQueue.main.async { imageMarkupItem = PortalPDFImageMarkupItem(image: image) }
+                    } : nil,
                     pencilDoubleTapTool: pencilDoubleTapTool,
                     penColor: activePenColor,
                     penLineWidth: activePenLineWidth,

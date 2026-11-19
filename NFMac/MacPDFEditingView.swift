@@ -636,9 +636,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
         editor.objects = result.filter { !removed.contains($0.id) && $0.sourceID.map(removed.contains) != true && $0.targetID.map(removed.contains) != true }; refreshAnnotations(pageOnly: true)
     }
-    func beginTextEditing(_ object: MacPDFObject) {
+    func beginTextEditing(_ object: MacPDFObject, beforeInsertion: [MacPDFObject]? = nil) {
         guard let page = document?.page(at: object.page) else { return }
-        finishTextEditing(); editingTextID = object.id; textBeforeEditing = editor?.objects ?? []; editingTextScale = max(scaleFactor, 0.1)
+        finishTextEditing(); editingTextID = object.id; textBeforeEditing = beforeInsertion ?? editor?.objects ?? []; editingTextScale = max(scaleFactor, 0.1)
         textEditingBaseBounds = object.bounds
         let view = MacPDFTextInput(frame: convert(object.bounds, from: page)); view.isRichText = true; view.isEditable = true; view.isSelectable = true; view.allowsUndo = true
         view.drawsBackground = false; view.isVerticallyResizable = false; view.isHorizontallyResizable = false
@@ -654,7 +654,16 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         let normalized = scaledText(view.attributedString(), scale: 1 / editingTextScale)
         let rtf = normalized.rtf(from: NSRange(location: 0, length: normalized.length), documentAttributes: [:])
         editingTextID = nil; textView = nil; textEditingBaseBounds = nil; view.delegate = nil; view.removeFromSuperview(); editor.isTextEditing = false
-        if let index = editor.objects.firstIndex(where: { $0.id == id }) { editor.objects[index].text = normalized.string; editor.objects[index].textRTF = rtf }
+        if let index = editor.objects.firstIndex(where: { $0.id == id }) {
+            let isNew = !textBeforeEditing.contains { $0.id == id }
+            if isNew && normalized.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                editor.objects.remove(at: index)
+                editor.selectObjects([], showMenu: false)
+            } else {
+                editor.objects[index].text = normalized.string
+                editor.objects[index].textRTF = rtf
+            }
+        }
         editor.commitObjects(from: textBeforeEditing); textBeforeEditing = []; refreshAnnotations()
     }
     func textDidChange(_ notification: Notification) {

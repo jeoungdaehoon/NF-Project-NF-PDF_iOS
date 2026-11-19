@@ -228,6 +228,22 @@ extension PortalPDFPreviewView {
     /// 펜 팔레트와 선택 컬러의 값·두께 변경을 한 화면에서 제공하는 편집 콘텐츠입니다.
     var pdfPenEditorContent: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if selectedTool == .neon {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(PortalPDFNeonKind.allCases) { kind in
+                            Button(kind.title) { neonKind = kind }
+                                .font(.caption)
+                                .buttonStyle(.bordered)
+                                .tint(neonKind == kind ? portalTheme.accentColor : portalTheme.foregroundColor)
+                                .accessibilityAddTraits(neonKind == kind ? .isSelected : [])
+                        }
+                        Button("네온 전체 삭제", systemImage: "eraser") { neonClearRevision += 1 }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                    }
+                }
+            }
             if penOptionPanelScrollIsVertical {
                 VStack(alignment: .center, spacing: 4) {
                     ScrollView(.vertical, showsIndicators: false) {

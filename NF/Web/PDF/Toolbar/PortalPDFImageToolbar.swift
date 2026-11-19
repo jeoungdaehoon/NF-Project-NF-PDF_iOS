@@ -159,6 +159,8 @@ extension PortalPDFPreviewView {
             pendingImageEditCommand = PortalPDFImageEditCommand(operation: .flipHorizontal)
         case .crop:
             pendingImageEditCommand = PortalPDFImageEditCommand(operation: .openCropEditor)
+        case .openMarkupEditor:
+            pendingImageEditCommand = PortalPDFImageEditCommand(operation: .openMarkupEditor)
         case .openSystemEditor:
             pendingImageEditCommand = PortalPDFImageEditCommand(operation: .openSystemEditor)
         case .bringToFront:

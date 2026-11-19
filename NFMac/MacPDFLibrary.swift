@@ -332,45 +332,77 @@ struct MacPDFLibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button("닫기") { documentWindow.close(); dismiss() }
-                    .accessibilityIdentifier("pdf.library.close")
-                Spacer()
-                Text("문서")
-                    .font(.headline)
-                Spacer()
-                Menu {
-                    Button("새 PDF", action: createBlank)
-                    Button("파일·Drive에서 가져오기") { isImporterPresented = true }
-                    Button("사진으로 PDF 생성") { isPhotosPresented = true }
-                    Button("링크에서 다운로드", action: importLink)
-                    Button("새 폴더") { if let name = prompt("새 폴더", initial: "") { perform { try repository.createFolder(name, parentID: ["all", "root"].contains(folderID) ? nil : folderID) } } }
-                    Button("문서 연결 보드") { showBoard = true }
-                } label: {
-                    Label("문서 추가", systemImage: "plus")
+            HStack(spacing: 10) {
+                Button { documentWindow.close(); dismiss() } label: {
+                    Image(systemName: "xmark").frame(width: 24, height: 24)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("닫기")
+                .accessibilityIdentifier("pdf.library.close")
+                Text("PDF 문서함").font(.headline)
+                Spacer()
+                Button("Drive", systemImage: "icloud") { isImporterPresented = true }
+                    .buttonStyle(.borderless)
             }
-            .padding(16)
-
+            .padding(12)
             Divider()
-
-            HStack(spacing: 16) {
-                Picker("문서 분류", selection: $section) {
-                    ForEach(MacPDFLibrarySection.allCases) { item in
-                        Text(item.title).tag(item)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Menu {
+                        Button("파일 가져오기", systemImage: "folder") { isImporterPresented = true }
+                        Button("사진 → PDF", systemImage: "photo.on.rectangle") { isPhotosPresented = true }
+                        Button("URL 가져오기", systemImage: "link", action: importLink)
+                        Divider()
+                        Button("새 폴더", systemImage: "folder.badge.plus") {
+                            if let name = prompt("새 폴더", initial: "") {
+                                perform { try repository.createFolder(name, parentID: ["all", "root"].contains(folderID) ? nil : folderID) }
+                            }
+                        }
+                        Button("문서 연결 보드", systemImage: "point.3.connected.trianglepath.dotted") { showBoard = true }
+                    } label: {
+                        Label("가져오기", systemImage: "folder")
+                    }
+                    .fixedSize()
+                    Button("새 PDF", systemImage: "plus", action: createBlank)
+                        .buttonStyle(.borderedProminent)
+                }
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("문서 이름·폴더 검색", text: $searchText).textFieldStyle(.plain)
+                    if !searchText.isEmpty {
+                        Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("검색어 지우기")
                     }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-
-                TextField("PDF 파일명 검색", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
-                Picker("폴더", selection: $folderID) {
-                    Text("모든 폴더").tag("all"); Text("최상위").tag("root")
-                    ForEach(folders) { Text($0.name).tag($0.id) }
-                }.frame(maxWidth: 190)
+                .padding(8)
+                .background(MacPDFPanelSurface(radius: 7))
+                HStack(spacing: 10) {
+                    ForEach(MacPDFLibrarySection.allCases) { item in
+                        Button {
+                            section = item
+                        } label: {
+                            VStack(spacing: 5) {
+                                Text(item.title)
+                                Rectangle().fill(section == item ? Color.accentColor : .clear).frame(height: 2)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .foregroundStyle(section == item ? Color.accentColor : Color.secondary)
+                            .padding(.horizontal, 4)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(section == item ? .isSelected : [])
+                    }
+                    Spacer()
+                    Picker("폴더", selection: $folderID) {
+                        Text("모든 폴더").tag("all"); Text("최상위").tag("root")
+                        ForEach(folders) { Text($0.name).tag($0.id) }
+                    }
+                    .frame(maxWidth: 190)
+                }
             }
-            .padding(16)
+            .padding(12)
+            Divider()
 
             if visibleDocuments.isEmpty {
                 ContentUnavailableView(
@@ -385,11 +417,10 @@ struct MacPDFLibraryView: View {
                         openDocument(document)
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: "doc.richtext")
-                                .font(.system(size: 20, weight: .regular))
-                                .foregroundStyle(.secondary)
+                            MacPDFLibraryThumbnail(fileURL: document.localFileURL, modifiedAt: document.modifiedAt)
+                                .frame(width: 36, height: 48)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(document.fileName).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                                Text(document.fileName).font(.system(size: 14, weight: .semibold)).lineLimit(2)
                                 Text("\(document.modifiedAt.formatted(date: .abbreviated, time: .shortened)) · \(ByteCountFormatter.string(fromByteCount: document.fileSize, countStyle: .file))")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -476,7 +507,10 @@ struct MacPDFLibraryView: View {
             case .trash: document.isDeleted
             }
             let folderMatches = folderID == "all" || (folderID == "root" ? document.folderID == nil : document.folderID == folderID)
-            return sectionMatches && folderMatches && (searchText.isEmpty || document.fileName.localizedCaseInsensitiveContains(searchText))
+            let folder = folders.first { $0.id == document.folderID }?.name ?? "내 문서"
+            let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return sectionMatches && folderMatches && (query.isEmpty ||
+                document.fileName.localizedCaseInsensitiveContains(query) || folder.localizedCaseInsensitiveContains(query))
         }.sorted { section == .recent ? ($0.lastOpenedAt ?? .distantPast) > ($1.lastOpenedAt ?? .distantPast) : $0.modifiedAt > $1.modifiedAt }
     }
 
@@ -1082,5 +1116,30 @@ private final class MacInteractivePDFView: PDFView {
         }
         commandDragStartX = nil
         commandDragStartScale = nil
+    }
+}
+
+
+private struct MacPDFLibraryThumbnail: View {
+    let fileURL: URL
+    let modifiedAt: Date
+    @State private var preview: NSImage?
+
+    var body: some View {
+        Group {
+            if let preview {
+                Image(nsImage: preview).resizable().scaledToFit().accessibilityHidden(true)
+            } else {
+                Image(systemName: "doc.richtext").foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacPDFPanelSurface(radius: 4))
+        .task(id: modifiedAt) {
+            let url = fileURL
+            preview = await Task.detached(priority: .utility) {
+                PDFDocument(url: url)?.page(at: 0)?.thumbnail(of: CGSize(width: 72, height: 96), for: .cropBox)
+            }.value
+        }
     }
 }

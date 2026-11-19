@@ -160,7 +160,34 @@ enum PortalPDFPortableWorkspace {
                 fragments.append(.init(points:transformed[range].map(PortalPDFPageEditDocument.Point.init),pressures:points[range].map { $0.count > 2 ? $0[2] : 1 }))
             }
             let ink = PortalPDFPageEditDocument.Ink(paths: pressure ? [] : paths, pressureFragments: pressure ? fragments : [], colorRGBA: actualColor, lineWidth: number(value,"lineWidth",2), lineCapRawValue: (value["roundCap"] as? Bool ?? true) ? CGLineCap.round.rawValue : CGLineCap.butt.rawValue, lineJoinRawValue: CGLineJoin.round.rawValue)
-            return .init(id: id, kind: pressure ? .pressureInk : .ink, displayIndex: displayIndex, ink: ink)
+            let connector = (value["connection"] as? [String: Any]).flatMap { link -> PortalPDFConnectorRecord? in
+                guard let source = (link["sourceId"] as? String).flatMap(UUID.init(uuidString:)),
+                      let destination = (link["targetId"] as? String).flatMap(UUID.init(uuidString:)),
+                      source != destination else { return nil }
+                let route: PortalPDFConnectorStyle.Route = switch link["route"] as? String {
+                case "STRAIGHT": .straight
+                case "CURVE": .curve
+                default: .elbow
+                }
+                func anchor(_ value: Any?) -> PortalPDFConnectorStyle.Anchor {
+                    switch value as? String {
+                    case "LEFT": .left
+                    case "RIGHT": .right
+                    case "TOP": .top
+                    case "BOTTOM": .bottom
+                    default: .automatic
+                    }
+                }
+                let style = PortalPDFConnectorStyle(route: route, from: anchor(link["from"]), to: anchor(link["to"]),
+                    width: ink.lineWidth, arrow: link["arrow"] as? Bool ?? true,
+                    dashed: value["dashed"] as? Bool ?? false, color: ink.colorRGBA)
+                let bend = (link["bendX"] as? Double).flatMap { x in
+                    (link["bendY"] as? Double).map { CGPoint(x: x, y: $0).applying(screenToPDF(page)) }
+                }
+                return PortalPDFConnectorRecord(source: source, destination: destination, style: style, bend: bend)
+            }
+            return .init(id: id, kind: pressure ? .pressureInk : .ink, displayIndex: displayIndex, ink: ink,
+                connector: connector)
         case "image":
             guard let encoded = value["imageData"] as? String, let data = Data(base64Encoded: encoded), data.count <= 20 * 1024 * 1024 else { return nil }
             return .init(id: id, kind: .image, displayIndex: displayIndex, image: .init(imageData: data, bounds: bounds, rotationAngle: -number(value,"rotation") * .pi/180, isHorizontallyFlipped: value["flipped"] as? Bool ?? false, animatedGIFData: value["imageMimeType"] as? String == "image/gif" ? data : nil))
@@ -190,6 +217,30 @@ enum PortalPDFPortableWorkspace {
         func setBounds(_ bounds: CGRect) { let b = bounds.applying(transform).standardized; o["bounds"] = ["x": b.minX, "y": b.minY, "width": max(0.1,b.width), "height": max(0.1,b.height)] }
         if let ink = object.ink {
             o["kind"] = previous?["kind"] as? String ?? "ink"; o["color"] = argb(ink.colorRGBA); o["lineWidth"] = ink.lineWidth
+            if let record = object.connector {
+                let route: String = switch record.style.route {
+                case .straight: "STRAIGHT"
+                case .elbow: "ELBOW"
+                case .curve: "CURVE"
+                }
+                func anchor(_ value: PortalPDFConnectorStyle.Anchor) -> String {
+                    switch value {
+                    case .left: "LEFT"
+                    case .right: "RIGHT"
+                    case .top: "TOP"
+                    case .bottom: "BOTTOM"
+                    case .automatic: "AUTO"
+                    }
+                }
+                var link: [String: Any] = ["sourceId": record.source.uuidString, "targetId": record.destination.uuidString,
+                    "route": route, "from": anchor(record.style.from), "to": anchor(record.style.to), "arrow": record.style.arrow]
+                if let bend = record.bend?.applying(transform) {
+                    link["bendX"] = bend.x
+                    link["bendY"] = bend.y
+                }
+                o["connection"] = link
+                o["dashed"] = record.style.dashed
+            }
             o["roundCap"] = ink.lineCapRawValue == CGLineCap.round.rawValue; o["pressureEnabled"] = !ink.pressureFragments.isEmpty
             var points: [[Double]] = []
             var strokeBreaks: [Int] = []

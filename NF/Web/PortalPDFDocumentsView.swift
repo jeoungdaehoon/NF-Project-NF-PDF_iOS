@@ -27,7 +27,6 @@ struct PortalPDFDocumentsView: View {
     @State private var deletionRequest: PortalPDFDocumentDeletionRequest?
     @State private var renamingDocument: PortalLocalPDFDocument?
     @State private var renameText = ""
-    @State private var isDocumentAddMenuPresented = false
     @State private var documentInputPrompt: PortalPDFDocumentInputPrompt?
     @State private var documentInputText = ""
     @State private var isFileImporterPresented = false
@@ -95,13 +94,6 @@ struct PortalPDFDocumentsView: View {
             }
             .fullScreenCover(isPresented: $isCloudCenterPresented, onDismiss: reloadDocuments) {
                 PortalPDFCloudCenterView()
-            }
-            .confirmationDialog(
-                "문서 추가",
-                isPresented: $isDocumentAddMenuPresented,
-                titleVisibility: .visible
-            ) {
-                documentAddMenuButtons
             }
             .fileImporter(
                 isPresented: $isFileImporterPresented,
@@ -184,18 +176,6 @@ struct PortalPDFDocumentsView: View {
         .accessibilityHint("네이티브 문서 화면을 닫고 기존 웹페이지로 돌아갑니다.")
     }
 
-    private var addDocumentToolbarButton: some View {
-        Button {
-            isDocumentAddMenuPresented = true
-        } label: {
-            Image(systemName: "plus")
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("문서 추가")
-    }
-
     private var documentToolbarActions: some View {
         HStack(spacing: 2) {
             Button {
@@ -209,26 +189,28 @@ struct PortalPDFDocumentsView: View {
             .accessibilityLabel("클라우드 문서")
             .accessibilityHint("iCloud와 Google Drive 동기화 화면을 엽니다.")
 
-            addDocumentToolbarButton
         }
     }
 
     private var pageHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("문서")
-                .font(.system(size: 28, weight: .medium))
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PDF 문서함")
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(portalTheme.foregroundColor)
-            Text("기기에 저장된 PDF를 검색하고 즐겨찾기와 휴지통을 관리합니다.")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(portalTheme.mutedColor)
+            HStack(spacing: 8) {
+                Menu {
+                    documentAddMenuButtons
+                } label: {
+                    Label("가져오기", systemImage: "folder")
+                }
+                .buttonStyle(.borderedProminent)
+                Button("새 PDF", systemImage: "plus") { presentDocumentInput(.newDocument) }
+                    .buttonStyle(.bordered)
+            }
+            .tint(portalTheme.accentColor)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 16)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(portalTheme.borderColor.opacity(0.7))
-                .frame(height: 1)
-        }
+        .padding(.bottom, 6)
     }
 
     private var sectionTabs: some View {
@@ -263,7 +245,7 @@ struct PortalPDFDocumentsView: View {
         HStack(spacing: 12) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(portalTheme.mutedColor)
-            TextField("PDF 파일명 검색", text: $searchQuery)
+            TextField("문서 이름·폴더 검색", text: $searchQuery)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             if !searchQuery.isEmpty {
@@ -290,12 +272,6 @@ struct PortalPDFDocumentsView: View {
     @ViewBuilder
     private var documentAddMenuButtons: some View {
         Button {
-            presentDocumentInput(.newDocument)
-        } label: {
-            Label("새 문서", systemImage: "doc.badge.plus")
-        }
-
-        Button {
             isFileImporterPresented = true
         } label: {
             Label("파일·iCloud·Drive에서 가져오기", systemImage: "folder")
@@ -304,7 +280,7 @@ struct PortalPDFDocumentsView: View {
         Button {
             presentDocumentInput(.link)
         } label: {
-            Label("링크 추가하기", systemImage: "link")
+            Label("URL 가져오기", systemImage: "link")
         }
 
         Button {
@@ -316,10 +292,9 @@ struct PortalPDFDocumentsView: View {
         Button {
             isPhotoPickerPresented = true
         } label: {
-            Label("사진 앨범", systemImage: "photo.on.rectangle")
+            Label("사진 → PDF", systemImage: "photo.on.rectangle")
         }
 
-        Button("취소", role: .cancel) {}
     }
 
     private var addingDocumentOverlay: some View {

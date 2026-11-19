@@ -43,6 +43,7 @@ struct PortalPDFPageEditDocument: Codable {
         var image: PortalPDFImageAnnotation.Metadata?
         var shape: PortalPDFShapeAnnotation.Metadata?
         var text: PortalPDFTextAnnotation.Metadata?
+        var connector: PortalPDFConnectorRecord? = nil
     }
 
     struct Ink: Codable, Equatable {
@@ -363,7 +364,8 @@ struct PortalPDFPageEditDocument: Codable {
                 lineWidth: Double(annotation.border?.lineWidth ?? 1),
                 lineCapRawValue: paths.first?.lineCapStyle.rawValue ?? CGLineCap.round.rawValue,
                 lineJoinRawValue: paths.first?.lineJoinStyle.rawValue ?? CGLineJoin.round.rawValue
-            )
+            ),
+            connector: PortalPDFConnectorRecord(annotation: annotation)
         )
     }
 
@@ -401,6 +403,7 @@ private extension PortalPDFPageEditDocument.Object {
                 annotation.add(path)
             }
             annotation.setValue(id.uuidString, forAnnotationKey: .name)
+            connector?.save(on: annotation)
             return annotation
         case .pressureInk:
             guard let ink else { return nil }

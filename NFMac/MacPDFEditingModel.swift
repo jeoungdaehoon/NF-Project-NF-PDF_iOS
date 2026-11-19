@@ -447,9 +447,18 @@ final class MacPDFEditorState: ObservableObject {
         currentPage = placement.0
         let size = kind == .text ? CGSize(width: min(230, placement.1.width * 0.62), height: 80) : CGSize(width: min(176, placement.1.width * 0.45), height: min(112, placement.1.height * 0.3))
         let rect = Self.clamped(CGRect(x: placement.1.midX - size.width / 2, y: placement.1.midY - size.height / 2, width: max(30, size.width), height: size.height), to: page.bounds(for: .cropBox))
-        var object = MacPDFObject(page: currentPage, kind: kind, bounds: rect, style: style, shape: shape ?? self.shape, text: kind == .text ? "텍스트를 입력하세요" : "")
+        var object = MacPDFObject(page: currentPage, kind: kind, bounds: rect, style: style, shape: shape ?? self.shape)
         if kind == .text { object.style.textBorder = object.style.textBorder ?? .init(.clear) }
-        add(object); selectObjects([object.id], showMenu: true); optionsTool = nil
+        optionsTool = nil
+        if kind == .text, let canvas {
+            let previous = objects
+            objects.append(object)
+            selectObjects([object.id], showMenu: false)
+            canvas.beginTextEditing(object, beforeInsertion: previous)
+        } else {
+            add(object)
+            selectObjects([object.id], showMenu: true)
+        }
     }
     func selectObjects(_ ids: Set<UUID>, showMenu: Bool) {
         if !ids.isEmpty { canvas?.clearSelection() }

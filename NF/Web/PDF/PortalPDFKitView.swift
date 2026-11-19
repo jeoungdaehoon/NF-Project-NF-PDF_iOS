@@ -194,6 +194,36 @@ final class PortalPDFView: PDFView {
  - Date: 2026.07.30
  - SeeAlso: ``PortalPDFPreviewView``
  */
+enum PortalPDFNeonKind: String, CaseIterable, Identifiable {
+    case line, box, arrow
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .line: "라인"
+        case .box: "박스"
+        case .arrow: "화살표"
+        }
+    }
+
+    func points(from samples: [CGPoint], arrowSize: CGFloat) -> [CGPoint] {
+        guard let start = samples.first, let end = samples.last, samples.count > 1 else { return samples }
+        switch self {
+        case .line:
+            return samples
+        case .box:
+            return [start, CGPoint(x: end.x, y: start.y), end, CGPoint(x: start.x, y: end.y), start]
+        case .arrow:
+            let angle = atan2(end.y - start.y, end.x - start.x)
+            let size = min(arrowSize, hypot(end.x - start.x, end.y - start.y) / 3)
+            func tip(_ offset: CGFloat) -> CGPoint {
+                CGPoint(x: end.x - size * cos(angle + offset), y: end.y - size * sin(angle + offset))
+            }
+            return [start, end, tip(-0.55), end, tip(0.55)]
+        }
+    }
+}
+
 struct PortalPDFKitView: UIViewRepresentable {
     @Environment(\.portalAppTheme) private var editorTheme
 
@@ -207,6 +237,13 @@ struct PortalPDFKitView: UIViewRepresentable {
     let viewerBackgroundColor: Color
     /// 현재 선택된 PDF 편집 도구입니다.
     let selectedTool: PortalPDFMarkupTool
+    var neonKind: PortalPDFNeonKind = .line
+    var neonClearRevision: Int = 0
+    var connectorMode = false
+    var connectorStyle = PortalPDFConnectorStyle()
+    var connectorEditCommand: PortalPDFConnectorEditCommand? = nil
+    var onConnectorSelected: ((PortalPDFConnectorStyle?) -> Void)? = nil
+    var onImageMarkupRequested: ((UIImage) -> Void)? = nil
     /// Apple Pencil 이중 탭으로 팬슬과 왕복 전환할 사용자 설정 편집 모드입니다.
     let pencilDoubleTapTool: PortalPDFPencilDoubleTapTool
     /// 펜 도구로 PDF 주석을 추가할 때 사용할 색상입니다.
@@ -323,6 +360,14 @@ struct PortalPDFKitView: UIViewRepresentable {
      */
     func updateUIView(_ pdfView: PDFView, context: Context) {
         context.coordinator.editorTheme = editorTheme
+        context.coordinator.configureConnector(enabled: connectorMode && selectedTool == .lasso,
+            style: connectorStyle, command: connectorEditCommand, onSelected: onConnectorSelected)
+        context.coordinator.onImageMarkupRequested = onImageMarkupRequested
+        context.coordinator.neonKind = neonKind
+        if context.coordinator.neonClearRevision != neonClearRevision {
+            context.coordinator.neonClearRevision = neonClearRevision
+            context.coordinator.clearTransientNeonStrokes()
+        }
         // 저장된 뷰포트가 있는 문서는 PDFKit의 최초 자동 맞춤을 실행하지 않습니다.
         // document 연결 직후 autoScales를 켜면 PDFKit이 문서를 화면 중앙으로 먼저 이동한 뒤
         // Coordinator의 비동기 위치 복원이 실행되어, 재진입할 때 중앙으로 튀는 화면이 노출됩니다.
@@ -514,6 +559,11 @@ extension PortalPDFKitView: Equatable {
             lhs.pageLayout == rhs.pageLayout &&
             areColorsEqual(lhs.viewerBackgroundColor, rhs.viewerBackgroundColor) &&
             lhs.selectedTool == rhs.selectedTool &&
+            lhs.neonKind == rhs.neonKind &&
+            lhs.neonClearRevision == rhs.neonClearRevision &&
+            lhs.connectorMode == rhs.connectorMode &&
+            lhs.connectorStyle == rhs.connectorStyle &&
+            lhs.connectorEditCommand?.id == rhs.connectorEditCommand?.id &&
             lhs.pencilDoubleTapTool == rhs.pencilDoubleTapTool &&
             lhs.penLineWidth == rhs.penLineWidth &&
             lhs.penType == rhs.penType &&
@@ -709,31 +759,32 @@ final class PortalPDFTextTouchDownGestureRecognizer: UIGestureRecognizer {
 
 /// 텍스트 박스를 이동하지 않고 탭했을 때 박스 위에 표시하는 말풍선형 작업 메뉴입니다.
 class PortalPDFActionPanel: UIView {
-    var showsTailAtTop = false
-    var preferredHeight: CGFloat = 12
-
+    private(set) var showsTailAtTop = false
     private let panel = UIView()
+    private let tail = CAShapeLayer()
     private let scroll = UIScrollView()
     private let stack = UIStackView()
     private var rows: [(button: UIButton, destructive: Bool)] = []
-    private var headings: [UILabel] = []
-    private var dividers: [UIView] = []
+    private var tailX: CGFloat = 0
+    private var showsTail = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        isAccessibilityElement = false
         layer.shadowColor = UIColor.black.cgColor
         layer.shadowOpacity = 0.2
         layer.shadowRadius = 7
         layer.shadowOffset = CGSize(width: 0, height: 3)
-        panel.layer.cornerRadius = 10
+        layer.addSublayer(tail)
+        panel.layer.cornerRadius = 9
         panel.layer.borderWidth = 1
         panel.clipsToBounds = true
         addSubview(panel)
         panel.addSubview(scroll)
         scroll.showsHorizontalScrollIndicator = false
-        scroll.alwaysBounceHorizontal = false
-        stack.axis = .vertical
-        stack.spacing = 2
+        scroll.showsVerticalScrollIndicator = false
+        stack.axis = .horizontal
+        stack.spacing = 1
         stack.translatesAutoresizingMaskIntoConstraints = false
         scroll.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -741,79 +792,78 @@ class PortalPDFActionPanel: UIView {
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-            stack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func addSection(_ title: String) {
-        if !stack.arrangedSubviews.isEmpty {
-            let divider = UIView()
-            divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
-            stack.addArrangedSubview(divider)
-            dividers.append(divider)
-            preferredHeight += 3
-        }
-        let label = UILabel()
-        label.text = title
-        label.font = .preferredFont(forTextStyle: .caption1)
-        label.accessibilityTraits = .header
-        label.heightAnchor.constraint(greaterThanOrEqualToConstant: 22).isActive = true
-        stack.addArrangedSubview(label)
-        headings.append(label)
-        preferredHeight += 24
-    }
-
-    func addRow(
-        _ title: String,
-        symbol: String,
-        accessibilityLabel: String,
-        destructive: Bool = false,
-        action: @escaping () -> Void
-    ) {
-        var config = UIButton.Configuration.plain()
-        config.title = title
-        config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15))
-        config.imagePlacement = .leading
-        config.imagePadding = 9
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 5)
-        let button = UIButton(configuration: config)
-        button.contentHorizontalAlignment = .leading
+    func actionButton(_ title: String, symbol: String, accessibilityLabel: String, destructive: Bool = false) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15))
+        configuration.imagePlacement = .top
+        configuration.imagePadding = 3
+        var label = AttributedString(title)
+        label.font = .systemFont(ofSize: 10)
+        configuration.attributedTitle = label
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 2, bottom: 3, trailing: 2)
+        let button = UIButton(configuration: configuration)
         button.accessibilityLabel = accessibilityLabel
-        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
         stack.addArrangedSubview(button)
         rows.append((button, destructive))
-        preferredHeight += 46
+        return button
+    }
+
+    func addRow(_ title: String, symbol: String, accessibilityLabel: String, destructive: Bool = false, action: @escaping () -> Void) {
+        actionButton(title, symbol: symbol, accessibilityLabel: accessibilityLabel, destructive: destructive)
+            .addAction(UIAction { _ in action() }, for: .touchUpInside)
+    }
+
+    func addMore(groups: [UIMenuElement]) {
+        let button = actionButton("더보기", symbol: "ellipsis", accessibilityLabel: "객체 더보기")
+        button.menu = UIMenu(children: groups)
+        button.showsMenuAsPrimaryAction = true
     }
 
     func applyTheme(_ theme: PortalAppTheme) {
         panel.backgroundColor = UIColor(theme.surfaceColor)
         panel.layer.borderColor = UIColor(theme.borderColor).cgColor
+        tail.fillColor = panel.backgroundColor?.cgColor
+        tail.strokeColor = panel.layer.borderColor
         for (button, destructive) in rows {
             button.configuration?.baseForegroundColor = destructive ? .systemRed : UIColor(theme.foregroundColor)
         }
-        headings.forEach { $0.textColor = UIColor(theme.mutedColor) }
-        dividers.forEach { $0.backgroundColor = UIColor(theme.borderColor) }
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         panel.frame = bounds
-        scroll.frame = panel.bounds.insetBy(dx: 6, dy: 6)
+        scroll.frame = panel.bounds.insetBy(dx: 4, dy: 3)
+        tail.isHidden = !showsTail
+        let edge = showsTailAtTop ? bounds.minY + 1 : bounds.maxY - 1
+        let point = edge + (showsTailAtTop ? -7 : 7)
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: tailX - 6, y: edge))
+        path.addLine(to: CGPoint(x: tailX, y: point))
+        path.addLine(to: CGPoint(x: tailX + 6, y: edge))
+        tail.path = path.cgPath
     }
 
     func position(around object: CGRect, in pdfView: PDFView) {
         let available = pdfView.bounds.inset(by: pdfView.safeAreaInsets).insetBy(dx: 8, dy: 8)
-        let width = min(246, max(1, available.width))
-        let height = min(preferredHeight, max(1, available.height))
+        let width = min(CGFloat(rows.count * 49 + 8), max(1, available.width))
+        let height = min(54, max(1, available.height))
         let x = min(max(object.midX - width / 2, available.minX), max(available.minX, available.maxX - width))
         let above = object.minY - height - 8
-        showsTailAtTop = above < available.minY
-        let desired = showsTailAtTop ? object.maxY + 8 : above
-        let y = min(max(desired, available.minY), max(available.minY, available.maxY - height))
+        let below = object.maxY + 8
+        showsTailAtTop = above < available.minY && (below + height <= available.maxY ||
+            available.maxY - object.maxY >= object.minY - available.minY)
+        let y = min(max(showsTailAtTop ? below : above, available.minY), max(available.minY, available.maxY - height))
+        showsTail = showsTailAtTop ? y >= object.maxY : y + height <= object.minY
+        tailX = min(max(object.midX - x, 12), max(width - 12, 12))
         frame = CGRect(x: x, y: y, width: width, height: height)
+        setNeedsLayout()
     }
 }
 
@@ -850,20 +900,28 @@ final class PortalPDFTextActionMenuView: PortalPDFActionPanel {
     }
 
     var onAction: ((Action) -> Void)?
+    private let objectName: String
 
-    override init(frame: CGRect) {
+    override convenience init(frame: CGRect) {
+        self.init(frame: frame, objectName: "텍스트 박스")
+    }
+
+    init(frame: CGRect, objectName: String) {
+        self.objectName = objectName
         super.init(frame: frame)
-        ([.edit, .copy, .duplicate] as [Action]).forEach(addAction)
-        addSection("쌓는 순서")
-        ([.bringToFront, .sendToBack] as [Action]).forEach(addAction)
-        addSection("텍스트 박스")
-        addAction(.delete)
+        ([.edit, .copy, .duplicate, .delete] as [Action]).forEach(addAction)
+        let layerActions = ([.bringToFront, .sendToBack] as [Action]).map { action in
+            UIAction(title: action.title, image: UIImage(systemName: action.systemImageName)) { [weak self] _ in
+                self?.onAction?(action)
+            }
+        }
+        addMore(groups: [UIMenu(title: "쌓는 순서", options: .displayInline, children: layerActions)])
     }
 
     required init?(coder: NSCoder) { nil }
 
     private func addAction(_ action: Action) {
-        addRow(action.title, symbol: action.systemImageName, accessibilityLabel: "텍스트 박스 \(action.title)",
+        addRow(action.title, symbol: action.systemImageName, accessibilityLabel: "\(objectName) \(action.title)",
                destructive: action == .delete) { [weak self] in self?.onAction?(action) }
     }
 }
@@ -875,6 +933,7 @@ enum PortalPDFImageAction: CaseIterable {
     case rotateClockwise
     case flipHorizontal
     case crop
+    case openMarkupEditor
     case openSystemEditor
     case bringToFront
     case sendToBack
@@ -886,6 +945,7 @@ enum PortalPDFImageAction: CaseIterable {
         case .rotateClockwise: return "회전"
         case .flipHorizontal: return "좌우 반전"
         case .crop: return "자르기"
+        case .openMarkupEditor: return "이미지 편집"
         case .openSystemEditor: return "시스템 편집"
         case .bringToFront: return "최상단"
         case .sendToBack: return "최하단"
@@ -899,7 +959,8 @@ enum PortalPDFImageAction: CaseIterable {
         case .rotateClockwise: return "rotate.right"
         case .flipHorizontal: return "arrow.left.and.right"
         case .crop: return "crop"
-        case .openSystemEditor: return "pencil.and.outline"
+        case .openMarkupEditor: return "pencil"
+        case .openSystemEditor: return "app.badge"
         case .bringToFront: return "square.3.layers.3d.top.filled"
         case .sendToBack: return "square.3.layers.3d.bottom.filled"
         }
@@ -912,12 +973,13 @@ final class PortalPDFImageActionMenuView: PortalPDFActionPanel {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        addSection("이미지")
-        ([.replace, .crop, .rotateClockwise, .flipHorizontal, .resetSize] as [PortalPDFImageAction]).forEach(addAction)
-        addSection("편집")
-        addAction(.openSystemEditor)
-        addSection("쌓는 순서")
-        ([.bringToFront, .sendToBack] as [PortalPDFImageAction]).forEach(addAction)
+        ([.replace, .crop, .rotateClockwise, .flipHorizontal] as [PortalPDFImageAction]).forEach(addAction)
+        let secondary = ([.resetSize, .openMarkupEditor, .openSystemEditor, .bringToFront, .sendToBack] as [PortalPDFImageAction]).map { action in
+            UIAction(title: action.title, image: UIImage(systemName: action.systemImageName)) { [weak self] _ in
+                self?.onAction?(action)
+            }
+        }
+        addMore(groups: secondary)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -2651,13 +2713,15 @@ extension PortalPDFKitView {
             let pagePoints: [CGPoint]
             let color: UIColor
             let lineWidth: CGFloat
+            let kind: PortalPDFNeonKind
             var layers: [CAShapeLayer] = []
 
-            init(page: PDFPage, pagePoints: [CGPoint], color: UIColor, lineWidth: CGFloat) {
+            init(page: PDFPage, pagePoints: [CGPoint], color: UIColor, lineWidth: CGFloat, kind: PortalPDFNeonKind) {
                 self.page = page
                 self.pagePoints = pagePoints
                 self.color = color
                 self.lineWidth = lineWidth
+                self.kind = kind
             }
         }
 
@@ -2721,6 +2785,15 @@ extension PortalPDFKitView {
 
         /// 현재 PDFView에 적용할 편집 도구입니다.
         var selectedTool: PortalPDFMarkupTool = .view
+        var neonKind: PortalPDFNeonKind = .line
+        var neonClearRevision = 0
+        var connectorEnabled = false
+        var connectorStyle = PortalPDFConnectorStyle()
+        weak var connectorSource: PDFAnnotation?
+        weak var selectedConnector: PDFAnnotation?
+        var connectorEditID: UUID?
+        var connectorSelectionChanged: ((PortalPDFConnectorStyle?) -> Void)?
+        var onImageMarkupRequested: ((UIImage) -> Void)?
         /// 펜 도구로 PDF 주석을 추가할 때 사용할 현재 색상입니다.
         var penColor: UIColor = .systemBlue
         /// 펜 도구로 PDF 주석을 추가할 때 사용할 PDF Page 좌표계 기준 굵기입니다.
@@ -2801,6 +2874,7 @@ extension PortalPDFKitView {
         weak var textActionMenuView: PortalPDFTextActionMenuView?
         /// 작업 메뉴가 연결된 텍스트 Annotation입니다.
         weak var textActionMenuAnnotation: PortalPDFTextAnnotation?
+        weak var shapeActionMenuAnnotation: PortalPDFShapeAnnotation?
         /// 선택 이미지 위의 말풍선 작업 메뉴를 올리는 최상위 터치 호스트입니다.
         weak var imageActionMenuHostView: PortalPDFTextOverlayView?
         /// 현재 표시 중인 이미지 편집 말풍선 메뉴입니다.
@@ -4418,6 +4492,10 @@ extension PortalPDFKitView {
             appendedAnnotation: PDFAnnotation? = nil,
             appendedStrokeRasterReady: (() -> Void)? = nil
         ) {
+            let pagesToRefresh = changedPages.isEmpty
+                ? (pdfView?.document).map { document in (0..<document.pageCount).compactMap { document.page(at: $0) } } ?? []
+                : changedPages
+            for page in pagesToRefresh { PortalPDFConnectorRecord.refresh(on: page) }
             let usedAppendFastPath: Bool
             if let appendedAnnotation,
                changedPages.count == 1,
@@ -4968,6 +5046,10 @@ extension PortalPDFKitView {
                     on: page,
                     in: pdfView
                 )
+            case .openMarkupEditor:
+                lastAppliedImageEditCommandID = command.id
+                onImageMarkupRequested?(annotation.contentImageForEditing)
+                return
             case .openCropEditor:
                 lastAppliedImageEditCommandID = command.id
                 onImageCropRequested(annotation.contentImageForEditing)
@@ -5138,7 +5220,14 @@ extension PortalPDFKitView {
                 }
                 handleImageMoveGesture(recognizer.state, page: page, point: pagePoint)
             case .lasso:
-                handleLassoGesture(recognizer.state, page: page, point: pagePoint, in: pdfView)
+                if connectorEnabled {
+                    if recognizer.state == .ended,
+                       let selectedConnector, selectedConnector.page === page {
+                        replaceConnector(selectedConnector, on: page) { $0.bend = pagePoint }
+                    }
+                } else {
+                    handleLassoGesture(recognizer.state, page: page, point: pagePoint, in: pdfView)
+                }
             case .text:
                 handleTextTransformGesture(recognizer.state, page: page, point: pagePoint)
             case .handwriting, .pen, .highlighter, .neon, .eraser, .view:
@@ -5148,11 +5237,15 @@ extension PortalPDFKitView {
 
         /// 확정된 올가미 선택 영역이 아닌 곳을 누르면 선택 상태를 즉시 해제합니다.
         @objc private func handleLassoTap(_ recognizer: UITapGestureRecognizer) {
-            guard selectedTool == .lasso,
-                  recognizer.state == .ended,
-                  !selectedLassoAnnotations.isEmpty,
-                  let pdfView else { return }
+            guard selectedTool == .lasso, recognizer.state == .ended, let pdfView else { return }
             let viewPoint = recognizer.location(in: pdfView)
+            if connectorEnabled {
+                if let page = pdfView.page(for: viewPoint, nearest: false) {
+                    handleConnectorTap(on: page, at: pdfView.convert(viewPoint, to: page))
+                }
+                return
+            }
+            guard !selectedLassoAnnotations.isEmpty else { return }
             if isLassoDeleteHandleHit(viewPoint, in: pdfView) {
                 deleteLassoSelection(in: pdfView)
                 return
@@ -5171,7 +5264,7 @@ extension PortalPDFKitView {
 
         /// 이미지·박스·텍스트에 손이 닿는 즉시 해당 객체를 선택하고 편집 도구를 타입에 맞게 전환합니다.
         func handleTextTouchDown(at viewPoint: CGPoint, in pdfView: PDFView) {
-            guard selectedTool.supportsDirectObjectSelection else { return }
+            guard !connectorEnabled, selectedTool.supportsDirectObjectSelection else { return }
             if isTextActionMenuHit(viewPoint, in: pdfView)
                 || isImageActionMenuHit(viewPoint, in: pdfView) {
                 return
@@ -5338,11 +5431,12 @@ extension PortalPDFKitView {
 
         /// 현재 확대·이동 상태에서 메뉴를 선택 박스 상단 중앙에 배치하고 공간이 없으면 아래로 전환합니다.
         func updateTextActionMenuPosition(in pdfView: PDFView) {
-            guard let menu = textActionMenuView,
-                  let annotation = textActionMenuAnnotation,
-                  let page = annotation.page else { return }
-            let textRect = pdfView.convert(annotation.editingBounds, from: page).standardized
-            menu.position(around: textRect, in: pdfView)
+            guard let menu = textActionMenuView else { return }
+            if let annotation = textActionMenuAnnotation, let page = annotation.page {
+                menu.position(around: pdfView.convert(annotation.editingBounds, from: page).standardized, in: pdfView)
+            } else if let annotation = shapeActionMenuAnnotation, let page = annotation.page {
+                menu.position(around: pdfView.convert(annotation.shapeBounds, from: page).standardized, in: pdfView)
+            }
         }
 
         /// 말풍선 메뉴와 투명 터치 호스트를 함께 제거합니다.
@@ -5352,6 +5446,7 @@ extension PortalPDFKitView {
             textActionMenuView = nil
             textActionMenuHostView = nil
             textActionMenuAnnotation = nil
+            shapeActionMenuAnnotation = nil
             host?.isUserInteractionEnabled = false
             guard let menu, let host else {
                 menu?.removeFromSuperview()
@@ -7251,9 +7346,10 @@ extension PortalPDFKitView {
                 return selectedTool == .eraser
             }
             if gestureRecognizer === lassoTapGesture {
-                return selectedTool == .lasso && !selectedLassoAnnotations.isEmpty
+                return selectedTool == .lasso && (connectorEnabled || !selectedLassoAnnotations.isEmpty)
             }
             if gestureRecognizer === drawingPanGesture, selectedTool == .lasso {
+                if connectorEnabled { return selectedConnector != nil }
                 // 삭제 조작점의 짧은 탭을 올가미 이동 Pan이 먼저 가져가면 삭제 Tap이
                 // 실패합니다. 삭제 영역에서는 Pan을 시작하지 않아 Tap이 즉시 처리되게 합니다.
                 if let pdfView,
@@ -7606,6 +7702,65 @@ extension PortalPDFKitView {
             }
 
             selectShapeAnnotation(shapeAnnotation, in: pdfView)
+            presentShapeActionMenu(for: shapeAnnotation, on: page, in: pdfView)
+        }
+
+        func presentShapeActionMenu(for annotation: PortalPDFShapeAnnotation, on page: PDFPage, in pdfView: PDFView) {
+            dismissTextActionMenu()
+            let host = PortalPDFTextOverlayView(frame: pdfView.bounds)
+            host.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            let menu = PortalPDFTextActionMenuView(frame: .zero, objectName: "도형")
+            menu.applyTheme(editorTheme)
+            menu.onAction = { [weak self, weak annotation, weak page, weak pdfView] action in
+                guard let self, let annotation, let page, let pdfView, annotation.page === page else { return }
+                dismissTextActionMenu()
+                switch action {
+                case .delete:
+                    deleteShapeAnnotation(annotation, from: page, in: pdfView)
+                case .duplicate:
+                    let bounds = annotation.shapeBounds.offsetBy(dx: 16, dy: -16).clampedInside(page.bounds(for: .cropBox))
+                    let copy = PortalPDFShapeAnnotation(shapeType: annotation.shapeType,
+                        bounds: bounds, lineWidth: annotation.portalLineWidth, lineColor: annotation.lineColor,
+                        fillColor: annotation.fillColor)
+                    copy.rotationAngle = annotation.rotationAngle
+                    page.addAnnotation(copy)
+                    selectShapeAnnotation(copy, in: pdfView)
+                    onDocumentChanged(changedPages: [page])
+                    presentShapeActionMenu(for: copy, on: page, in: pdfView)
+                case .copy:
+                    let source = annotation.shapeBounds
+                    let scale = min(2, 700 / max(source.width, source.height, 1))
+                    let frame = CGRect(origin: .zero,
+                        size: CGSize(width: source.width * scale, height: source.height * scale))
+                    guard frame.width >= 1, frame.height >= 1 else { return }
+                    let path = PortalPDFShapePath.make(annotation.shapeType,
+                        in: frame.insetBy(dx: scale, dy: scale), yAxisPointsDown: true)
+                    UIPasteboard.general.image = UIGraphicsImageRenderer(size: frame.size).image { _ in
+                        annotation.fillColor.setFill()
+                        path.fill()
+                        annotation.lineColor.setStroke()
+                        path.lineWidth = annotation.portalLineWidth * scale
+                        path.stroke()
+                    }
+                case .edit:
+                    reportShapeSelection(true)
+                case .bringToFront, .sendToBack:
+                    let others = page.annotations.filter { $0 !== annotation }
+                    page.removeAnnotation(annotation)
+                    if action == .sendToBack { others.forEach(page.removeAnnotation) }
+                    page.addAnnotation(annotation)
+                    if action == .sendToBack { others.forEach(page.addAnnotation) }
+                    onDocumentChanged(changedPages: [page])
+                }
+            }
+            host.addSubview(menu)
+            pdfView.addSubview(host)
+            pdfView.bringSubviewToFront(host)
+            textActionMenuHostView = host
+            textActionMenuView = menu
+            shapeActionMenuAnnotation = annotation
+            updateTextActionMenuPosition(in: pdfView)
+            animateTextActionMenuPresentation(menu)
         }
 
         /**
@@ -8017,6 +8172,18 @@ extension PortalPDFKitView {
         func rebuildStandardPenPaths() {
             guard let activePenPath,
                   let activePenOverlayPath else { return }
+            if selectedTool == .neon, neonKind != .line {
+                func update(_ path: UIBezierPath, with points: [CGPoint]) {
+                    path.removeAllPoints()
+                    if let first = points.first {
+                        path.move(to: first)
+                        for point in points.dropFirst() { path.addLine(to: point) }
+                    }
+                }
+                update(activePenPath, with: neonKind.points(from: activePenPagePoints, arrowSize: 18))
+                update(activePenOverlayPath, with: neonKind.points(from: activePenViewPoints, arrowSize: 18 * currentPDFScaleFactor))
+                return
+            }
             guard let pagePath = PortalPDFPencilPathBuilder.path(points: activePenPagePoints),
                   let viewPath = PortalPDFPencilPathBuilder.path(points: activePenViewPoints) else {
                 return
@@ -8944,7 +9111,7 @@ extension PortalPDFKitView {
         /// 현재 획을 PDF 파일과 분리된 페이지 오버레이 네온 라인으로 확정합니다.
         func addTransientNeonStroke(to page: PDFPage) {
             guard let pdfView, !activePenPagePoints.isEmpty else { return }
-            var points = activePenPagePoints
+            var points = neonKind.points(from: activePenPagePoints, arrowSize: 18)
             if points.count == 1, let point = points.first {
                 points.append(CGPoint(x: point.x + max(0.01, penLineWidth * 0.02), y: point.y))
             }
@@ -8952,7 +9119,8 @@ extension PortalPDFKitView {
                 page: page,
                 pagePoints: points,
                 color: penColor,
-                lineWidth: penLineWidth
+                lineWidth: penLineWidth,
+                kind: neonKind
             )
             transientNeonStrokes.append(stroke)
             if let overlay = pageOverlayViews[ObjectIdentifier(page)] {
@@ -8975,7 +9143,7 @@ extension PortalPDFKitView {
                 guard let firstPoint = viewPoints.first else { return }
                 let path = makeRoundedPath(startPoint: firstPoint)
                 viewPoints.dropFirst().forEach { path.addLine(to: $0) }
-                let smoothedPath = path.smoothedForPDFInk()
+                let smoothedPath = stroke.kind == .line ? path.smoothedForPDFInk() : path
 
                 let origin = overlay.convert(pdfView.convert(CGPoint.zero, from: page), from: pdfView)
                 let unitX = overlay.convert(pdfView.convert(CGPoint(x: 1, y: 0), from: page), from: pdfView)
@@ -9681,6 +9849,7 @@ extension PortalPDFKitView {
 
         /// 선택된 도형 Annotation의 점선 선택 표시를 해제합니다.
         func clearSelectedShapeAnnotation(forceRedraw: Bool = true) {
+            if shapeActionMenuAnnotation != nil { dismissTextActionMenu() }
             guard let pdfView else {
                 selectedShapeAnnotation?.isPortalSelected = false
                 selectedShapeAnnotation = nil
