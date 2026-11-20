@@ -237,6 +237,7 @@ struct PortalPDFKitView: UIViewRepresentable {
     let viewerBackgroundColor: Color
     /// 현재 선택된 PDF 편집 도구입니다.
     let selectedTool: PortalPDFMarkupTool
+    var freeNotes: PDFNoteWorkspaceState?
     var neonKind: PortalPDFNeonKind = .line
     var neonClearRevision: Int = 0
     var connectorMode = false
@@ -347,6 +348,20 @@ struct PortalPDFKitView: UIViewRepresentable {
         context.coordinator.updateCurrentPageChangedHandler(onCurrentPageChanged)
         context.coordinator.updateZoomPercentageChangedHandler(onZoomPercentageChanged)
         context.coordinator.attach(to: pdfView)
+        freeNotes?.attach(pdfView)
+        freeNotes?.selectedArea = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return nil }
+            let selected = (coordinator.selectedTextAnnotation as PDFAnnotation?)
+                ?? (coordinator.selectedShapeAnnotation as PDFAnnotation?)
+                ?? (coordinator.selectedImageAnnotation as PDFAnnotation?)
+            guard let annotation = selected, let page = annotation.page else { return nil }
+            return PDFNoteWorkspaceState.Target(page: page, bounds: annotation.bounds, objectID: annotation.portalStableEditID.uuidString)
+        }
+        freeNotes?.changeDocument = { [weak coordinator = context.coordinator] page, edit in
+            coordinator?.finishTextEditing()
+            edit()
+            coordinator?.onDocumentChanged(changedPages: [page])
+        }
         return pdfView
     }
 
@@ -2679,6 +2694,7 @@ extension PortalPDFKitView {
 
         enum AnnotationHistoryRecord {
             case retained(PDFAnnotation)
+            case noteLink(bounds: CGRect, url: URL, contents: String?)
             case image(PortalPDFImageAnnotation.HistoryState)
             case shape(bounds: CGRect, contents: String)
             case text(bounds: CGRect, contents: String)
@@ -4495,7 +4511,12 @@ extension PortalPDFKitView {
             let pagesToRefresh = changedPages.isEmpty
                 ? (pdfView?.document).map { document in (0..<document.pageCount).compactMap { document.page(at: $0) } } ?? []
                 : changedPages
-            for page in pagesToRefresh { PortalPDFConnectorRecord.refresh(on: page) }
+            for page in pagesToRefresh {
+                PortalPDFConnectorRecord.refresh(on: page)
+                PDFNoteWorkspaceState.refreshObjectLinks(on: page) { id in
+                    page.annotations.first { PortalPDFPageEditDocument.isManagedAnnotation($0) && $0.portalStableEditID == id }?.bounds
+                }
+            }
             let usedAppendFastPath: Bool
             if let appendedAnnotation,
                changedPages.count == 1,
@@ -4686,6 +4707,7 @@ extension PortalPDFKitView {
                   let copiedDocument = PDFDocument(data: data),
                   let copiedPage = copiedDocument.page(at: pageIndex) else { return nil }
             copiedDocument.removePage(at: pageIndex)
+            PDFNoteWorkspaceState.rekeyLinks(on: copiedPage)
             return copiedPage
         }
 
@@ -4774,6 +4796,9 @@ extension PortalPDFKitView {
 
         /// PDFAnnotation 객체와 PDFKit 렌더 캐시는 보관하지 않고 복원에 필요한 값만 기록합니다.
         func historyRecord(for annotation: PDFAnnotation) -> AnnotationHistoryRecord {
+            if let url = PDFNoteWorkspaceState.ownedLink(annotation) {
+                return .noteLink(bounds: annotation.bounds, url: url, contents: annotation.contents)
+            }
             if let imageAnnotation = annotation as? PortalPDFImageAnnotation {
                 return .image(imageAnnotation.historyState)
             }
@@ -4808,6 +4833,14 @@ extension PortalPDFKitView {
         func annotation(from record: AnnotationHistoryRecord) -> PDFAnnotation {
             switch record {
             case .retained(let annotation):
+                return annotation
+            case .noteLink(let bounds, let url, let contents):
+                let annotation = PDFAnnotation(bounds: bounds, forType: .link, withProperties: nil)
+                annotation.url = url
+                annotation.contents = contents
+                let border = PDFBorder()
+                border.lineWidth = 0
+                annotation.border = border
                 return annotation
             case .image(let state):
                 return PortalPDFImageAnnotation.annotation(from: state)
@@ -4896,6 +4929,7 @@ extension PortalPDFKitView {
                 || annotation is PortalPDFTextAnnotation
                 || PortalPDFPressureInkAnnotation.isPressureInk(annotation)
                 || annotation.isPortalInkAnnotation
+                || PDFNoteWorkspaceState.ownedLink(annotation) != nil
         }
 
         /**

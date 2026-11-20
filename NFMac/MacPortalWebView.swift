@@ -249,6 +249,19 @@ struct MacPortalWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+            if let link = PDFNoteWorkspaceState.libraryInvocation(url),
+               navigationAction.sourceFrame.isMainFrame,
+               let source = navigationAction.sourceFrame.request.url, MacPortalConfig.isPortalURL(source) {
+                if let local = MacPDFLocalStorageRepository().documents().first(where: { $0.id == link.id && !$0.isDeleted }) {
+                    model.onPreviewPDFAttachment?(MacPDFRemoteRequest(
+                        url: local.localFileURL, cookieHeader: nil, localDocument: local, initialFreeNote: link.note
+                    ))
+                } else {
+                    webView.evaluateJavaScript("alert('이 기기에서 연결된 PDF를 찾을 수 없습니다.')")
+                }
+                decisionHandler(.cancel)
+                return
+            }
             if isAttachmentNavigationURL(url) {
                 presentAttachmentPreview(url, from: webView)
                 decisionHandler(.cancel)
@@ -821,6 +834,7 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         private func presentAttachmentPreview(_ url: URL, from webView: WKWebView) {
+            let invocation = PDFNoteWorkspaceState.attachmentInvocation(url)
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
                 guard let self else { return }
                 let host = url.host?.lowercased()
@@ -832,8 +846,9 @@ struct MacPortalWebView: NSViewRepresentable {
                 let cookieHeader = matching.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
                 Task { @MainActor in
                     self.model.onPreviewPDFAttachment?(MacPDFRemoteRequest(
-                        url: url,
-                        cookieHeader: cookieHeader.isEmpty ? nil : cookieHeader
+                        url: invocation.url,
+                        cookieHeader: cookieHeader.isEmpty ? nil : cookieHeader,
+                        initialFreeNote: invocation.note
                     ))
                 }
             }

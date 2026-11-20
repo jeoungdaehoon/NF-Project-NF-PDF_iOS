@@ -54,6 +54,7 @@ final class PortalPDFBackgroundSaveController {
  - SeeAlso: ``PortalAttachmentPreviewItem``
  */
 struct PortalPDFPreviewView: View {
+    @StateObject private var freeNotes = PDFNoteWorkspaceState(origin: URL(string: PortalConfig.portalOrigin)!)
     /// 전체 화면 PDF 보기 닫기 처리를 위한 SwiftUI dismiss 환경 값입니다.
     @Environment(\.dismiss) var dismiss
     /// 웹 위 슬라이드 패널에서는 모달 dismiss 대신 부모의 패널 상태를 닫습니다.
@@ -67,7 +68,10 @@ struct PortalPDFPreviewView: View {
     }
 
     func closePDFPreview() {
-        if let onClose { onClose() } else { dismiss() }
+        Task { @MainActor in
+            guard await freeNotes.flush() else { return }
+            if let onClose { onClose() } else { dismiss() }
+        }
     }
     /// 웹 포털에서 전달된 현재 네이티브 테마입니다.
     @Environment(\.portalAppTheme) var portalTheme
@@ -1104,6 +1108,7 @@ struct PortalPDFPreviewView: View {
     /// 문서 전환으로 편집 내용이 유실되지 않도록 현재 문서 저장 가능 방식에 맞춰 먼저 기록합니다.
     @MainActor
     func persistCurrentPDFBeforeHistorySwitch() async -> Bool {
+        guard await freeNotes.flush() else { return false }
         guard localAutosaveController.hasPendingSave else { return true }
 
         if item.localFileURL != nil {
@@ -1717,7 +1722,8 @@ struct PortalPDFPreviewView: View {
      - Returns: `some View`
      */
     func pdfEditorView(document: PDFDocument) -> some View {
-        GeometryReader { geometry in
+        PDFNoteWorkspace(state: freeNotes, enabled: !isPDFPresentationModeEnabled) {
+            GeometryReader { geometry in
             ZStack(alignment: .bottom) {
                 PortalPDFKitView(
                     document: document,
@@ -1725,6 +1731,7 @@ struct PortalPDFPreviewView: View {
                     pageLayout: pdfPageLayout,
                     viewerBackgroundColor: pdfWorkspaceBackgroundColor,
                     selectedTool: isPDFPresentationModeEnabled ? .view : selectedTool,
+                    freeNotes: freeNotes,
                     neonKind: neonKind,
                     neonClearRevision: neonClearRevision,
                     connectorMode: connectorMode,
@@ -1877,6 +1884,10 @@ struct PortalPDFPreviewView: View {
                 .zIndex(10)
             }
             .animation(pdfPageSideListSpringAnimation, value: isPDFPageSideListPresented)
+            }
+        }
+        .task(id: document) {
+            freeNotes.activate(document, source: item.url, localID: item.localDocumentID, note: item.initialFreeNote)
         }
     }
 

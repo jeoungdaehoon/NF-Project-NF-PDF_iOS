@@ -57,6 +57,17 @@ enum PortalPDFPortableWorkspace {
             count += objects.count; guard count <= 100_000 else { return nil }
             let converted = objects.enumerated().compactMap { object($0.element, displayIndex: $0.offset, page: page) }
             guard converted.count == objects.count else { return nil }
+            for entry in objects {
+                guard let link = entry["link"] as? String, let url = URL(string: link), url.scheme == "https",
+                      url.path == "/pdf-free-note", let bounds = entry["bounds"] as? [String: Any] else { continue }
+                let frame = CGRect(x: number(bounds, "x"), y: number(bounds, "y"),
+                                   width: number(bounds, "width"), height: number(bounds, "height"))
+                    .applying(screenToPDF(page)).standardized
+                guard !frame.isEmpty, !page.annotations.contains(where: { $0.url == url && $0.bounds == frame }) else { continue }
+                let annotation = PDFAnnotation(bounds: frame, forType: .link, withProperties: nil)
+                annotation.url = url
+                page.addAnnotation(annotation)
+            }
             edits.pages.append(.init(pageIndex: index, objects: converted))
         }
         let stored = PDFAnnotation(bounds: .zero, forType: .text, withProperties: nil)
@@ -89,11 +100,26 @@ enum PortalPDFPortableWorkspace {
             var id = (tag?.value(forAnnotationKey: .name) as? String) ?? UUID().uuidString
             if !seen.insert(id).inserted { id = UUID().uuidString; seen.insert(id) }
             let bounds = page.bounds(for: .cropBox); let rotated = page.rotation % 180 != 0
-            let objects = captured.page(at: index)?.objects.compactMap { native -> [String: Any]? in
+            var objects = captured.page(at: index)?.objects.compactMap { native -> [String: Any]? in
                 guard var value = portable(native, page: page, previous: oldObjects[native.id.uuidString.lowercased()]) else { return nil }
                 if !seenObjects.insert(native.id.uuidString).inserted { value["id"] = UUID().uuidString }
                 return value
             } ?? []
+            let toScreen = screenToPDF(page).inverted()
+            for annotation in page.annotations {
+                guard let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
+                      url.scheme == "https", url.path == "/pdf-free-note",
+                      !objects.contains(where: { $0["link"] as? String == url.absoluteString &&
+                          ($0["id"] as? String)?.lowercased() == url.fragment?.lowercased() })
+                else { continue }
+                let frame = annotation.bounds.applying(toScreen).standardized
+                guard !frame.isEmpty else { continue }
+                var linkId = PDFNoteWorkspaceState.ownedLink(annotation)?.fragment ?? UUID().uuidString
+                if !seenObjects.insert(linkId).inserted { linkId = UUID().uuidString; seenObjects.insert(linkId) }
+                objects.append(["id": linkId, "kind": "shape", "shape": "rectangle", "bounds":
+                    ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height],
+                    "color": 0, "fillColor": 0, "lineWidth": 0.1, "fontSize": 16, "rotation": 0, "link": url.absoluteString])
+            }
             return ["id": id, "sourcePage": tagged.map { $0 >= 0 ? $0 as Any : NSNull() } ?? (stored == nil ? index as Any : NSNull()), "width": rotated ? bounds.height : bounds.width, "height": rotated ? bounds.width : bounds.height, "favorite": oldPages.first { $0["id"] as? String == id }?["favorite"] as? Bool ?? false, "objects": objects]
         }
         var root: [String: Any] = ["format": "notefree-pdf-workspace", "version": 1, "id": previous?["id"] as? String ?? UUID().uuidString, "title": title, "sourceSha256": digest(source), "revision": UUID().uuidString, "pages": pages]

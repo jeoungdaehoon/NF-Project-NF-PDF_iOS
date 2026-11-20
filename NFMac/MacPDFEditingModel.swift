@@ -297,6 +297,12 @@ final class MacPDFEditorState: ObservableObject {
         if undoStack.count > 60 { undoStack.removeFirst() }; redoStack.removeAll(); didChange()
     }
     private func didChange() {
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            if PDFNoteWorkspaceState.refreshObjectLinks(on: page, bounds: { id in
+                self.objects.first { $0.page == index && $0.id == id }?.bounds
+            }) { baseChanged = true }
+        }
         selection = selection.intersection(Set(objects.map(\.id)))
         pendingDocumentSave = true
         editRevision &+= 1
@@ -531,6 +537,7 @@ final class MacPDFEditorState: ObservableObject {
                 favorites = Set(favorites.map { $0 >= insert ? $0 + 1 : $0 })
                 if operation == "duplicate" {
                     let mapping = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, UUID()) })
+                    PDFNoteWorkspaceState.rekeyLinks(on: newPage, remap: mapping)
                     objects += previous.map { original in
                         var copy = original; copy.id = mapping[original.id]!; copy.page = insert
                         copy.sourceID = copy.sourceID.flatMap { mapping[$0] }; copy.targetID = copy.targetID.flatMap { mapping[$0] }; return copy
@@ -633,6 +640,12 @@ final class MacPDFEditorState: ObservableObject {
             let boxData = withUnsafeBytes(of: &box) { Data($0) }
             context.beginPDFPage([kCGPDFContextMediaBox as String: boxData] as CFDictionary)
             page.draw(with: .mediaBox, to: context)
+            for annotation in page.annotations {
+                if let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
+                   url.scheme == "https", url.path == "/pdf-free-note" {
+                    context.setURL(url as CFURL, for: annotation.bounds)
+                }
+            }
             for object in pageObjects(index) where !object.isTransient { MacPDFObjectRenderer.draw(object, objects: objects, context: context) }
             for object in pageObjects(index) where object.kind == .text {
                 if let link = object.link, let url = URL(string: link), ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { context.setURL(url as CFURL, for: object.bounds) }

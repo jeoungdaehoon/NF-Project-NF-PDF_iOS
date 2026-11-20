@@ -888,6 +888,19 @@ extension PortalWebViewContent {
                 return
             }
             /// 첨부 파일/다운로드 URL은 현재 Portal WebView를 덮지 않도록 외부 열기로 분리합니다.
+            if let link = PDFNoteWorkspaceState.libraryInvocation(url),
+               navigationAction.sourceFrame.isMainFrame,
+               let source = navigationAction.sourceFrame.request.url, viewModel.isPortalURL(source) {
+                if let local = PortalPDFLocalStorageRepository().documents().first(where: { $0.id == link.id && $0.deletedAt == nil }) {
+                    var item = PortalAttachmentPreviewItem(localDocument: local)
+                    item.initialFreeNote = link.note
+                    parent.onPreviewAttachment(item)
+                } else {
+                    webView.evaluateJavaScript("alert('이 기기에서 연결된 PDF를 찾을 수 없습니다.')")
+                }
+                decisionHandler(.cancel)
+                return
+            }
             if isAttachmentNavigationURL(url) {
                 presentAttachmentPreview(url, from: webView)
                 decisionHandler(.cancel)
@@ -996,12 +1009,15 @@ extension PortalWebViewContent {
             - webView: Cookie Store를 제공하는 현재 WKWebView 입니다.
          */
         private func presentAttachmentPreview(_ url: URL, from webView: WKWebView) {
+            let invocation = PDFNoteWorkspaceState.attachmentInvocation(url)
             /// Portal 첨부 API가 인증 Cookie를 요구할 수 있어 WKWebView CookieStore에서 현재 도메인 Cookie를 함께 전달합니다.
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
                 guard let self else { return }
                 let cookieHeader = self.cookieHeader(for: url, cookies: cookies)
                 Task { @MainActor in
-                    self.parent.onPreviewAttachment(PortalAttachmentPreviewItem(url: url, cookieHeader: cookieHeader))
+                    var item = PortalAttachmentPreviewItem(url: invocation.url, cookieHeader: cookieHeader)
+                    item.initialFreeNote = invocation.note
+                    self.parent.onPreviewAttachment(item)
                 }
             }
         }

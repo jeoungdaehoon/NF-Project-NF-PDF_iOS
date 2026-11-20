@@ -293,6 +293,12 @@ extension PDFDocument {
             context.translateBy(x: 0, y: pageBounds.height)
             context.scaleBy(x: 1, y: -1)
             page.draw(with: .mediaBox, to: context)
+            for annotation in page.annotations {
+                if let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
+                   url.scheme == "https", url.path == "/pdf-free-note" {
+                    context.setURL(url as CFURL, for: annotation.bounds)
+                }
+            }
             context.restoreGState()
         }
         UIGraphicsEndPDFContext()

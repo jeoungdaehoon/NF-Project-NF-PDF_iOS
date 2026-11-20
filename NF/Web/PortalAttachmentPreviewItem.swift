@@ -49,6 +49,7 @@ struct PortalAttachmentPreviewItem: Identifiable, Hashable {
     let localDocumentID: String?
     /// 네이티브 문서 라이브러리가 직접 읽을 로컬 PDF URL입니다.
     let localFileURL: URL?
+    var initialFreeNote: String? = nil
 
     /// 만료되는 서명 Query를 제외해 같은 문서의 히스토리 식별자를 안정적으로 유지합니다.
     var historyIdentifier: String {

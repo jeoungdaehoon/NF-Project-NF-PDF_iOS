@@ -13,6 +13,7 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
     let url: URL
     let cookieHeader: String?
     var localDocument: MacLocalPDFDocument? = nil
+    var initialFreeNote: String? = nil
 }
 
 enum MacPDFSlidePanelLayout {
@@ -814,6 +815,7 @@ struct MacRemotePDFPreviewView: View {
                         identifier: storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
                         fileName: title,
                         sourceURL: isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
+                        initialFreeNote: request.initialFreeNote,
                         cookieHeader: request.cookieHeader,
                         sourceData: attachmentData,
                         isContainerResizing: isContainerResizing,

@@ -6,10 +6,17 @@ struct MacPDFCanvas: NSViewRepresentable {
     @ObservedObject var state: MacPDFEditorState
     var isContainerResizing = false
     var onExitPaneExpansion: (() -> Void)?
+    var freeNotes: PDFNoteWorkspaceState?
     func makeNSView(context: Context) -> MacPDFEditingView {
         let view = MacPDFEditingView(); view.editor = state; state.canvas = view
         view.onExitPaneExpansion = onExitPaneExpansion
         view.document = state.document; view.minScaleFactor = 0.1; view.maxScaleFactor = 10
+        freeNotes?.attach(view)
+        freeNotes?.selectedArea = { [weak state] in
+            guard let state, let object = state.selected, let page = state.document.page(at: object.page) else { return nil }
+            return PDFNoteWorkspaceState.Target(page: page, bounds: object.bounds, objectID: object.id.uuidString)
+        }
+        freeNotes?.changeDocument = { [weak state] _, edit in state?.change(structure: true, edit) }
         view.displayMode = .singlePageContinuous; view.displaysPageBreaks = true; view.autoScales = true
         view.installObservers(); view.refreshAnnotations(); return view
     }
