@@ -54,7 +54,7 @@ final class PortalPDFBackgroundSaveController {
  - SeeAlso: ``PortalAttachmentPreviewItem``
  */
 struct PortalPDFPreviewView: View {
-    @StateObject private var freeNotes = PDFNoteWorkspaceState(origin: URL(string: PortalConfig.portalOrigin)!)
+    @StateObject var freeNotes = PDFNoteWorkspaceState(origin: URL(string: PortalConfig.portalOrigin)!)
     /// 전체 화면 PDF 보기 닫기 처리를 위한 SwiftUI dismiss 환경 값입니다.
     @Environment(\.dismiss) var dismiss
     /// 웹 위 슬라이드 패널에서는 모달 dismiss 대신 부모의 패널 상태를 닫습니다.

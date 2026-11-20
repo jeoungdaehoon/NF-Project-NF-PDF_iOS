@@ -17,10 +17,11 @@ enum MacPDFToolbarLayout {
         return CGSize(width: min(x, max(-x, offset.width)), height: min(0, max(-y, offset.height)))
     }
 
-    static func optionsPanel(near toolbar: CGRect, in viewport: CGSize, vertical: Bool) -> (frame: CGRect, alignment: Alignment) {
+    static func optionsPanel(near toolbar: CGRect, in viewport: CGSize, vertical: Bool,
+                             preferredHeight: CGFloat = 384) -> (frame: CGRect, alignment: Alignment) {
         let inset: CGFloat = 8, gap: CGFloat = 8
         let width = min(344, max(1, viewport.width - 2 * inset))
-        let height = min(384, max(1, viewport.height - 2 * inset))
+        let height = min(preferredHeight, max(1, viewport.height - 2 * inset))
         let left = toolbar.minX - gap - inset
         let right = viewport.width - inset - toolbar.maxX - gap
         if vertical && max(left, right) >= min(220, width) {

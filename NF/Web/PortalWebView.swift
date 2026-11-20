@@ -1051,6 +1051,9 @@ extension PortalWebViewContent {
             - navigation: 완료된 Navigation 정보 입니다.
          */
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            #if !targetEnvironment(macCatalyst)
+            PortalHardwareKeyboard.shared.attach(webView)
+            #endif
             webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
                 IncomingDocuments.syncCookies(cookies)
             }

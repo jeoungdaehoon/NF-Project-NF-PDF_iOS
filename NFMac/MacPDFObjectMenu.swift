@@ -71,6 +71,7 @@ struct MacPDFObjectMenu: View {
                             }
                     }
                     .padding(.horizontal, 5)
+                    .frame(height: rect.height, alignment: .center)
                 }
                 .frame(width: rect.width, height: rect.height)
                 .background(MacPDFPanelSurface(radius: 9))
@@ -95,8 +96,21 @@ struct MacPDFObjectMenu: View {
     }
 
     private func bubble(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
-        MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", action: action)
+        MacPDFActionButton(title: "", identifier: "pdf.object.\(id)", accessibilityTitle: title, action: action)
             .frame(width: 48, height: 46)
+            .overlay {
+                VStack(spacing: 4) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 16))
+                        .frame(width: 20, height: 20)
+                    Text(title)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Color(nsColor: .labelColor))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
     }
 
     private func section(_ title: String) -> some View {

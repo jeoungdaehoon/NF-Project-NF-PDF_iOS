@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class PortalPDFNoteWorkspaceTests: XCTestCase {
+    func testPopupPlacementFollowsPagePanAndZoom() {
+        let initialAnchor = CGRect(x: 40, y: 60, width: 20, height: 20)
+        let frame = CGRect(x: 80, y: 90, width: 200, height: 140)
+        let placement = PDFNotePlacement(frame: frame, anchor: initialAnchor, scale: 1)
+        let zoomedAnchor = CGRect(x: 100, y: 150, width: 40, height: 40)
+        XCTAssertEqual(placement.screenFrame(anchor: zoomedAnchor, scale: 2),
+                       CGRect(x: 180, y: 210, width: 400, height: 280))
+        XCTAssertEqual(placement.contentScale(at: 2), 2)
+
+        let resized = PDFNotePlacement(frame: CGRect(x: 70, y: 90, width: 210, height: 140),
+                                       anchor: initialAnchor, scale: 1)
+        let rescaled = PDFNotePlacement(frame: CGRect(x: 70, y: 90, width: 210, height: 140),
+                                        anchor: initialAnchor, scale: 1, contentScale: 1.25)
+        XCTAssertEqual(resized.contentScale(at: 2), 2)
+        XCTAssertEqual(rescaled.contentScale(at: 2), 2.5)
+    }
+
     func testLinkSurvivesPDFSerializationAndFollowsItsObject() throws {
         let state = PDFNoteWorkspaceState(origin: URL(string: "https://example.test")!)
         let page = PDFPage()

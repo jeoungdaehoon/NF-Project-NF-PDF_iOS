@@ -219,6 +219,7 @@ final class MacPDFEditorState: ObservableObject {
     let sourceURL: URL?
     let cookieHeader: String?
     private var directory: URL
+    var notePopupLayoutDirectory: URL { directory.appendingPathComponent("note-popup-layouts", isDirectory: true) }
     private var sourceHashes: Set<String> = []
     private var undoStack: [Change] = [], redoStack: [Change] = []
     private var saveTask: Task<Void, Never>?

@@ -42,7 +42,7 @@ struct MacPDFEditorView: View {
     @State private var showReset = false
     @State private var connectorSettingsExpanded = false
     @GestureState private var paletteDrag = CGSize.zero
-    private var detachedPaletteVisible: Bool { (state.alwaysShowPalette || state.paletteDetached) && !state.presentation }
+    private var detachedPaletteVisible: Bool { (state.alwaysShowPalette || state.paletteDetached) && !state.presentation && !freeNotes.documentTool }
     enum Modal: String, Identifiable { case crop, board, imageEditor, systemImageEditor; var id: String { rawValue } }
     var body: some View {
         VStack(spacing: 0) {
@@ -80,7 +80,7 @@ struct MacPDFEditorView: View {
                         if !state.presentation && state.pageControlPosition != "bottom" { sidePageControls }
                     }
                     .overlayPreferenceValue(MacPDFToolbarBounds.self) { anchor in
-                        if state.optionsTool != nil && !detachedPaletteVisible && !state.presentation, let anchor {
+                        if (freeNotes.showsDocumentOptions || state.optionsTool != nil) && !detachedPaletteVisible && !state.presentation, let anchor {
                             GeometryReader { overlay in
                                 toolOptionsPanel(near: overlay[anchor], in: overlay.size)
                             }
@@ -89,7 +89,8 @@ struct MacPDFEditorView: View {
                     }
                 }
                 .task(id: state.identifier) {
-                    freeNotes.activate(state.document, source: state.sourceURL, localID: state.identifier, note: initialFreeNote)
+                    freeNotes.activate(state.document, source: state.sourceURL, localID: state.identifier,
+                                       note: initialFreeNote, popupLayoutDirectory: state.notePopupLayoutDirectory)
                 }
             }
             if !state.presentation { footer }
@@ -214,40 +215,65 @@ struct MacPDFEditorView: View {
     // Keep the settings in the PDF canvas so AppKit does not have to negotiate
     // the size of a separate popover window while SwiftUI lays out the toolbar.
     private func toolOptionsPanel(near toolbar: CGRect, in viewport: CGSize) -> some View {
-        let placement = MacPDFToolbarLayout.optionsPanel(near: toolbar, in: viewport, vertical: state.verticalToolbar)
+        let placement = MacPDFToolbarLayout.optionsPanel(near: toolbar, in: viewport, vertical: state.verticalToolbar,
+                                                        preferredHeight: freeNotes.documentTool ? 520 : 384)
         let rect = placement.frame
-        return options(maxHeight: max(1, rect.height - 24), onClose: { state.optionsTool = nil })
+        return options(maxHeight: max(1, rect.height - 24), onClose: closeToolOptions)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(MacPDFPanelSurface(radius: 12))
             .shadow(radius: 5)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("pdf.toolOptions.panel")
-            .onExitCommand { state.optionsTool = nil }
+            .onExitCommand(perform: closeToolOptions)
             .frame(width: rect.width, height: rect.height, alignment: placement.alignment)
             .offset(x: rect.minX, y: rect.minY)
             .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
+
+    private func closeToolOptions() {
+        state.optionsTool = nil
+        freeNotes.showsDocumentOptions = false
+    }
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
                 handle.frame(width: 32, height: 30)
                 MacPDFActionButton(title: "", symbol: "slider.horizontal.3", identifier: "pdf.toolOptions.toggle", accessibilityTitle: "도구 상세 설정") {
-                    state.optionsTool = state.optionsTool == state.tool ? nil : state.tool
+                    if freeNotes.documentTool { freeNotes.showsDocumentOptions.toggle() }
+                    else { state.optionsTool = state.optionsTool == state.tool ? nil : state.tool }
                 }.frame(width: 32, height: 30)
                 Button { state.paletteLocked.toggle() } label: { Image(systemName: state.paletteLocked ? "lock.fill" : "lock.open") }.help("도구창 위치 잠금")
                 Button { state.verticalToolbar.toggle(); state.rememberSettings() } label: { Image(systemName: "rectangle.portrait.rotate") }.help("가로·세로 전환")
     }
-    private var toolButtons: some View {
+    @ViewBuilder private var toolButtons: some View {
         ForEach(MacPDFTool.allCases) { tool in
-            MacPDFActionButton(title: "", symbol: tool.symbol, identifier: "pdf.tool.\(tool.rawValue)", accessibilityTitle: tool.title) { state.selectTool(tool) }
-                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool) ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
+            MacPDFActionButton(title: "", symbol: tool.symbol, identifier: "pdf.tool.\(tool.rawValue)", accessibilityTitle: tool.title) {
+                freeNotes.documentTool = false
+                state.selectTool(tool)
+            }
+                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool) ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
                 .accessibilityValue(tool == .connector ? (state.connectorEnabled ? "켜짐" : "꺼짐") : (state.tool == tool ? "선택됨" : ""))
         }
+        MacPDFActionButton(title: "", symbol: "doc.text", identifier: "pdf.tool.document", accessibilityTitle: "문서 도구") {
+            if freeNotes.documentTool {
+                freeNotes.showsDocumentOptions.toggle()
+                return
+            }
+            state.selectTool(.view)
+            state.optionsTool = nil
+            state.menuVisible = false
+            freeNotes.documentTool = true
+            freeNotes.showsDocumentOptions = true
+        }
+        .frame(width: 32, height: 30)
+        .background(freeNotes.documentTool ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .accessibilityValue(freeNotes.documentTool ? "선택됨" : "")
     }
     private func options(maxHeight: CGFloat = 360, onClose: (() -> Void)? = nil) -> some View {
         MacPDFCompactOptions(maxHeight: maxHeight) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Label("\(state.tool.title) 설정", systemImage: state.tool.symbol).font(.headline)
+                    Label(freeNotes.documentTool ? "문서 설정" : "\(state.tool.title) 설정",
+                          systemImage: freeNotes.documentTool ? "doc.text" : state.tool.symbol).font(.headline)
                     if let onClose {
                         Spacer(minLength: 4)
                         MacPDFActionButton(title: "", symbol: "xmark", identifier: "pdf.toolOptions.close", accessibilityTitle: "도구 설정 닫기", action: onClose)
@@ -255,15 +281,20 @@ struct MacPDFEditorView: View {
                     }
                 }
                 Divider()
-                toolOptions
-                if state.tool == .text || state.selected?.kind == .text { textOptions }
-                if state.connectorEnabled || state.selected?.kind == .connector {
-                    DisclosureGroup("연결선 설정", isExpanded: $connectorSettingsExpanded) {
-                        connectorOptions.padding(.top, 8)
+                if freeNotes.documentTool {
+                    MacPDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
+                                              onChooseIcon: freeNotes.chooseDocumentIcon)
+                } else {
+                    toolOptions
+                    if state.tool == .text || state.selected?.kind == .text { textOptions }
+                    if state.connectorEnabled || state.selected?.kind == .connector {
+                        DisclosureGroup("연결선 설정", isExpanded: $connectorSettingsExpanded) {
+                            connectorOptions.padding(.top, 8)
+                        }
                     }
-                }
-                if !state.selection.isEmpty {
-                    DisclosureGroup("선택 객체") { selectedOptions.padding(.top, 8) }
+                    if !state.selection.isEmpty {
+                        DisclosureGroup("선택 객체") { selectedOptions.padding(.top, 8) }
+                    }
                 }
                 Divider()
                 DisclosureGroup("도구창 설정") {

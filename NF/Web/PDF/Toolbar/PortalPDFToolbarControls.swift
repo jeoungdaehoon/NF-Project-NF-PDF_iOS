@@ -32,6 +32,7 @@ extension PortalPDFPreviewView {
                             pdfMarkupToolButton(tool)
                         }
                         pdfConnectorToolButton
+                        pdfDocumentToolButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -50,6 +51,7 @@ extension PortalPDFPreviewView {
                             pdfMarkupToolButton(tool)
                         }
                         pdfConnectorToolButton
+                        pdfDocumentToolButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -176,6 +178,7 @@ extension PortalPDFPreviewView {
     /// 단일 PDF 편집 도구 아이콘을 공통 스타일과 동작으로 생성합니다.
     var pdfConnectorToolButton: some View {
         Button {
+            freeNotes.documentTool = false
             if connectorMode {
                 isConnectorPanelPresented.toggle()
             } else {
@@ -289,6 +292,7 @@ extension PortalPDFPreviewView {
 
     func pdfMarkupToolButton(_ tool: PortalPDFMarkupTool) -> some View {
         Button {
+            freeNotes.documentTool = false
             connectorMode = false
             isConnectorPanelPresented = false
 
@@ -299,12 +303,30 @@ extension PortalPDFPreviewView {
                 .font(.system(size: 20, weight: .semibold))
                 // 알약 크기가 변경되어도 개별 도구 버튼의 가로·세로 크기는 40pt를 유지합니다.
                 .frame(width: 40, height: 40)
-                .foregroundStyle(selectedTool == tool ? portalTheme.accentColor : portalTheme.foregroundColor)
-                .background(selectedTool == tool ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
+                .foregroundStyle(selectedTool == tool && !freeNotes.documentTool ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .background(selectedTool == tool && !freeNotes.documentTool ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
         .accessibilityLabel(tool.accessibilityLabel)
         .accessibilityHint("\(tool.title) 도구")
+    }
+
+    var pdfDocumentToolButton: some View {
+        Button {
+            connectorMode = false
+            isConnectorPanelPresented = false
+            selectMarkupTool(.view)
+            freeNotes.documentTool.toggle()
+        } label: {
+            Image(systemName: "doc.text")
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .foregroundStyle(freeNotes.documentTool ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .background(freeNotes.documentTool ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .accessibilityLabel("문서 도구")
+        .accessibilityAddTraits(freeNotes.documentTool ? .isSelected : [])
     }
 
     /// 지우개 크기를 조정하는 하단 상세 편집 박스입니다.

@@ -25,6 +25,19 @@ private final class MacPortalCommandWebView: WKWebView {
 }
 
 struct MacPortalWebView: NSViewRepresentable {
+    static let hideEditingAssistantBarScript = """
+    if (!document.getElementById('nf-mac-editing-assistant-style')) {
+        const style = document.createElement('style');
+        style.id = 'nf-mac-editing-assistant-style';
+        style.textContent = `
+            html { --mobile-assistant-reserve: 0px !important; }
+            [data-mobile-keyboard-bar] { display: none !important; }
+            html[data-pdf-volume-popup="true"] body:has(.pdf-free-note-workspace) [data-linked-document-body] { padding-inline-start: 60px !important; }
+        `;
+        document.head.appendChild(style);
+    }
+    """
+
     @ObservedObject var model: MacPortalBrowserModel
     @ObservedObject var preferences: MacPortalPreferences
     let onFocus: () -> Void
@@ -68,6 +81,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalMacSlideRouting")
 
         let configuration = WKWebViewConfiguration()
+        controller.addUserScript(WKUserScript(source: Self.hideEditingAssistantBarScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         configuration.websiteDataStore = .default()
         configuration.userContentController = controller
         configuration.applicationNameForUserAgent = "NFPortalMac/\(MacAppVersion.number)"

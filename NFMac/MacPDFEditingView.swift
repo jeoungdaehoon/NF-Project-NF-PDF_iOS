@@ -12,6 +12,7 @@ struct MacPDFCanvas: NSViewRepresentable {
         view.onExitPaneExpansion = onExitPaneExpansion
         view.document = state.document; view.minScaleFactor = 0.1; view.maxScaleFactor = 10
         freeNotes?.attach(view)
+        view.freeNotes = freeNotes
         freeNotes?.selectedArea = { [weak state] in
             guard let state, let object = state.selected, let page = state.document.page(at: object.page) else { return nil }
             return PDFNoteWorkspaceState.Target(page: page, bounds: object.bounds, objectID: object.id.uuidString)
@@ -33,6 +34,8 @@ struct MacPDFCanvas: NSViewRepresentable {
 /// surface keeps PDFKit's native text selection, links, menus and drag behavior.
 final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     weak var editor: MacPDFEditorState?
+    weak var freeNotes: PDFNoteWorkspaceState?
+    private var placingDocument = false
     var onExitPaneExpansion: (() -> Void)?
     private var observers: [NSObjectProtocol] = []
     private var historyKeyMonitor: Any?
@@ -438,6 +441,10 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             commandStart = (event.locationInWindow.x, scaleFactor); editingCursor.set()
             return
         }
+        if freeNotes?.placeDocument(at: convert(event.locationInWindow, from: nil)) == true {
+            placingDocument = true
+            return
+        }
         if !event.modifierFlags.contains(.option), routesNativePDFInteraction(at: convert(event.locationInWindow, from: nil)) {
             finishTextEditing(); editor.selection = []; editor.menuVisible = false
             refreshAnnotations(); nativePDFGesture = true
@@ -489,6 +496,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         else if [.pen, .highlighter, .neon].contains(activeTool) { editor.selection = []; updateInkDraft(editor, page: editor.currentPage) }
     }
     override func mouseDragged(with event: NSEvent) {
+        if placingDocument { return }
         if nativePDFGesture { super.mouseDragged(with: event); return }
         if let (x, scale) = commandStart {
             updateCommandModifier(event.modifierFlags)
@@ -555,6 +563,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         transformPreview = preview
     }
     override func mouseUp(with event: NSEvent) {
+        if placingDocument { placingDocument = false; return }
         if nativePDFGesture { nativePDFGesture = false; super.mouseUp(with: event); return }
         if commandStart != nil {
             commandStart = nil; updateCommandModifier(event.modifierFlags); editingCursor.set(); return
@@ -792,6 +801,14 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
         if event.keyCode == 51 || event.keyCode == 117 { editor.deleteSelected(); return }
         if event.keyCode == 53 {
+            if freeNotes?.showsDocumentOptions == true {
+                freeNotes?.showsDocumentOptions = false
+                return
+            }
+            if freeNotes?.documentTool == true {
+                freeNotes?.documentTool = false
+                return
+            }
             if editor.optionsTool != nil && !editor.paletteDetached && !editor.alwaysShowPalette {
                 editor.optionsTool = nil
                 return
