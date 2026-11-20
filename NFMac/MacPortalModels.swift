@@ -457,9 +457,7 @@ final class MacPortalBrowserModel: ObservableObject {
         let shouldHide = override ?? sidebarHidden
         let hidden = shouldHide ? "true" : "false"
         webView.evaluateJavaScript("window.__nfMacSetSidebarHidden && window.__nfMacSetSidebarHidden(\(hidden));")
-        applySidebarPreviewVisibility(
-            shouldHide && (isToolbarSidebarHovered || isWebSidebarHovered)
-        )
+        applySidebarPreviewVisibility(shouldHide && isSidebarHoverVisible)
     }
 
     private func updateSidebarHoverVisibility() {
@@ -473,7 +471,8 @@ final class MacPortalBrowserModel: ObservableObject {
         }
 
         sidebarHoverCloseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 260_000_000)
+            // Allow the pointer to cross from the native toolbar into WebKit.
+            try? await Task.sleep(for: .milliseconds(420))
             guard !Task.isCancelled,
                   let self,
                   self.sidebarHidden,

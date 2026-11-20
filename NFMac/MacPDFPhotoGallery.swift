@@ -8,26 +8,48 @@ struct MacPDFPhotoGallery: View {
     @State private var message = "사진 보관함 접근을 허용하면 최근 사진을 표시합니다."
     @State private var loading = false
     private struct Photo: Identifiable { let id: String; let asset: PHAsset; let image: NSImage }
+    private let thumbnailSize: CGFloat = 64
+    private let spacing: CGFloat = 8
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: spacing) {
             Button("최근 사진 불러오기") { Task { await load() } }.disabled(loading)
             if loading { ProgressView() }
-            if items.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 64))]) {
-                ForEach(items) { item in
-                    Button {
-                        let options = PHImageRequestOptions(); options.deliveryMode = .highQualityFormat; options.isNetworkAccessAllowed = true
-                        PHImageManager.default().requestImageDataAndOrientation(for: item.asset, options: options) { data, _, _, _ in
-                            DispatchQueue.main.async { if let data, let image = NSImage(data: data) { onSelect(image) } }
+            if items.isEmpty {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            } else {
+                let rowCount = min(items.count, 5)
+                let rows = Array(repeating: GridItem(.fixed(thumbnailSize), spacing: spacing), count: rowCount)
+                ScrollView(.horizontal) {
+                    LazyHGrid(rows: rows, spacing: spacing) {
+                        ForEach(items) { item in
+                            Button { select(item) } label: {
+                                Image(nsImage: item.image).resizable().scaledToFill()
+                                    .frame(width: thumbnailSize, height: thumbnailSize)
+                                    .clipped()
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("최근 사진 추가")
                         }
-                    } label: { Image(nsImage: item.image).resizable().scaledToFill().frame(width: 64, height: 64).clipped() }.buttonStyle(.plain).accessibilityLabel("최근 사진 추가")
+                    }
                 }
+                .frame(height: CGFloat(rowCount) * thumbnailSize + CGFloat(rowCount - 1) * spacing)
             }
         }.task {
             let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
             if status == .authorized || status == .limited { await load() }
         }
     }
+
+    private func select(_ item: Photo) {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        PHImageManager.default().requestImageDataAndOrientation(for: item.asset, options: options) { data, _, _, _ in
+            DispatchQueue.main.async { if let data, let image = NSImage(data: data) { onSelect(image) } }
+        }
+    }
+
     private func load() async {
         loading = true; defer { loading = false }
         var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)

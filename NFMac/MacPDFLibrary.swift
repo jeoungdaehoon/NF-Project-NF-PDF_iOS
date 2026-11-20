@@ -12,6 +12,7 @@ struct MacPDFRemoteRequest: Identifiable, Hashable {
     let id = UUID()
     let url: URL
     let cookieHeader: String?
+    var localDocument: MacLocalPDFDocument? = nil
 }
 
 enum MacPDFSlidePanelLayout {
@@ -317,6 +318,8 @@ struct MacPDFLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     var repository = MacPDFLocalStorageRepository()
     var editorDirectory: URL?
+    var onRequestClose: (() -> Void)?
+    var onSelectDocument: ((MacLocalPDFDocument) -> Void)?
     @State private var section: MacPDFLibrarySection = .all
     @State private var searchText = ""
     @State private var documents: [MacLocalPDFDocument] = []
@@ -333,7 +336,10 @@ struct MacPDFLibraryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Button { documentWindow.close(); dismiss() } label: {
+                Button {
+                    documentWindow.close()
+                    if let onRequestClose { onRequestClose() } else { dismiss() }
+                } label: {
                     Image(systemName: "xmark").frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
@@ -515,7 +521,10 @@ struct MacPDFLibraryView: View {
     }
 
     private func reload() { documents = repository.documents(); folders = repository.folders() }
-    private func openDocument(_ document: MacLocalPDFDocument) { documentWindow.open(document, repository: repository, editorDirectory: editorDirectory) }
+    private func openDocument(_ document: MacLocalPDFDocument) {
+        if let onSelectDocument { onSelectDocument(document) }
+        else { documentWindow.open(document, repository: repository, editorDirectory: editorDirectory) }
+    }
     private func prompt(_ title: String, initial: String) -> String? {
         let alert = NSAlert(); alert.messageText = title; alert.addButton(withTitle: "확인"); alert.addButton(withTitle: "취소")
         let field = NSTextField(string: initial); field.frame = CGRect(x: 0, y: 0, width: 340, height: 24); alert.accessoryView = field
@@ -668,11 +677,13 @@ struct MacRemotePDFPreviewView: View {
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
                 Spacer()
-                if didStoreLocally {
-                    Label("Mac 복사본 보관됨", systemImage: "checkmark.circle.fill")
+                if didStoreLocally || (request.localDocument != nil && storedPDF != nil) {
+                    Label(request.localDocument == nil ? "Mac 복사본 보관됨" : "Mac에 저장됨", systemImage: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.green)
-                        .help("Mac에 보관된 복사본입니다. 서버 반영 여부는 편집기의 저장 상태에서 확인하세요.")
+                        .help(request.localDocument == nil
+                            ? "Mac에 보관된 복사본입니다. 서버 반영 여부는 편집기의 저장 상태에서 확인하세요."
+                            : "PDF 문서함에 보관된 파일입니다.")
                 }
                 Button {
                     isMoreMenuPresented.toggle()
@@ -802,7 +813,7 @@ struct MacRemotePDFPreviewView: View {
                         document: pdfDocument,
                         identifier: storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
                         fileName: title,
-                        sourceURL: isConvertedPowerPoint ? nil : request.url,
+                        sourceURL: isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
                         cookieHeader: request.cookieHeader,
                         sourceData: attachmentData,
                         isContainerResizing: isContainerResizing,
@@ -813,7 +824,7 @@ struct MacRemotePDFPreviewView: View {
                         onTogglePaneExpanded: onTogglePaneExpanded,
                         editorDirectory: editorDirectory,
                         onSave: { data in
-                            if isConvertedPowerPoint, let storedPDF {
+                            if (isConvertedPowerPoint || request.localDocument != nil), let storedPDF {
                                 try repository.updateData(storedPDF, data: data)
                                 return
                             }
@@ -887,6 +898,17 @@ struct MacRemotePDFPreviewView: View {
         attachmentData = nil; attachmentIsMovie = false; errorMessage = nil; didStoreLocally = false
         title = "첨부 파일"
         do {
+            if let local = request.localDocument {
+                title = local.fileName
+                let data = try Data(contentsOf: local.localFileURL, options: .mappedIfSafe)
+                guard let document = PDFDocument(data: data), document.pageCount > 0 else { throw CocoaError(.fileReadCorruptFile) }
+                try Task.checkCancellation()
+                storedPDF = local
+                attachmentData = data
+                pdfDocument = document
+                try? repository.recordOpen(local)
+                return
+            }
             var previewURL = request.url
             if request.url.scheme == "https", request.url.host == MacPortalConfig.host, request.url.path.hasPrefix("/api/artifacts/files/"), var parts = URLComponents(url: request.url, resolvingAgainstBaseURL: false) {
                 parts.queryItems = (parts.queryItems ?? []).filter { $0.name != "pdfPreview" } + [URLQueryItem(name: "pdfPreview", value: "1")]

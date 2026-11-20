@@ -60,6 +60,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.add(context.coordinator, name: "NFPortalIOSPDFDocuments")
         controller.add(context.coordinator, name: "NFPortalMacPageZoom")
         controller.add(context.coordinator, name: "NFPortalWorkspace")
+        controller.add(context.coordinator, name: "NFPortalMacGlobalSearch")
         controller.add(context.coordinator, name: "NFPortalMacPaneFocus")
         controller.add(context.coordinator, name: "NFPortalMacSidebarNavigation")
         controller.add(context.coordinator, name: "NFPortalMacSidebarHover")
@@ -149,6 +150,7 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalIOSPDFDocuments",
             "NFPortalMacPageZoom",
             "NFPortalWorkspace",
+            "NFPortalMacGlobalSearch",
             "NFPortalMacPaneFocus",
             "NFPortalMacSidebarNavigation",
             "NFPortalMacSidebarHover",
@@ -683,6 +685,11 @@ struct MacPortalWebView: NSViewRepresentable {
                       let url = message.frameInfo.request.url, url.scheme == "https", MacPortalConfig.isPortalURL(url),
                       let record = message.body as? [String: Any], let enabled = record["enabled"] as? Bool else { return }
                 NotificationCenter.default.post(name: .init("nfPortalWorkspaceRequest"), object: model, userInfo: ["enabled": enabled])
+            case "NFPortalMacGlobalSearch":
+                guard message.frameInfo.isMainFrame, let url = message.frameInfo.request.url,
+                      url.scheme == "https", MacPortalConfig.isPortalURL(url), let action = message.body as? String,
+                      action == "open" || action == "back" else { return }
+                NotificationCenter.default.post(name: .init("nfPortalMacGlobalSearch"), object: model, userInfo: ["resume": action == "back"])
             case "NFPortalMacSlideRouting":
                 guard message.frameInfo.isMainFrame,
                       let url = message.frameInfo.request.url, MacPortalConfig.isPortalURL(url),
@@ -1177,15 +1184,26 @@ struct MacPortalWebView: NSViewRepresentable {
             }
             [0, 80, 250, 700].forEach(function(delay) { setTimeout(apply, delay); });
         };
+        var sidebarPreviewWidth = 276;
+        var sidebarPointerInside = false;
+        function reportSidebarPointer(inside) {
+            if (sidebarPointerInside === inside) return;
+            sidebarPointerInside = inside;
+            window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({ hovering: inside });
+        }
         window.__nfMacSetSidebarPreviewVisible = function(visible, width) {
             var root = document.documentElement;
             var resolvedWidth = Number(width);
             if (Number.isFinite(resolvedWidth) && resolvedWidth > 0) {
+                sidebarPreviewWidth = resolvedWidth;
                 root.style.setProperty('--nf-mac-sidebar-preview-width', resolvedWidth + 'px');
             }
             if (!window.__nfMacSidebarHidden) visible = false;
             if (visible) root.setAttribute('data-nf-mac-sidebar-preview', 'true');
-            else root.removeAttribute('data-nf-mac-sidebar-preview');
+            else {
+                root.removeAttribute('data-nf-mac-sidebar-preview');
+                sidebarPointerInside = false;
+            }
             var openButton = document.querySelector('.portal-titlebar button[aria-controls="portal-navigation"]');
             if (visible && openButton && openButton.getAttribute('aria-expanded') !== 'true') {
                 openButton.click();
@@ -1305,19 +1323,20 @@ struct MacPortalWebView: NSViewRepresentable {
             if (!target || !target.closest || target.closest('#portal-navigation')) return;
             window.webkit.messageHandlers.NFPortalMacPaneFocus.postMessage('focus');
         }, true);
-        document.addEventListener('pointerover', function(event) {
-            var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
-            if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
-            var overscan = parseFloat(getComputedStyle(navigation).getPropertyValue('--nf-mac-sidebar-overscan')) || 0;
-            window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
-                hovering: true,
-                width: Math.max(0, navigation.getBoundingClientRect().width - overscan)
-            });
-        }, true);
+        function trackSidebarPointer(event) {
+            if (!document.documentElement.hasAttribute('data-nf-mac-sidebar-preview')) return;
+            var navigation = document.getElementById('portal-navigation');
+            // The pointer can enter the web view before the sliding panel
+            // reaches it. Use the panel's destination as the hover area.
+            var overPreviewArea = event.clientX >= 0 &&
+                event.clientX < Math.min(sidebarPreviewWidth, window.innerWidth) &&
+                event.clientY >= 0 && event.clientY < window.innerHeight;
+            reportSidebarPointer(!!navigation && (navigation.contains(event.target) || overPreviewArea));
+        }
+        document.addEventListener('pointerover', trackSidebarPointer, true);
+        document.addEventListener('pointermove', trackSidebarPointer, true);
         document.addEventListener('pointerout', function(event) {
-            var navigation = event.target && event.target.closest && event.target.closest('#portal-navigation');
-            if (!navigation || (event.relatedTarget && navigation.contains(event.relatedTarget))) return;
-            window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({ hovering: false });
+            if (!event.relatedTarget) reportSidebarPointer(false);
         }, true);
         document.addEventListener('click', function(event) {
             var target = event.target;
@@ -1326,13 +1345,10 @@ struct MacPortalWebView: NSViewRepresentable {
             var disclosureButton = navigation && target && target.closest && target.closest('button[aria-expanded]');
             var isDisclosureInteraction = !!(disclosureButton && navigation.contains(disclosureButton));
             if (navigation && window.__nfMacSidebarHidden && event.isTrusted && isDisclosureInteraction) {
-                var overscan = parseFloat(getComputedStyle(navigation).getPropertyValue('--nf-mac-sidebar-overscan')) || 0;
-                window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
-                    hovering: true,
-                    width: Math.max(0, navigation.getBoundingClientRect().width - overscan)
-                });
+                if (document.documentElement.hasAttribute('data-nf-mac-sidebar-preview')) reportSidebarPointer(true);
             } else if (navigation && window.__nfMacSidebarHidden && event.isTrusted) {
                 document.documentElement.removeAttribute('data-nf-mac-sidebar-preview');
+                sidebarPointerInside = false;
                 window.webkit.messageHandlers.NFPortalMacSidebarHover.postMessage({
                     hovering: false,
                     dismissAfterSelection: true

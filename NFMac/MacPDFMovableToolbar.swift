@@ -16,6 +16,40 @@ enum MacPDFToolbarLayout {
         let y = max(0, viewport.height - bottomInset - topInset - toolbar.height * scale)
         return CGSize(width: min(x, max(-x, offset.width)), height: min(0, max(-y, offset.height)))
     }
+
+    static func optionsPanel(near toolbar: CGRect, in viewport: CGSize, vertical: Bool) -> (frame: CGRect, alignment: Alignment) {
+        let inset: CGFloat = 8, gap: CGFloat = 8
+        let width = min(344, max(1, viewport.width - 2 * inset))
+        let height = min(384, max(1, viewport.height - 2 * inset))
+        let left = toolbar.minX - gap - inset
+        let right = viewport.width - inset - toolbar.maxX - gap
+        if vertical && max(left, right) >= min(220, width) {
+            let panelWidth = min(width, max(left, right))
+            let x = left >= right ? toolbar.minX - gap - panelWidth : toolbar.maxX + gap
+            let y = max(inset, min(toolbar.minY, viewport.height - inset - height))
+            return (CGRect(x: x, y: y, width: panelWidth, height: height), .top)
+        }
+
+        let above = toolbar.minY - gap - inset
+        let below = viewport.height - inset - toolbar.maxY - gap
+        let x = max(inset, min(toolbar.midX - width / 2, viewport.width - inset - width))
+        if max(above, below) < min(144, height) {
+            // A tall toolbar can fill a very narrow split pane. In that case
+            // place the settings at the edge with the most space.
+            let y = above >= below ? inset : viewport.height - inset - height
+            return (CGRect(x: x, y: max(inset, y), width: width, height: height), above >= below ? .top : .bottom)
+        }
+        let panelHeight = min(height, max(above, below))
+        let y = above >= below ? toolbar.minY - gap - panelHeight : toolbar.maxY + gap
+        return (CGRect(x: x, y: y, width: width, height: panelHeight), above >= below ? .bottom : .top)
+    }
+}
+
+struct MacPDFToolbarBounds: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        if let next = nextValue() { value = next }
+    }
 }
 
 private struct ToolbarSizePreference: PreferenceKey {
@@ -52,6 +86,7 @@ struct MacPDFMovableToolbar<Content: View>: View {
                     measuredSize = size; measuredVertical = state.verticalToolbar
                 }
             }
+            .anchorPreference(key: MacPDFToolbarBounds.self, value: .bounds) { $0 }
             .scaleEffect(scale, anchor: .bottom)
             .offset(bounded(drag?.offset ?? state.toolbarOffset))
             .padding(.bottom, MacPDFToolbarLayout.bottomInset)

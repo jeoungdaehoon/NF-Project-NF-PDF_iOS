@@ -34,7 +34,17 @@ const deadline=setTimeout(()=>report({error:'Fixture timed out at '+stage}),1400
   // WKWebView does not reliably run child-frame timers, so validate its actual
   // host CSS in the main document; Chrome also covers split widths/isolation.
   const splitDocuments=!!document.getElementById('left');
-  const setup=win=>{win.__testMacHandlers=new Proxy({},{get:()=>({postMessage(){}})});win.eval(${JSON.stringify(bootstrap)});for(const name of ['portal-navigation','portal-content','__nfMacBreadcrumbBar'])win.document.getElementById(name)?.style.setProperty('transition','none','important');return win};
+  const hoverMessages = new Map();
+  const setup=win=>{
+    const messages=[];
+    hoverMessages.set(win,messages);
+    win.__testMacHandlers=new Proxy({},{get:(_,name)=>({postMessage(value){
+      if(name==='NFPortalMacSidebarHover')messages.push(value.hovering);
+    }})});
+    win.eval(${JSON.stringify(bootstrap)});
+    for(const name of ['portal-navigation','portal-content','__nfMacBreadcrumbBar'])win.document.getElementById(name)?.style.setProperty('transition','none','important');
+    return win;
+  };
   const create=id=>{const win=document.getElementById(id).contentWindow;win.document.open();win.document.write(${JSON.stringify(frameHTML)});win.document.close();return setup(win)};
   stage='create left';const left=splitDocuments?create('left'):setup(window);stage='create right';const right=splitDocuments?create('right'):null;stage='initial wait';await wait();
   const doc=left.document,nav=doc.getElementById('portal-navigation');
@@ -43,6 +53,38 @@ const deadline=setTimeout(()=>report({error:'Fixture timed out at '+stage}),1400
   const rightSnapshot=()=>right?JSON.stringify({sidebar:right.getComputedStyle(right.document.getElementById('portal-navigation')).zIndex,preview:right.document.documentElement.dataset.nfMacSidebarPreview,hidden:right.__nfMacSidebarHidden,width:right.document.getElementById('portal-content').getBoundingClientRect().width}):null;
   const rightBefore=rightSnapshot();
   doc.getElementById('menu-item').onclick=()=>clicks++;
+  stage='pointer handoff';
+  const messages=hoverMessages.get(left), page=doc.querySelector('main'), item=doc.getElementById('menu-item');
+  const pointer=(target,type,clientX,relatedTarget=null)=>target.dispatchEvent(
+    new left.PointerEvent(type,{bubbles:true,clientX,clientY:80,pointerType:'mouse',relatedTarget})
+  );
+  const expectHover=(values,description)=>assert(JSON.stringify(messages)===JSON.stringify(values),description);
+  left.__nfMacSetSidebarHidden(true);
+  left.__nfMacSetSidebarPreviewVisible(false);
+  pointer(page,'pointermove',160);
+  expectHover([],'collapsed menu captured pointer movement');
+  left.__nfMacSetSidebarPreviewVisible(true,276);
+  // WebKit can hit the page while the menu is sliding toward this position.
+  pointer(page,'pointerover',160);
+  expectHover([true],'moving from the native button into the opening menu lost hover');
+  pointer(page,'pointerout',160,item);
+  pointer(item,'pointerover',160,page);
+  pointer(item,'pointermove',180);
+  expectHover([true],'moving between the page and the menu reported an exit');
+  pointer(item,'pointerout',300,page);
+  pointer(page,'pointermove',300);
+  expectHover([true,false],'leaving the menu within the pane did not release hover');
+  pointer(page,'pointermove',160);
+  pointer(page,'pointerout',160);
+  expectHover([true,false,true,false],'leaving the web view did not release hover');
+  left.__nfMacSetSidebarPreviewVisible(false);
+  pointer(page,'pointermove',160);
+  expectHover([true,false,true,false],'closed menu kept reporting hover');
+  left.__nfMacSetSidebarPreviewVisible(true,276);
+  pointer(item,'pointerover',160);
+  expectHover([true,false,true,false,true],'reopening the menu did not restore hover tracking');
+  left.__nfMacSetSidebarPreviewVisible(false);
+  if(right)assert(hoverMessages.get(right).length===0,'left menu reported hover in the right split pane');
   for(const width of splitDocuments?[480,760]:[innerWidth]) {
     stage='width '+width;
     if(splitDocuments)document.getElementById('left').style.width=width+'px';await wait();

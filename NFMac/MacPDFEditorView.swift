@@ -74,6 +74,13 @@ struct MacPDFEditorView: View {
                     .overlay(alignment: state.pageControlPosition == "left" ? .leading : .trailing) {
                         if !state.presentation && state.pageControlPosition != "bottom" { sidePageControls }
                     }
+                    .overlayPreferenceValue(MacPDFToolbarBounds.self) { anchor in
+                        if state.optionsTool != nil && !detachedPaletteVisible && !state.presentation, let anchor {
+                            GeometryReader { overlay in
+                                toolOptionsPanel(near: overlay[anchor], in: overlay.size)
+                            }
+                        }
+                    }
                 }
             }
             if !state.presentation { footer }
@@ -101,6 +108,9 @@ struct MacPDFEditorView: View {
         }
         .onDisappear { state.close() }
         .onChange(of: state.selection) { _, _ in state.canvas?.refreshAnnotations() }
+        .onChange(of: state.optionsTool) { _, tool in
+            if tool == nil && !detachedPaletteVisible && state.editingPaletteIndex != nil { state.editingPaletteIndex = nil }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pdf.editor")
         .preferredColorScheme(appearance.colorScheme)
@@ -189,14 +199,30 @@ struct MacPDFEditorView: View {
             }
         }
         .padding(8).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1)).shadow(color: .black.opacity(0.12), radius: 8, y: 4)
-        .popover(isPresented: Binding(get: { state.optionsTool != nil && !detachedPaletteVisible }, set: { if !$0 { state.optionsTool = nil } }), arrowEdge: .top) {
-            options.frame(width: 320).padding(12)
-                .presentationBackground(Color(nsColor: .windowBackgroundColor))
-        }
+    }
+
+    // Keep the settings in the PDF canvas so AppKit does not have to negotiate
+    // the size of a separate popover window while SwiftUI lays out the toolbar.
+    private func toolOptionsPanel(near toolbar: CGRect, in viewport: CGSize) -> some View {
+        let placement = MacPDFToolbarLayout.optionsPanel(near: toolbar, in: viewport, vertical: state.verticalToolbar)
+        let rect = placement.frame
+        return options(maxHeight: max(1, rect.height - 24), onClose: { state.optionsTool = nil })
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(MacPDFPanelSurface(radius: 12))
+            .shadow(radius: 5)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("pdf.toolOptions.panel")
+            .onExitCommand { state.optionsTool = nil }
+            .frame(width: rect.width, height: rect.height, alignment: placement.alignment)
+            .offset(x: rect.minX, y: rect.minY)
+            .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
                 handle.frame(width: 32, height: 30)
-                Button { state.optionsTool = state.optionsTool == state.tool ? nil : state.tool } label: { Image(systemName: "slider.horizontal.3").frame(width: 32, height: 30) }.buttonStyle(.plain).help("도구 상세 설정")
+                MacPDFActionButton(title: "", symbol: "slider.horizontal.3", identifier: "pdf.toolOptions.toggle", accessibilityTitle: "도구 상세 설정") {
+                    state.optionsTool = state.optionsTool == state.tool ? nil : state.tool
+                }.frame(width: 32, height: 30)
                 Button { state.paletteLocked.toggle() } label: { Image(systemName: state.paletteLocked ? "lock.fill" : "lock.open") }.help("도구창 위치 잠금")
                 Button { state.verticalToolbar.toggle(); state.rememberSettings() } label: { Image(systemName: "rectangle.portrait.rotate") }.help("가로·세로 전환")
     }
@@ -207,11 +233,17 @@ struct MacPDFEditorView: View {
                 .accessibilityValue(tool == .connector ? (state.connectorEnabled ? "켜짐" : "꺼짐") : (state.tool == tool ? "선택됨" : ""))
         }
     }
-    private var options: some View {
-        MacPDFCompactOptions {
+    private func options(maxHeight: CGFloat = 360, onClose: (() -> Void)? = nil) -> some View {
+        MacPDFCompactOptions(maxHeight: maxHeight) {
             VStack(alignment: .leading, spacing: 10) {
-                Label("\(state.tool.title) 설정", systemImage: state.tool.symbol)
-                    .font(.headline)
+                HStack {
+                    Label("\(state.tool.title) 설정", systemImage: state.tool.symbol).font(.headline)
+                    if let onClose {
+                        Spacer(minLength: 4)
+                        MacPDFActionButton(title: "", symbol: "xmark", identifier: "pdf.toolOptions.close", accessibilityTitle: "도구 설정 닫기", action: onClose)
+                            .frame(width: 22, height: 22)
+                    }
+                }
                 Divider()
                 toolOptions
                 if state.tool == .text || state.selected?.kind == .text { textOptions }
@@ -308,45 +340,51 @@ struct MacPDFEditorView: View {
     }
 
     private var inkPalette: some View {
-        HStack {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    ForEach(Array(state.palette.enumerated()), id: \.offset) { index, color in
-                        Button { state.selectPalette(color) } label: {
-                            Circle().fill(Color(nsColor: color.color)).frame(width: 22, height: 22)
-                                .overlay(Circle().strokeBorder(state.style.stroke == color ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: state.style.stroke == color ? 2 : 1))
-                        }
-                        .buttonStyle(.plain)
-                        .help("선택한 색상을 다시 누르면 색상·두께 편집")
-                        .popover(isPresented: Binding(get: { state.editingPaletteIndex == index }, set: { if !$0 { state.editingPaletteIndex = nil } })) {
-                            VStack(alignment: .leading, spacing: 10) {
-                                Label("색상·두께 편집", systemImage: "paintpalette").font(.headline)
-                                Divider()
-                                toolPreview
-                                ColorPicker("색상", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
-                                panelSlider("두께", value: styleBinding(\.width, field: "width"),
-                                            in: state.tool == .highlighter ? 18...48 : 0.3...8,
-                                            display: String(format: "%.1f pt", state.style.width))
-                                DisclosureGroup(state.tool == .highlighter ? "선 끝" : "필압") {
-                                    if state.tool == .highlighter {
-                                        Toggle("끝모양 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap"))
-                                    } else {
-                                        Toggle("필압", isOn: styleBinding(\.pressure, field: "pressure"))
-                                        panelSlider("필압 강도", value: styleBinding(\.pressureStrength, field: "pressureStrength"),
-                                                    in: 0...2, display: String(format: "%.1f", state.style.pressureStrength))
-                                            .disabled(!state.style.pressure)
-                                    }
-                                }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack {
+                        ForEach(Array(state.palette.enumerated()), id: \.offset) { index, color in
+                            Button { state.selectPalette(color) } label: {
+                                Circle().fill(Color(nsColor: color.color)).frame(width: 22, height: 22)
+                                    .overlay(Circle().strokeBorder(state.style.stroke == color ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: state.style.stroke == color ? 2 : 1))
                             }
-                            .padding(14).frame(width: 260)
-                            .presentationBackground(Color(nsColor: .windowBackgroundColor))
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("pdf.palette.color.\(index)")
+                            .accessibilityLabel("팔레트 색상 \(index + 1)")
+                            .help("선택한 색상을 다시 누르면 색상·두께 편집")
+                        }
+                    }
+                    .padding(1)
+                }
+                Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }
+                    .help("현재 색상을 팔레트에 추가")
+            }
+            if state.editingPaletteIndex != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("색상·두께 편집", systemImage: "paintpalette").font(.headline)
+                        Spacer()
+                        Button { state.editingPaletteIndex = nil } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain).accessibilityLabel("색상 편집 닫기")
+                    }
+                    ColorPicker("색상", selection: colorBinding(\.stroke, field: "stroke"), supportsOpacity: true)
+                    panelSlider("두께", value: styleBinding(\.width, field: "width"),
+                                in: state.tool == .highlighter ? 18...48 : 0.3...8,
+                                display: String(format: "%.1f pt", state.style.width))
+                    DisclosureGroup(state.tool == .highlighter ? "선 끝" : "필압") {
+                        if state.tool == .highlighter {
+                            Toggle("끝모양 둥글게", isOn: styleBinding(\.roundCap, field: "roundCap"))
+                        } else {
+                            Toggle("필압", isOn: styleBinding(\.pressure, field: "pressure"))
+                            panelSlider("필압 강도", value: styleBinding(\.pressureStrength, field: "pressureStrength"),
+                                        in: 0...2, display: String(format: "%.1f", state.style.pressureStrength))
+                                .disabled(!state.style.pressure)
                         }
                     }
                 }
-                .padding(1)
+                .padding(8).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             }
-            Button { state.palette.append(state.style.stroke); state.rememberSettings() } label: { Image(systemName: "plus") }
-                .help("현재 색상을 팔레트에 추가")
         }
     }
 
@@ -537,7 +575,7 @@ struct MacPDFEditorView: View {
         return VStack(spacing: 8) {
             HStack { Image(systemName: "arrow.up.and.down.and.arrow.left.and.right"); Text("상세 팔레트").font(.headline); Spacer(); Button { state.paletteDetached = false; state.alwaysShowPalette = false; state.rememberSettings() } label: { Image(systemName: "xmark") } }
                 .contentShape(Rectangle()).gesture(DragGesture().updating($paletteDrag) { value, drag, _ in if !state.paletteLocked { drag = value.translation } }.onEnded { value in if !state.paletteLocked { state.paletteOffset.width += value.translation.width; state.paletteOffset.height += value.translation.height; state.rememberSettings() } })
-            options
+            options(maxHeight: max(1, height - 54))
         }.padding(12).frame(width: width, height: height, alignment: .top)
             .background(MacPDFPanelSurface(radius: 12)).shadow(radius: 4).offset(offset).padding(10)
     }
@@ -582,17 +620,44 @@ private struct MacPDFOptionsHeight: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
+/// Coalesce measurements for the next run-loop turn and keep the scroll
+/// viewport stable when the measured size rounds to the same point.
+@MainActor
+private final class MacPDFOptionsSizing: ObservableObject {
+    @Published private(set) var height: CGFloat = 360
+    private var pendingHeight: CGFloat?
+    private var updateScheduled = false
+
+    func measure(_ value: CGFloat) {
+        guard value.isFinite, value > 0 else { return }
+        pendingHeight = min(360, max(1, value.rounded(.up)))
+        guard !updateScheduled else { return }
+        updateScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.updateScheduled = false
+            guard let next = self.pendingHeight else { return }
+            self.pendingHeight = nil
+            guard self.height != next else { return }
+            var transaction = Transaction(animation: nil)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { self.height = next }
+        }
+    }
+}
+
 /// Short palettes hug their contents; longer palettes remain fully scrollable.
 private struct MacPDFCompactOptions<Content: View>: View {
+    let maxHeight: CGFloat
     @ViewBuilder var content: () -> Content
-    @State private var contentHeight: CGFloat = 360
+    @StateObject private var sizing = MacPDFOptionsSizing()
     var body: some View {
         ScrollView {
             content().fixedSize(horizontal: false, vertical: true)
                 .background(GeometryReader { geometry in Color.clear.preference(key: MacPDFOptionsHeight.self, value: geometry.size.height) })
         }
-        .frame(height: min(360, max(1, contentHeight)))
-        .onPreferenceChange(MacPDFOptionsHeight.self) { if $0 > 0 { contentHeight = $0 } }
+        .frame(height: min(maxHeight, sizing.height))
+        .onPreferenceChange(MacPDFOptionsHeight.self) { sizing.measure($0) }
     }
 }
 

@@ -423,6 +423,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     override func mouseDown(with event: NSEvent) {
         guard let editor else { super.mouseDown(with: event); return }
+        if editor.optionsTool != nil { editor.optionsTool = nil }
         nativePDFGesture = false
         updateCommandModifier(event.modifierFlags)
         if commandHeld {
@@ -431,7 +432,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             return
         }
         if !event.modifierFlags.contains(.option), routesNativePDFInteraction(at: convert(event.locationInWindow, from: nil)) {
-            finishTextEditing(); editor.selection = []; editor.menuVisible = false; editor.optionsTool = nil
+            finishTextEditing(); editor.selection = []; editor.menuVisible = false
             refreshAnnotations(); nativePDFGesture = true
             super.mouseDown(with: event)
             return
@@ -784,6 +785,10 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
         if event.keyCode == 51 || event.keyCode == 117 { editor.deleteSelected(); return }
         if event.keyCode == 53 {
+            if editor.optionsTool != nil && !editor.paletteDetached && !editor.alwaysShowPalette {
+                editor.optionsTool = nil
+                return
+            }
             cancelGesture(); editor.selection = []; editor.menuVisible = false; editor.optionsTool = nil; editor.tool = .view
             finishTextEditing(); refreshAnnotations()
             if let exit = onExitPaneExpansion { DispatchQueue.main.async(execute: exit) }

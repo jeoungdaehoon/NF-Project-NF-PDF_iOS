@@ -312,6 +312,10 @@ private struct MacPortalWorkspace: View {
     @State private var isSplit = false
     @State private var activePane: MacPortalPaneSelection = .primary
     @State private var isPDFLibraryPresented = false
+    @State private var globalSearchPane: MacPortalPaneSelection?
+    @State private var lastGlobalSearchPane: MacPortalPaneSelection = .primary
+    @State private var globalSearchQuery = ""
+    @State private var showsSearchPDFLibrary = false
     @State private var remotePDFRequest: MacPDFRemoteRequest?
     @State private var remotePDFPane: MacPortalPaneSelection = .primary
     @State private var paneFrames: [MacPortalPaneSelection: CGRect] = [:]
@@ -443,6 +447,97 @@ private struct MacPortalWorkspace: View {
             MacPDFLibraryView()
                 .frame(minWidth: 820, minHeight: 620)
         }
+        .overlay {
+            if showsSearchPDFLibrary {
+                GeometryReader { geometry in
+                    let container = MacPDFSlidePanelLayout.containerFrame(paneBounds: isSplit ? paneFrames[.secondary] : nil, availableSize: geometry.size)
+                    let frame = MacPDFSlidePanelLayout.frame(preferredWidth: nil, availableSize: container.size)
+                        .offsetBy(dx: container.minX, dy: container.minY)
+                    MacPDFLibraryView(onRequestClose: dismissSearchPDFLibrary, onSelectDocument: openSearchPDF)
+                        .frame(width: frame.width, height: frame.height)
+                        .background(Color(nsColor: .windowBackgroundColor))
+                        .clipped()
+                        .position(x: frame.midX, y: frame.midY)
+                }
+                .transition(isSplit ? .opacity : .move(edge: .trailing))
+            }
+        }
+        .overlay {
+            if let pane = globalSearchPane {
+                MacPortalGlobalSearch(webView: (pane == .secondary ? secondary : primary).webView,
+                    repository: MacPDFLocalStorageRepository(), includesLibrary: preferences.pdfLocalStorageEnabled,
+                    query: $globalSearchQuery,
+                    onOpen: { try await openGlobalSearchResult($0, source: pane) },
+                    onClose: { globalSearchPane = nil })
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .init("nfPortalMacGlobalSearch"))) { note in
+            guard let model = note.object as? MacPortalBrowserModel, model === primary || model === secondary else { return }
+            primary.dismissTransientSidebarAfterSelection()
+            showGlobalSearch(resuming: note.userInfo?["resume"] as? Bool == true)
+        }
+        .background {
+            MacPortalSearchShortcut(open: { showGlobalSearch() }, dismiss: {
+                guard globalSearchPane != nil else { return false }
+                globalSearchPane = nil
+                return true
+            }).frame(width: 0, height: 0)
+        }
+    }
+
+    private func showGlobalSearch(resuming: Bool = false) {
+        guard globalSearchPane == nil else { return }
+        if !resuming {
+            lastGlobalSearchPane = activePane
+            globalSearchQuery = ""
+        }
+        globalSearchPane = isSplit ? lastGlobalSearchPane : .primary
+    }
+
+    private func openGlobalSearchResult(_ result: MacPortalSearchResult, source: MacPortalPaneSelection) async throws {
+        if let document = result.document { openSearchPDF(document); return }
+        if result.kind == "library" {
+            closeRemotePDFPreview()
+            withAnimation(MacPDFSlidePanelLayout.animation) { showsSearchPDFLibrary = true }
+            return
+        }
+        let sourceModel = source == .secondary ? secondary : primary
+        let destination = result.openInCurrentPane == true || !isSplit ? sourceModel : secondary
+        guard let href = result.href, let view = destination.webView, let url = view.url,
+              url.scheme == "https", MacPortalConfig.isPortalURL(url) else { throw searchOpenError() }
+        do {
+            if sourceModel !== destination, let sourceView = sourceModel.webView,
+               let sourceURL = sourceView.url, sourceURL.scheme == "https", MacPortalConfig.isPortalURL(sourceURL) {
+                _ = try await sourceView.callAsyncJavaScript(
+                    "await window.__nfGlobalSearchPrepare?.(); return true;", arguments: [:], in: nil, contentWorld: .page)
+            }
+            let item: [String: Any] = ["id": result.id, "href": href, "title": result.title,
+                "kind": result.kind, "openInCurrentPane": result.openInCurrentPane == true]
+            let opened = try await view.callAsyncJavaScript(
+                "return typeof window.__nfGlobalSearchOpen === 'function' && await window.__nfGlobalSearchOpen(item);",
+                arguments: ["item": item], in: nil, contentWorld: .page)
+            guard opened as? Bool == true else { throw searchOpenError() }
+        } catch { throw searchOpenError() }
+        let targetPane: MacPortalPaneSelection = destination === secondary ? .secondary : .primary
+        if !isSplit || targetPane == .secondary { dismissSearchPDFLibrary() }
+        if remotePDFRequest != nil, !isSplit || remotePDFPane == targetPane { closeRemotePDFPreview() }
+        activePane = targetPane
+    }
+
+    private func searchOpenError() -> NSError {
+        NSError(domain: "NFPortalSearch", code: 1, userInfo: [NSLocalizedDescriptionKey: "선택한 페이지를 열 수 없습니다. 페이지 로딩과 저장 상태를 확인해 주세요."])
+    }
+
+    private func dismissSearchPDFLibrary() {
+        withAnimation(MacPDFSlidePanelLayout.animation) { showsSearchPDFLibrary = false }
+    }
+
+    private func openSearchPDF(_ document: MacLocalPDFDocument) {
+        dismissSearchPDFLibrary()
+        remotePDFPane = isSplit ? .secondary : .primary
+        activePane = remotePDFPane
+        let request = MacPDFRemoteRequest(url: document.localFileURL, cookieHeader: nil, localDocument: document)
+        withAnimation(MacPDFSlidePanelLayout.animation) { remotePDFRequest = request }
     }
 
     private func configureCallbacks(for model: MacPortalBrowserModel) {
@@ -542,6 +637,7 @@ private struct MacPortalWorkspace: View {
             onToggleSidebar: toggleSharedSidebar,
             onToggleSplit: toggleSplit,
             onActivate: { activePane = .primary },
+            onSearch: { showGlobalSearch() },
             onSelectSlideDestination: selectSlideDestination
         )
     }
@@ -558,6 +654,7 @@ private struct MacPortalWorkspace: View {
             onToggleSidebar: toggleSharedSidebar,
             onToggleSplit: toggleSplit,
             onActivate: { activePane = .secondary },
+            onSearch: { showGlobalSearch() },
             onSelectSlideDestination: selectSlideDestination
         )
     }
@@ -866,6 +963,7 @@ struct MacPortalToolbar: View {
     let onToggleSidebar: () -> Void
     let onToggleSplit: () -> Void
     let onActivate: () -> Void
+    let onSearch: () -> Void
     var onSelectSlideDestination: (MacPortalSlideDestination) -> Void = { _ in }
 
     var body: some View {
@@ -912,15 +1010,13 @@ struct MacPortalToolbar: View {
                     .offset(y: -2)
             }
             .help("현재 페이지 새로고침")
-            Button {
-                onActivate()
-                model.goHome()
-            } label: {
-                Image(systemName: "house")
+            Button(action: onSearch) {
+                Image(systemName: "magnifyingglass")
                     .frame(width: 20, height: 20, alignment: .center)
                     .offset(y: -2)
             }
-            .help("홈")
+            .help("전체 검색 (⌘K)")
+            .accessibilityLabel("전체 검색")
             Rectangle()
                 .fill(separatorColor)
                 .frame(width: 1, height: 20)
