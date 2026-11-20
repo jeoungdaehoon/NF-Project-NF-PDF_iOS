@@ -313,10 +313,15 @@ extension PortalPDFPreviewView {
 
     var pdfDocumentToolButton: some View {
         Button {
+            if freeNotes.documentTool {
+                freeNotes.showsDocumentOptions.toggle()
+                return
+            }
             connectorMode = false
             isConnectorPanelPresented = false
             selectMarkupTool(.view)
-            freeNotes.documentTool.toggle()
+            freeNotes.documentTool = true
+            freeNotes.showsDocumentOptions = true
         } label: {
             Image(systemName: "doc.text")
                 .font(.system(size: 20, weight: .semibold))
@@ -327,6 +332,26 @@ extension PortalPDFPreviewView {
         }
         .accessibilityLabel("문서 도구")
         .accessibilityAddTraits(freeNotes.documentTool ? .isSelected : [])
+        .popover(isPresented: $freeNotes.showsDocumentOptions) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Label("문서 설정", systemImage: "doc.text").font(.headline)
+                        Spacer()
+                        Button("닫기", systemImage: "xmark") { freeNotes.showsDocumentOptions = false }
+                            .labelStyle(.iconOnly)
+                    }
+                    Divider()
+                    PDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
+                                           onChooseIcon: freeNotes.chooseDocumentIcon)
+                }.padding(14)
+            }
+            .frame(width: 270, height: 435)
+            .foregroundStyle(portalTheme.foregroundColor)
+            .tint(portalTheme.accentColor)
+            .background(portalTheme.surfaceColor)
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     /// 지우개 크기를 조정하는 하단 상세 편집 박스입니다.

@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct MacPDFNoteDragGlyph: Shape {
+struct PDFNoteDragGlyph: Shape {
     let indicator: PDFNoteDragIndicator?
 
     var octant: Int {

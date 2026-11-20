@@ -1,7 +1,11 @@
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import SwiftUI
 
-struct MacPDFDocumentIcon: Identifiable {
+struct PDFDocumentIcon: Identifiable {
     let id: String
     let label: String
     var englishName: String { id.replacingOccurrences(of: ".", with: " ") }
@@ -63,7 +67,13 @@ struct MacPDFDocumentIcon: Identifiable {
         .init("cross.case", "의료 보험"), .init("building.2", "빌딩 회사"),
         .init("hammer", "망치 작업"), .init("wrench.and.screwdriver", "공구 장비"),
         .init("scissors", "가위 자르기"), .init("trash", "휴지통 삭제"),
-    ].filter { NSImage(systemSymbolName: $0.id, accessibilityDescription: nil) != nil }
+    ].filter {
+        #if os(macOS)
+        NSImage(systemSymbolName: $0.id, accessibilityDescription: nil) != nil
+        #else
+        UIImage(systemName: $0.id) != nil
+        #endif
+    }
 
     static let byID = Dictionary(uniqueKeysWithValues: catalog.map { ($0.id, $0) })
 
@@ -76,19 +86,19 @@ struct MacPDFDocumentIcon: Identifiable {
     }
 }
 
-struct MacPDFDocumentMarkerStyle: Codable, Equatable {
+struct PDFDocumentMarkerStyle: Codable, Equatable {
     private static let defaultsKey = "nf.mac.pdf.documentMarkerStyle"
     private static let recentsKey = "nf.mac.pdf.documentMarkerRecentIcons"
-    var icon = MacPDFDocumentIcon.defaultID
+    var icon = PDFDocumentIcon.defaultID
     var rgb: UInt32?
 
-    init(icon: String = MacPDFDocumentIcon.defaultID, rgb: UInt32? = nil) {
-        self.icon = MacPDFDocumentIcon.byID[icon] == nil ? MacPDFDocumentIcon.defaultID : icon
+    init(icon: String = PDFDocumentIcon.defaultID, rgb: UInt32? = nil) {
+        self.icon = PDFDocumentIcon.byID[icon] == nil ? PDFDocumentIcon.defaultID : icon
         self.rgb = rgb.flatMap { $0 <= 0xFFFFFF ? $0 : nil }
     }
 
     init(query: [URLQueryItem]) {
-        let name = query.first { $0.name == "markerIcon" }?.value ?? MacPDFDocumentIcon.defaultID
+        let name = query.first { $0.name == "markerIcon" }?.value ?? PDFDocumentIcon.defaultID
         let colorValue = query.first { $0.name == "markerColor" }?.value
         let color = colorValue.flatMap { $0.count == 6 ? UInt32($0, radix: 16) : nil }
         self.init(icon: name, rgb: color)
@@ -96,34 +106,42 @@ struct MacPDFDocumentMarkerStyle: Codable, Equatable {
 
     var queryItems: [URLQueryItem] {
         var items: [URLQueryItem] = []
-        if icon != MacPDFDocumentIcon.defaultID { items.append(.init(name: "markerIcon", value: icon)) }
+        if icon != PDFDocumentIcon.defaultID { items.append(.init(name: "markerIcon", value: icon)) }
         if let rgb { items.append(.init(name: "markerColor", value: String(format: "%06X", rgb))) }
         return items
     }
 
     var background: Color {
-        rgb.map { Color(nsColor: Self.color($0)) } ?? .accentColor
+        rgb.map { rgb in
+            let (red, green, blue) = Self.components(rgb)
+            return Color(.sRGB, red: red, green: green, blue: blue)
+        } ?? .accentColor
     }
 
     var foreground: Color {
         guard let rgb else { return .white }
-        let color = Self.color(rgb)
-        func linear(_ value: CGFloat) -> CGFloat {
+        let (red, green, blue) = Self.components(rgb)
+        func linear(_ value: Double) -> Double {
             value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
         }
-        let luminance = 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent) + 0.0722 * linear(color.blueComponent)
+        let luminance = 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
         return luminance > 0.179 ? .black : .white
     }
 
-    private static func color(_ rgb: UInt32) -> NSColor {
-        NSColor(srgbRed: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255,
-                blue: CGFloat(rgb & 255) / 255, alpha: 1)
+    private static func components(_ rgb: UInt32) -> (Double, Double, Double) {
+        (Double((rgb >> 16) & 255) / 255, Double((rgb >> 8) & 255) / 255, Double(rgb & 255) / 255)
     }
 
     static func rgb(_ color: Color) -> UInt32? {
+        #if os(macOS)
         guard let value = NSColor(color).usingColorSpace(.sRGB) else { return nil }
+        let (red, green, blue) = (value.redComponent, value.greenComponent, value.blueComponent)
+        #else
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+        #endif
         func component(_ value: CGFloat) -> UInt32 { UInt32((min(1, max(0, value)) * 255).rounded()) }
-        return component(value.redComponent) << 16 | component(value.greenComponent) << 8 | component(value.blueComponent)
+        return component(red) << 16 | component(green) << 8 | component(blue)
     }
 
     static func load(from defaults: UserDefaults = .standard) -> Self {
@@ -136,7 +154,7 @@ struct MacPDFDocumentMarkerStyle: Codable, Equatable {
     }
 
     static func recentIcons(from defaults: UserDefaults = .standard) -> [String] {
-        (defaults.stringArray(forKey: recentsKey) ?? []).filter { MacPDFDocumentIcon.byID[$0] != nil }
+        (defaults.stringArray(forKey: recentsKey) ?? []).filter { PDFDocumentIcon.byID[$0] != nil }
     }
 
     static func rememberIcon(_ icon: String, in defaults: UserDefaults = .standard) -> [String] {
@@ -146,8 +164,8 @@ struct MacPDFDocumentMarkerStyle: Codable, Equatable {
     }
 }
 
-struct MacPDFDocumentMarkerView: View {
-    let style: MacPDFDocumentMarkerStyle
+struct PDFDocumentMarkerView: View {
+    let style: PDFDocumentMarkerStyle
     let size: CGFloat
 
     var body: some View {
@@ -160,8 +178,8 @@ struct MacPDFDocumentMarkerView: View {
     }
 }
 
-struct MacPDFDocumentToolOptions: View {
-    @Binding var style: MacPDFDocumentMarkerStyle
+struct PDFDocumentToolOptions: View {
+    @Binding var style: PDFDocumentMarkerStyle
     let recent: [String]
     let onChooseIcon: (String) -> Void
     @State private var query = ""
@@ -176,14 +194,16 @@ struct MacPDFDocumentToolOptions: View {
         ("진분홍", 0xB91544), ("진보라", 0x642DC0), ("차콜", 0x374251),
     ]
 
+    private var tile: Color { .primary.opacity(0.07) }
+
     var body: some View {
-        let results = MacPDFDocumentIcon.matching(query)
+        let results = PDFDocumentIcon.matching(query)
         let pages = max(1, (results.count + pageSize - 1) / pageSize)
-        let recentIcons = recent.compactMap { MacPDFDocumentIcon.byID[$0] }
+        let recentIcons = recent.compactMap { PDFDocumentIcon.byID[$0] }
         VStack(alignment: .leading, spacing: 10) {
-            MacPDFDocumentMarkerView(style: style, size: 34)
+            PDFDocumentMarkerView(style: style, size: 34)
                 .frame(maxWidth: .infinity, minHeight: 52)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+                .background(tile, in: RoundedRectangle(cornerRadius: 7))
                 .accessibilityLabel("선택한 문서 아이콘 미리보기")
             if !recentIcons.isEmpty {
                 Text("최근 사용").font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -201,7 +221,7 @@ struct MacPDFDocumentToolOptions: View {
                 }
             }
             .padding(8)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+            .background(tile, in: RoundedRectangle(cornerRadius: 6))
             if results.isEmpty {
                 Text("검색 결과가 없습니다.").font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 48)
@@ -223,7 +243,7 @@ struct MacPDFDocumentToolOptions: View {
             HStack {
                 Text("아이콘 색상").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                ColorPicker("사용자 지정 색상", selection: Binding(get: { style.background }, set: { style.rgb = MacPDFDocumentMarkerStyle.rgb($0) }),
+                ColorPicker("사용자 지정 색상", selection: Binding(get: { style.background }, set: { style.rgb = PDFDocumentMarkerStyle.rgb($0) }),
                             supportsOpacity: false)
                     .labelsHidden().accessibilityLabel("사용자 지정 아이콘 색상")
             }
@@ -235,13 +255,13 @@ struct MacPDFDocumentToolOptions: View {
         .onChange(of: query) { _, _ in page = 0 }
     }
 
-    private func iconGrid(_ icons: [MacPDFDocumentIcon]) -> some View {
+    private func iconGrid(_ icons: [PDFDocumentIcon]) -> some View {
         LazyVGrid(columns: iconColumns, spacing: 5) {
             ForEach(icons) { icon in
                 Button { onChooseIcon(icon.id) } label: {
                     Image(systemName: icon.id).font(.system(size: 16, weight: .medium))
                         .frame(maxWidth: .infinity, minHeight: 32)
-                        .background(style.icon == icon.id ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor),
+                        .background(style.icon == icon.id ? Color.accentColor.opacity(0.18) : tile,
                                     in: RoundedRectangle(cornerRadius: 6))
                         .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(style.icon == icon.id ? Color.accentColor : .clear))
                         .contentShape(Rectangle())
@@ -257,13 +277,13 @@ struct MacPDFDocumentToolOptions: View {
     private func swatch(_ name: String, rgb: UInt32?) -> some View {
         Button { style.rgb = rgb } label: {
             Circle()
-                .fill(MacPDFDocumentMarkerStyle(rgb: rgb).background)
+                .fill(PDFDocumentMarkerStyle(rgb: rgb).background)
                 .frame(width: 22, height: 22)
-                .overlay(Circle().strokeBorder(Color(nsColor: .separatorColor)))
+                .overlay(Circle().strokeBorder(Color.secondary.opacity(0.4)))
                 .overlay {
                     if style.rgb == rgb {
                         Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
-                            .foregroundStyle(MacPDFDocumentMarkerStyle(rgb: rgb).foreground)
+                            .foregroundStyle(PDFDocumentMarkerStyle(rgb: rgb).foreground)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 26)

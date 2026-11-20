@@ -282,7 +282,7 @@ struct MacPDFEditorView: View {
                 }
                 Divider()
                 if freeNotes.documentTool {
-                    MacPDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
+                    PDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
                                               onChooseIcon: freeNotes.chooseDocumentIcon)
                 } else {
                     toolOptions

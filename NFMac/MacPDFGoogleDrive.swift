@@ -10,15 +10,7 @@ enum MacPDFGoogleDrive {
         struct File: Decodable { var id: String; var driveFileId: String?; var name: String }
     }
     static func cookieHeader(for url: URL) async -> String? {
-        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
-            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
-        }
-        let host = url.host?.lowercased() ?? ""
-        let matching = cookies.filter {
-            let domain = $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
-            return (host == domain || host.hasSuffix(".\(domain)")) && url.path.hasPrefix($0.path) && (!$0.isSecure || url.scheme == "https") && ($0.expiresDate == nil || $0.expiresDate! > Date())
-        }
-        return matching.isEmpty ? nil : HTTPCookie.requestHeaderFields(with: matching)["Cookie"]
+        await PDFPageSearch.cookieHeader(for: url)
     }
     static func sync(identifier: String, fileName: String, data: Data) async throws {
         guard data.count <= 25 * 1024 * 1024 else { throw NSError(domain: "NFDrive", code: 413, userInfo: [NSLocalizedDescriptionKey: "Drive 업로드는 25MB 이하 PDF만 지원합니다. 큰 문서는 PDF 다운로드로 보관해 주세요."]) }

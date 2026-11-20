@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-enum MacPDFPageLink {
+enum PDFPageLink {
     static func matchesOrigin(_ url: URL, _ origin: URL) -> Bool {
         url.scheme == origin.scheme && url.host == origin.host && url.port == origin.port &&
             url.user == nil && url.password == nil
@@ -48,15 +48,15 @@ enum MacPDFPageLink {
     (() => {
       if (!document.getElementById('portal-main')) return false;
       window.nfFlushPdfFreeNote ??= () => window.__nfDisplayPrepare?.();
-      if (!document.getElementById('nf-mac-pdf-document-style')) {
+      if (!document.getElementById('nf-pdf-document-style')) {
         const style = document.createElement('style');
-        style.id = 'nf-mac-pdf-document-style';
+        style.id = 'nf-pdf-document-style';
         style.textContent = `
           #portal-common-tabs, [data-resolution-workspace] > aside, .portal-titlebar,
           .mobile-navigation-overlay, [data-pdf-note-source-toggle] { display: none !important; }
           [data-resolution-workspace] { display: block !important; }
           #portal-main { max-width: none !important; padding: 16px !important; }
-          html[data-pdf-volume-popup="true"] #portal-main { padding-inline: 60px 40px !important; }
+          html[data-pdf-volume-popup="true"] #portal-main { padding-inline: clamp(34px, 12vw, 60px) clamp(16px, 7vw, 40px) !important; }
         `;
         document.head.appendChild(style);
       }
@@ -65,14 +65,14 @@ enum MacPDFPageLink {
     """
 }
 
-struct MacPDFPageResult: Decodable, Identifiable {
+struct PDFPageResult: Decodable, Identifiable {
     let id: String
     let href: String
     let title: String
     let parentTitle: String?
 }
 
-struct MacPDFPageLinkPicker: View {
+struct PDFPageLinkPicker: View {
     private enum Scope: String, CaseIterable {
         case all, page, document, calendar
 
@@ -92,7 +92,7 @@ struct MacPDFPageLinkPicker: View {
     @FocusState private var focused: Bool
     @State private var query = ""
     @State private var scope: Scope = .all
-    @State private var results: [MacPDFPageResult] = []
+    @State private var results: [PDFPageResult] = []
     @State private var selection = 0
     @State private var searching = true
     @State private var creating = false
@@ -178,13 +178,17 @@ struct MacPDFPageLinkPicker: View {
                     .padding(.bottom, 6)
             }
             Divider()
+            #if os(macOS)
             Text("↑↓ 선택 · Enter 연결 · Esc 닫기")
                 .font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            #endif
         }
         .disabled(creating)
         .onAppear { focused = true }
         .onDisappear { createTask?.cancel() }
+        #if os(macOS)
         .onExitCommand { if !creating { onClose() } }
+        #endif
         .task(id: "\(scope.rawValue):\(attempt):\(term)") { await loadResults() }
     }
 
@@ -209,11 +213,11 @@ struct MacPDFPageLinkPicker: View {
 
     private func chooseSelection() {
         if results.indices.contains(selection) { choose(results[selection]) }
-        else if !results.isEmpty { create() }
+        else if canCreate { create() }
     }
 
-    private func choose(_ result: MacPDFPageResult) {
-        if let url = MacPDFPageLink.url(for: result.href, origin: origin) { onSelect(url) }
+    private func choose(_ result: PDFPageResult) {
+        if let url = PDFPageLink.url(for: result.href, origin: origin) { onSelect(url) }
     }
 
     private func loadResults() async {
@@ -221,7 +225,7 @@ struct MacPDFPageLinkPicker: View {
         results = []; selection = 0; searching = true; searchError = nil; createError = nil
         do {
             try await Task.sleep(for: .milliseconds(120))
-            let results = try await MacPDFPageSearch.search(query, scope: scope, origin: origin)
+            let results = try await PDFPageSearch.search(query, scope: scope, origin: origin)
             try Task.checkCancellation()
             self.results = results
         } catch {
@@ -238,12 +242,12 @@ struct MacPDFPageLinkPicker: View {
         createTask = Task {
             defer { creating = false; focused = true }
             do {
-                let creation = MacPDFPageCreation()
+                let creation = PDFPageCreation()
                 let page = try await creation.create(title, origin: origin)
                 try Task.checkCancellation()
                 onSelect(page)
             } catch where !Task.isCancelled {
-                if case MacPDFPageLinkError.createUnconfirmed = error { unconfirmedTitle = title }
+                if case PDFPageLinkError.createUnconfirmed = error { unconfirmedTitle = title }
                 createError = error.localizedDescription
             } catch {}
         }
@@ -251,8 +255,8 @@ struct MacPDFPageLinkPicker: View {
 }
 
 @MainActor
-enum MacPDFPageSearch {
-    private struct Response: Decodable { let data: [MacPDFPageResult] }
+enum PDFPageSearch {
+    private struct Response: Decodable { let data: [PDFPageResult] }
 
     private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -267,9 +271,21 @@ enum MacPDFPageSearch {
         return URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     }()
 
-    static func search(_ query: String, scope: String, origin: URL) async throws -> [MacPDFPageResult] {
+    static func cookieHeader(for url: URL) async -> String? {
+        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
+        }
+        let host = url.host?.lowercased() ?? ""
+        let matching = cookies.filter {
+            let domain = $0.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+            return (host == domain || host.hasSuffix(".\(domain)")) && url.path.hasPrefix($0.path) && (!$0.isSecure || url.scheme == "https") && ($0.expiresDate == nil || $0.expiresDate! > Date())
+        }
+        return matching.isEmpty ? nil : HTTPCookie.requestHeaderFields(with: matching)["Cookie"]
+    }
+
+    static func search(_ query: String, scope: String, origin: URL) async throws -> [PDFPageResult] {
         let endpoint = origin.appendingPathComponent("api/project-data")
-        guard let cookie = await MacPDFGoogleDrive.cookieHeader(for: endpoint) else { throw MacPDFPageLinkError.login }
+        guard let cookie = await cookieHeader(for: endpoint) else { throw PDFPageLinkError.login }
         var request = URLRequest(url: endpoint, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
@@ -279,16 +295,16 @@ enum MacPDFPageSearch {
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
-        catch { throw MacPDFPageLinkError.search }
+        catch { throw PDFPageLinkError.search }
         if let status = (response as? HTTPURLResponse)?.statusCode,
-           [302, 303, 307, 308, 401, 403].contains(status) { throw MacPDFPageLinkError.login }
+           [302, 303, 307, 308, 401, 403].contains(status) { throw PDFPageLinkError.login }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let result = try? JSONDecoder().decode(Response.self, from: data) else { throw MacPDFPageLinkError.search }
-        return result.data.filter { MacPDFPageLink.url(for: $0.href, origin: origin) != nil }
+              let result = try? JSONDecoder().decode(Response.self, from: data) else { throw PDFPageLinkError.search }
+        return result.data.filter { PDFPageLink.url(for: $0.href, origin: origin) != nil }
     }
 }
 
-private enum MacPDFPageLinkError: LocalizedError {
+private enum PDFPageLinkError: LocalizedError {
     case login, search, create, createUnconfirmed
 
     var errorDescription: String? {
@@ -303,9 +319,9 @@ private enum MacPDFPageLinkError: LocalizedError {
 
 /// Submit the existing portal's Free Note form with its live server action and session.
 @MainActor
-final class MacPDFPageCreation: NSObject, WKNavigationDelegate {
+final class PDFPageCreation: NSObject, WKNavigationDelegate {
     private let webView = WKWebView(frame: .zero)
-    private var responseError: MacPDFPageLinkError?
+    private var responseError: PDFPageLinkError?
     private var formURL: URL?
 
     func create(_ title: String, origin: URL) async throws -> URL {
@@ -317,8 +333,8 @@ final class MacPDFPageCreation: NSObject, WKNavigationDelegate {
         let deadline = ContinuousClock.now + .seconds(12)
         while webView.url != formURL || webView.isLoading {
             if let responseError { throw responseError }
-            if webView.url?.path == "/login" { throw MacPDFPageLinkError.login }
-            guard ContinuousClock.now < deadline else { throw MacPDFPageLinkError.create }
+            if webView.url?.path == "/login" { throw PDFPageLinkError.login }
+            guard ContinuousClock.now < deadline else { throw PDFPageLinkError.create }
             try await Task.sleep(for: .milliseconds(100))
         }
         let submitted = try? await webView.callAsyncJavaScript("""
@@ -333,24 +349,24 @@ final class MacPDFPageCreation: NSObject, WKNavigationDelegate {
             setTimeout(() => HTMLFormElement.prototype.submit.call(form), 0);
             return true;
             """, arguments: ["title": title], in: nil, contentWorld: .page)
-        guard submitted as? Bool == true else { throw MacPDFPageLinkError.create }
+        guard submitted as? Bool == true else { throw PDFPageLinkError.create }
         let completion = ContinuousClock.now + .seconds(15)
         while ContinuousClock.now < completion {
-            if let url = webView.url, MacPDFPageLink.matchesOrigin(url, origin),
-               MacPDFPageLink.href(for: url, origin: origin) != nil,
-               MacPDFPageLink.tabID(url) != nil, !webView.isLoading { return url }
+            if let url = webView.url, PDFPageLink.matchesOrigin(url, origin),
+               PDFPageLink.href(for: url, origin: origin) != nil,
+               PDFPageLink.tabID(url) != nil, !webView.isLoading { return url }
             if responseError != nil { break }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw MacPDFPageLinkError.createUnconfirmed
+        throw PDFPageLinkError.createUnconfirmed
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = action.request.url, let formURL,
-              MacPDFPageLink.matchesOrigin(url, formURL) else { decisionHandler(.cancel); return }
+              PDFPageLink.matchesOrigin(url, formURL) else { decisionHandler(.cancel); return }
         if url.path == "/login" { responseError = .login }
-        let allowed = url == formURL || MacPDFPageLink.href(for: url, origin: formURL) != nil && MacPDFPageLink.tabID(url) != nil
+        let allowed = url == formURL || PDFPageLink.href(for: url, origin: formURL) != nil && PDFPageLink.tabID(url) != nil
         decisionHandler(allowed ? .allow : .cancel)
     }
 

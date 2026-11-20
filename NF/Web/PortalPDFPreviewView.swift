@@ -1887,7 +1887,8 @@ struct PortalPDFPreviewView: View {
             }
         }
         .task(id: document) {
-            freeNotes.activate(document, source: item.url, localID: item.localDocumentID, note: item.initialFreeNote)
+            freeNotes.activate(document, source: item.url, localID: item.localDocumentID, note: item.initialFreeNote,
+                               popupLayoutDirectory: URL.applicationSupportDirectory.appendingPathComponent("PDFNotePopupLayouts", isDirectory: true))
         }
     }
 

@@ -12,18 +12,14 @@ final class PDFNoteWorkspaceState: ObservableObject {
         let page: PDFPage
         let bounds: CGRect
         var isDocumentMarker = false
-        #if os(macOS)
-        var markerStyle = MacPDFDocumentMarkerStyle()
-        #endif
+        var markerStyle = PDFDocumentMarkerStyle()
     }
     struct Target {
         let page: PDFPage
         let bounds: CGRect
         var objectID: String? = nil
         var isDocumentMarker = false
-        #if os(macOS)
-        var markerStyle = MacPDFDocumentMarkerStyle()
-        #endif
+        var markerStyle = PDFDocumentMarkerStyle()
     }
     struct Session: Identifiable {
         let id: String
@@ -31,9 +27,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
         var mode: Mode = .popup
         var collapsed = false
         var pdfScaleBeforeNoteOnly: CGFloat?
-        #if os(macOS)
         var target: URL?
-        #endif
     }
     static let path = "/pdf-free-note"
     let origin: URL
@@ -46,9 +40,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
     @Published var selectingArea = false
     @Published var documentTool = false {
         didSet {
-            #if os(macOS)
             if !documentTool { showsDocumentOptions = false }
-            #endif
         }
     }
     @Published var destination: URL?
@@ -56,16 +48,14 @@ final class PDFNoteWorkspaceState: ObservableObject {
     @Published private(set) var pendingArea: Target?
     @Published private(set) var placements: [String: PDFNotePlacement] = [:]
     private weak var activeDocument: PDFDocument?
-    #if os(macOS)
     @Published var showsDocumentOptions = false
-    @Published var documentMarkerStyle = MacPDFDocumentMarkerStyle.load() {
+    @Published var documentMarkerStyle = PDFDocumentMarkerStyle.load() {
         didSet { if documentMarkerStyle != oldValue { documentMarkerStyle.save() } }
     }
-    @Published private(set) var recentDocumentIcons = MacPDFDocumentMarkerStyle.recentIcons()
+    @Published private(set) var recentDocumentIcons = PDFDocumentMarkerStyle.recentIcons()
     @Published private(set) var closingPopups: Set<String> = []
     private var closeRequests: Set<String> = []
     private var popupLayoutDirectory: URL?
-    #endif
     private var browsers: [String: WKWebView] = [:]
     private lazy var linkDelegate = PDFNoteLinkDelegate(workspace: self)
 
@@ -79,16 +69,12 @@ final class PDFNoteWorkspaceState: ObservableObject {
             cancelPicker()
             selectingArea = false
             documentTool = false
-            #if os(macOS)
             closingPopups.removeAll()
-            #endif
         }
         activeDocument = document
         sourceURL = source
         localSourceID = localID
-        #if os(macOS)
         self.popupLayoutDirectory = popupLayoutDirectory
-        #endif
         reopen(note)
     }
 
@@ -163,10 +149,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
         let bounds = canvas.convert(rect, to: page).standardized
         guard !bounds.isEmpty, !bounds.isNull else { return false }
         var target = Target(page: page, bounds: bounds, isDocumentMarker: true)
-        #if os(macOS)
         target.markerStyle = documentMarkerStyle
         showsDocumentOptions = false
-        #endif
         chooseNote(target)
         return true
     }
@@ -188,33 +172,27 @@ final class PDFNoteWorkspaceState: ObservableObject {
         destination = noteURL()
     }
 
-    func select(_ note: String) {
-        connect(note, pageHref: nil)
-    }
-
-    #if os(macOS)
     func chooseDocumentIcon(_ icon: String) {
-        guard MacPDFDocumentIcon.byID[icon] != nil else { return }
+        guard PDFDocumentIcon.byID[icon] != nil else { return }
         documentMarkerStyle.icon = icon
-        recentDocumentIcons = MacPDFDocumentMarkerStyle.rememberIcon(icon)
+        recentDocumentIcons = PDFDocumentMarkerStyle.rememberIcon(icon)
     }
 
     func selectPortalPage(_ url: URL) {
-        guard let href = MacPDFPageLink.href(for: url, origin: origin) else { return }
-        connect(MacPDFPageLink.tabID(url) ?? UUID().uuidString, pageHref: href)
+        guard let href = PDFPageLink.href(for: url, origin: origin) else { return }
+        connect(PDFPageLink.tabID(url) ?? UUID().uuidString, pageHref: href)
     }
 
     func portalPage(for session: Session) -> URL? {
-        session.target ?? MacPDFPageLink.url(for: "/custom/" + session.note, origin: origin)
+        session.target ?? PDFPageLink.url(for: "/custom/" + session.note, origin: origin)
     }
 
     private func restorePortalPage(_ id: String, from link: URL?) {
         guard let index = sessions.firstIndex(where: { $0.id == id }),
               let link, let href = URLComponents(url: link, resolvingAgainstBaseURL: false)?
                 .queryItems?.first(where: { $0.name == "page" })?.value else { return }
-        sessions[index].target = MacPDFPageLink.url(for: href, origin: origin)
+        sessions[index].target = PDFPageLink.url(for: href, origin: origin)
     }
-    #endif
 
     private func connect(_ note: String, pageHref: String?) {
         guard note.range(of: "^[a-zA-Z0-9_-]{1,120}$", options: .regularExpression) != nil,
@@ -225,9 +203,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
         parts.fragment = id
         if area.isDocumentMarker {
             parts.queryItems?.append(.init(name: "marker", value: "1"))
-            #if os(macOS)
             parts.queryItems?.append(contentsOf: area.markerStyle.queryItems)
-            #endif
         }
         if let pageHref { parts.queryItems?.append(.init(name: "page", value: pageHref)) }
         let annotation = PDFAnnotation(bounds: area.bounds, forType: .link, withProperties: nil)
@@ -238,11 +214,9 @@ final class PDFNoteWorkspaceState: ObservableObject {
         border.lineWidth = 0
         annotation.border = border
         changeDocument?(area.page) { area.page.addAnnotation(annotation) }
-        #if os(macOS)
         if area.isDocumentMarker, area.page.annotations.contains(annotation) {
-            recentDocumentIcons = MacPDFDocumentMarkerStyle.rememberIcon(area.markerStyle.icon)
+            recentDocumentIcons = PDFDocumentMarkerStyle.rememberIcon(area.markerStyle.icon)
         }
-        #endif
         destination = nil
         pendingArea = nil
         open(id: id, note: note)
@@ -293,9 +267,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
             var anchor = Anchor(id: id, note: note, page: page, bounds: annotation.bounds,
                                 isDocumentMarker: annotation.contents == "nf-note-marker" ||
                                     query.contains { $0.name == "marker" && $0.value == "1" })
-            #if os(macOS)
-            if anchor.isDocumentMarker { anchor.markerStyle = MacPDFDocumentMarkerStyle(query: query) }
-            #endif
+            if anchor.isDocumentMarker { anchor.markerStyle = PDFDocumentMarkerStyle(query: query) }
             return anchor
         }
     }
@@ -320,7 +292,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
         placements[id] = PDFNotePlacement(frame: frame, anchor: anchor, scale: scale, contentScale: preservedScale)
     }
 
-    #if os(macOS)
     func savePopupPlacement(_ id: String) {
         guard let file = popupLayoutFile(id), let placement = placements[id] else { return }
         do {
@@ -335,7 +306,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
         guard let marker = UUID(uuidString: id) else { return nil }
         return popupLayoutDirectory?.appendingPathComponent(marker.uuidString).appendingPathExtension("plist")
     }
-    #endif
 
     func unlink(_ id: String, animated: Bool = true) async {
         guard let document = canvas?.document, let session = sessions.first(where: { $0.id == id }) else { return }
@@ -358,10 +328,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
     }
 
     func open(id: String, note: String) {
-        #if os(macOS)
         if closeRequests.contains(id) { return }
         showsDocumentOptions = false
-        #endif
         if let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].collapsed = false
             return
@@ -370,14 +338,11 @@ final class PDFNoteWorkspaceState: ObservableObject {
             sessions.removeAll { $0.id == existing.id }
             browsers[id] = browsers.removeValue(forKey: existing.id)
         }
-        #if os(macOS)
         if placements[id] == nil, let file = popupLayoutFile(id), let data = try? Data(contentsOf: file),
            let placement = try? PropertyListDecoder().decode(PDFNotePlacement.self, from: data), placement.isValid {
             placements[id] = placement
         }
-        #endif
         sessions.append(Session(id: id, note: note))
-        #if os(macOS)
         if let document = canvas?.document {
             for index in 0..<document.pageCount {
                 guard let link = document.page(at: index)?.annotations.compactMap(Self.ownedLink).first(where: { $0.fragment == id }) else { continue }
@@ -385,7 +350,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
                 break
             }
         }
-        #endif
     }
 
     func collapse(_ id: String) {
@@ -461,11 +425,9 @@ final class PDFNoteWorkspaceState: ObservableObject {
     }
 
     func close(_ id: String, animated: Bool) async {
-        #if os(macOS)
         guard let session = sessions.first(where: { $0.id == id }), closeRequests.insert(id).inserted else { return }
         let closingDocument = activeDocument
         defer { closeRequests.remove(id) }
-        #endif
         do {
             if let browser = browsers[id] {
                 _ = try await browser.callAsyncJavaScript(
@@ -473,7 +435,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
                     arguments: [:], in: nil, contentWorld: .page
                 )
             }
-            #if os(macOS)
             guard activeDocument === closingDocument else { return }
             if animated, session.mode == .popup, sessions.contains(where: { $0.id == id }) {
                 withAnimation(.easeInOut(duration: 0.28)) { _ = closingPopups.insert(id) }
@@ -486,7 +447,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
                 browsers.removeValue(forKey: id)
                 return
             }
-            #endif
             withAnimation(animated ? .spring(response: 0.42, dampingFraction: 0.84) : nil) {
                 sessions.removeAll { $0.id == id }
             }
@@ -559,19 +519,13 @@ struct PDFNotePlacement: Codable {
                width: bounds.width * scale, height: bounds.height * scale)
     }
 
-    #if os(macOS)
     var isValid: Bool {
         [bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height, contentScaleRatio].allSatisfy(\.isFinite) &&
             bounds.size.width > 0 && bounds.size.height > 0 && contentScaleRatio > 0
     }
-    #endif
 
     static func zoomedFrame(_ rect: CGRect, by translation: CGSize) -> CGRect {
-        #if os(macOS)
         let distance = -translation.width - translation.height
-        #else
-        let distance = translation.width + translation.height
-        #endif
         let factor = exp(distance / 180)
         let minimum = 88 / min(rect.width, rect.height)
         let maximum = 2400 / max(rect.width, rect.height)
@@ -632,7 +586,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
                         }
                 }
                 if state.selectingArea { areaSelector(size: CGSize(width: pdfWidth, height: size.height)) }
-                if let destination = state.destination {
+                if state.destination != nil {
                     let width = min(380, max(1, size.width - 24))
                     let height = min(440, max(1, size.height - 24))
                     let anchor = state.pendingArea.map { state.viewFrame($0.bounds, on: $0.page) }
@@ -641,7 +595,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
                                             ?? (size.height - height) / 2,
                                         width: width, height: height)
                         .clamped(to: CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8))
-                    pickerContent(destination)
+                    PDFPageLinkPicker(origin: state.origin, onSelect: state.selectPortalPage, onClose: state.cancelPicker)
                     .frame(width: width, height: height)
                     .background(.background)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -656,18 +610,6 @@ struct PDFNoteWorkspace<Editor: View>: View {
         .alert("자유노트", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
             Button("확인") { state.error = nil }
         } message: { Text(state.error ?? "") }
-    }
-
-    @ViewBuilder
-    private func pickerContent(_ destination: URL) -> some View {
-        #if os(macOS)
-        MacPDFPageLinkPicker(origin: state.origin, onSelect: state.selectPortalPage, onClose: state.cancelPicker)
-        #else
-        PDFNoteBrowser(origin: state.origin, url: destination, browser: nil) { command, argument in
-            if command == "select", let argument { state.select(argument) }
-            if command == "close" { state.cancelPicker() }
-        }
-        #endif
     }
 
     private func splitFraction(_ x: CGFloat, width: CGFloat) -> CGFloat {
@@ -725,13 +667,11 @@ struct PDFNoteWorkspace<Editor: View>: View {
                     result[session.id] = frame
                     continue
                 }
-                #if os(macOS)
                 if workspace.intersects(anchor) {
                     let x = min(max(popupArea.minX, frame.minX), max(popupArea.minX, popupArea.maxX - frame.width))
                     let y = min(max(popupArea.minY, frame.minY), max(popupArea.minY, popupArea.maxY - frame.height))
                     result[session.id] = CGRect(origin: CGPoint(x: x, y: y), size: frame.size)
                 }
-                #endif
                 continue
             }
             guard workspace.intersects(anchor) else { continue }
@@ -785,31 +725,18 @@ struct PDFNoteWorkspace<Editor: View>: View {
             }
             if let pending = state.pendingArea, pending.isDocumentMarker {
                 let frame = state.viewFrame(pending.bounds, on: pending.page)
-                #if os(macOS)
-                MacPDFDocumentMarkerView(style: pending.markerStyle, size: max(14, min(frame.width, frame.height)))
+                PDFDocumentMarkerView(style: pending.markerStyle, size: max(14, min(frame.width, frame.height)))
                     .position(x: frame.midX, y: frame.midY)
                     .allowsHitTesting(false)
-                #else
-                Image(systemName: "doc.text")
-                    .font(.system(size: max(8, frame.height * 0.7)))
-                    .foregroundStyle(.tint)
-                    .position(x: frame.midX, y: frame.midY)
-                    .allowsHitTesting(false)
-                #endif
             }
             ForEach(state.sessions) { session in
                 let frame = frames[session.id] ?? CGRect(x: -1, y: -1, width: 1, height: 1)
                 let center = CGPoint(x: frame.midX, y: frame.midY)
                 let visualScale = session.mode == .popup ? state.placements[session.id]?.contentScale(at: state.displayScale) ?? 1 : 1
-                #if os(macOS)
                 let shrinking = state.closingPopups.contains(session.id)
                 let marker = positions[session.id].map { anchor in
                     markerCenter(anchor, documentMarker: documentMarkers.contains(session.id), pdfWidth: pdfWidth, height: size.height)
                 }
-                #else
-                let shrinking = false
-                let marker: CGPoint? = nil
-                #endif
                 PDFNoteCard(state: state, session: session, frame: frame, visualScale: visualScale) { next, contentScale in
                     if let anchor = positions[session.id] {
                         state.placePopup(next, for: session.id, beside: anchor, scale: state.displayScale, contentScale: contentScale)
@@ -845,19 +772,16 @@ struct PDFNoteWorkspace<Editor: View>: View {
 
     @ViewBuilder
     private func markerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect) -> some View {
-        #if os(macOS)
         if anchor.isDocumentMarker {
             Button { state.open(id: anchor.id, note: anchor.note) } label: {
-                MacPDFDocumentMarkerView(style: anchor.markerStyle, size: max(14, min(frame.width, frame.height)))
+                PDFDocumentMarkerView(style: anchor.markerStyle, size: max(14, min(frame.width, frame.height)))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("연결된 문서 열기")
         } else {
             standardMarkerButton(anchor, frame: frame)
         }
-        #else
-        standardMarkerButton(anchor, frame: frame)
-        #endif
+
     }
 
     private func standardMarkerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect) -> some View {
@@ -902,7 +826,6 @@ private struct PDFNoteCard: View {
                 Spacer(minLength: 0)
                 pdfViewToggle
                 if !popup { moreButton }
-                #if os(macOS)
                 if popup {
                     Button { actions = false; resizing.toggle() } label: {
                         Image(systemName: resizing ? "checkmark" : "arrow.up.left.and.arrow.down.right")
@@ -911,7 +834,6 @@ private struct PDFNoteCard: View {
                     .accessibilityLabel(resizing ? "크기 편집 완료" : "크기 편집")
                     .accessibilityIdentifier("pdf.document.popup.resize")
                 }
-                #endif
                 Button { Task { await state.close(session.id, animated: !reduceMotion) } } label: { Image(systemName: "xmark") }
                     .accessibilityLabel("연결 문서 닫기")
             }
@@ -938,15 +860,10 @@ private struct PDFNoteCard: View {
 
     private var documentBrowser: some View {
         let embedded = state.noteURL(session.note, embedded: true)
-        #if os(macOS)
         let primary = session.target ?? embedded
         let fallback = session.target == nil ? state.portalPage(for: session) : nil
-        let binding = embedded.flatMap { MacPDFPageLink.attachmentBinding(in: $0) }
-        #else
-        let primary = embedded
-        let fallback: URL? = nil
-        let binding: PDFNoteAttachmentBinding? = nil
-        #endif
+        let binding = embedded.flatMap { PDFPageLink.attachmentBinding(in: $0) }
+
         return PDFNoteBrowser(origin: state.origin, url: primary, browser: state.browser(session), fallback: fallback,
                               volumePopup: popup, attachmentBinding: binding) { command, _ in
             if command == "split" { change(.split) }
@@ -993,14 +910,10 @@ private struct PDFNoteCard: View {
 
     @ViewBuilder
     private var zoomControlIcon: some View {
-        #if os(macOS)
-        MacPDFNoteDragGlyph(indicator: dragIndicator)
+        PDFNoteDragGlyph(indicator: dragIndicator)
             .stroke(.primary, style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
             .frame(width: 14, height: 14)
-        #else
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 12, weight: .medium))
-        #endif
+
     }
 
     private var moreButton: some View {
@@ -1013,13 +926,6 @@ private struct PDFNoteCard: View {
         .accessibilityLabel("문서 팝업 더보기")
         .popover(isPresented: $actions) {
             VStack(alignment: .leading, spacing: 3) {
-                #if !os(macOS)
-                if popup {
-                    menuRow(resizing ? "크기 편집 완료" : "크기 편집", icon: "arrow.up.left.and.arrow.down.right") {
-                        resizing.toggle()
-                    }
-                }
-                #endif
                 if !popup {
                     menuRow("팝업 모드", icon: "rectangle.inset.filled") {
                         change(.popup)
@@ -1090,11 +996,9 @@ private struct PDFNoteCard: View {
                         _ transform: @escaping (CGRect, CGSize) -> CGRect) -> some Gesture {
         DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
             .updating($dragIndicator) { value, current, _ in
-                #if os(macOS)
                 if let indicator {
                     current = PDFNoteDragIndicator(kind: indicator, translation: value.translation, previous: current)
                 }
-                #endif
             }
             .onChanged { value in
                 if dragStart == nil { dragStart = frame; dragStartScale = visualScale }
@@ -1105,9 +1009,7 @@ private struct PDFNoteCard: View {
                 }
             }
             .onEnded { _ in
-                #if os(macOS)
                 if dragStart != nil { state.savePopupPlacement(session.id) }
-                #endif
                 dragStart = nil
             }
     }
@@ -1218,7 +1120,8 @@ private struct PDFNoteWebContent {
             guard let url = action.request.url else { decisionHandler(.cancel); return }
             if url.scheme == "nf-pdf-note", let command = url.host {
                 decisionHandler(.cancel)
-                if action.sourceFrame.isMainFrame, action.sourceFrame.request.url?.path == PDFNoteWorkspaceState.path {
+                if action.sourceFrame.isMainFrame, let sender = action.sourceFrame.request.url,
+                   matchesOrigin(sender), matchesPage(sender) {
                     let args = url.pathComponents.dropFirst()
                     parent.action(command, args.first)
                 }
@@ -1248,14 +1151,13 @@ private struct PDFNoteWebContent {
             #elseif os(macOS)
             webView.evaluateJavaScript(MacPortalWebView.hideEditingAssistantBarScript, completionHandler: nil)
             #endif
-            #if os(macOS)
             if let url = webView.url, url.path != PDFNoteWorkspaceState.path, matchesOrigin(url), matchesPage(url) {
-                webView.evaluateJavaScript(MacPDFPageLink.documentOnlyScript) { [weak self, weak webView] value, _ in
+                webView.evaluateJavaScript(PDFPageLink.documentOnlyScript) { [weak self, weak webView] value, _ in
                     guard let self, let webView else { return }
                     ready = value as? Bool == true
                     if ready, let binding = parent.attachmentBinding,
                        webView.url?.path == "/custom/" + binding.note {
-                        webView.callAsyncJavaScript(MacPDFPageLink.registerAttachmentScript,
+                        webView.callAsyncJavaScript(PDFPageLink.registerAttachmentScript,
                                                     arguments: ["note": binding.note, "source": binding.source],
                                                     in: nil, in: .page, completionHandler: nil)
                     } else if !ready {
@@ -1264,7 +1166,6 @@ private struct PDFNoteWebContent {
                 }
                 return
             }
-            #endif
             webView.evaluateJavaScript("Boolean(document.querySelector('[data-pdf-free-note-workspace],.pdf-free-note-workspace'))") { [weak self] value, _ in
                 guard let self else { return }
                 ready = value as? Bool == true
@@ -1277,21 +1178,15 @@ private struct PDFNoteWebContent {
         }
 
         private func matchesPage(_ url: URL) -> Bool {
-            #if os(macOS)
-            return url.path == (triedFallback ? parent.fallback : parent.url)?.path
-            #else
-            return url.path == PDFNoteWorkspaceState.path
-            #endif
+            url.path == (triedFallback ? parent.fallback : parent.url)?.path
         }
 
         private func unavailable(in webView: WKWebView) {
-            #if os(macOS)
             if let fallback = parent.fallback, !triedFallback {
                 triedFallback = true
                 webView.load(URLRequest(url: fallback))
                 return
             }
-            #endif
             parent.onUnavailable()
         }
 
