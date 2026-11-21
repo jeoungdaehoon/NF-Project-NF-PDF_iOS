@@ -4217,6 +4217,10 @@ extension PortalPDFKitView {
         func configureDocumentScrollGestures(in pdfView: PDFView) {
             let isViewing = selectedTool == .view
             let isInkEditing = selectedTool.isInkTool
+            if isViewing {
+                // Keep the enlarged document free to move on both axes, even in a paged layout.
+                viewportScrollView(in: pdfView)?.isDirectionalLockEnabled = false
+            }
             pdfView.recursiveScrollViews.forEach { scrollView in
                 if let activeTextEditor,
                    scrollView === activeTextEditor || scrollView.isDescendant(of: activeTextEditor) {
@@ -4233,12 +4237,6 @@ extension PortalPDFKitView {
                     NSNumber(value: UITouch.TouchType.direct.rawValue),
                     NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)
                 ]
-                if isViewing {
-                    // 편집 모드에서 남은 PDFKit 팬 제스처 상태를 초기화해
-                    // 보기 도구 전환 직후에도 한 손가락 이동을 즉시 허용합니다.
-                    scrollView.panGestureRecognizer.isEnabled = false
-                    scrollView.panGestureRecognizer.isEnabled = true
-                }
             }
         }
 

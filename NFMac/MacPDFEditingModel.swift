@@ -621,6 +621,7 @@ final class MacPDFEditorState: ObservableObject {
         if next == .connector {
             canvas?.finishTextEditing(); canvas?.cancelGesture()
             connectorEnabled.toggle(); optionsTool = nil; menuVisible = false
+            if connectorEnabled && tool == .view { selectTool(.select) }
             canvas?.refreshAnnotations()
             return
         }

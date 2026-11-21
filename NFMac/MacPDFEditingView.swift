@@ -460,23 +460,27 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         finishTextEditing(); window?.makeFirstResponder(self); activeTool = editor.tool; editor.menuVisible = false
         activeNeonType = editor.neonType
         let viewPoint = convert(event.locationInWindow, from: nil)
-        if !event.modifierFlags.contains(.option), let handle = connectorRouteHandle,
+        if editor.tool == .view || event.modifierFlags.contains(.option) {
+            // Let the hand tool drag the document even when it starts over an annotation.
+            panStart = viewPoint
+            panOrigin = documentView?.enclosingScrollView?.contentView.bounds.origin
+            NSCursor.closedHand.set()
+            return
+        }
+        if let handle = connectorRouteHandle,
            hypot(handle.x - viewPoint.x, handle.y - viewPoint.y) <= 12,
            let object = editor.selected, let control = MacPDFObjectRenderer.connectorControlPoint(object, objects: editor.objects), let page = document?.page(at: object.page) {
             routeDrag = RouteDrag(id: object.id, page: object.page, mouseOrigin: convert(viewPoint, to: page), controlOrigin: control, before: editor.objects)
             return
         }
-        if !event.modifierFlags.contains(.option), let source = editor.selected,
+        if let source = editor.selected,
            let handle = connectionHandles.first(where: { hypot($0.center.x - viewPoint.x, $0.center.y - viewPoint.y) <= 13 }) {
             connectionDrag = ConnectionDrag(source: source.id, page: source.page, anchor: handle.anchor, style: editor.connectionStyle, end: MacPDFObjectRenderer.anchor(source, handle.anchor))
             updateConnectionOverlay(); return
         }
         let pickedLocation = location(event)
         let connectionPick = editor.connectorEnabled && pickedLocation.map { page, point in hit(point, page: document?.index(for: page) ?? -1) != nil } == true
-        if (editor.tool == .view && !connectionPick) || event.modifierFlags.contains(.option) {
-            panStart = convert(event.locationInWindow, from: nil); panOrigin = documentView?.enclosingScrollView?.contentView.bounds.origin; NSCursor.closedHand.set(); return
-        }
-        guard let (page, point) = location(event), let document else { editor.selection = []; return }
+        guard let (page, point) = pickedLocation, let document else { editor.selection = []; return }
         editor.currentPage = document.index(for: page); start = point; dragPage = page; beforeDrag = editor.objects
         resizeHandle = nil; rotating = false; moving = false; samples = [MacPDFPoint(point, pressure: pressure(event))]
         if editor.connectorEnabled || [.select, .text, .image, .shape, .lasso].contains(activeTool), let rect = selectionBounds(), editor.selected?.page == editor.currentPage {

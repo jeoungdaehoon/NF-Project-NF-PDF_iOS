@@ -36,8 +36,42 @@ import SwiftUI
         }
         let p = CGPoint(x: 350, y: 350)
         let originalObjects = state.objects, history = (state.undoCount, state.redoCount)
+        state.selectTool(.view)
+        state.selectTool(.connector)
+        try check(state.tool == .select && state.connectorEnabled, "connector remains available when opened from the hand tool")
+        state.selectTool(.view)
+        canvas.scaleFactor = 2
+        pump(0.1)
+        guard let scroll = canvas.documentView?.enclosingScrollView else { throw CocoaError(.fileReadUnknown) }
+        let clip = scroll.contentView
+        let shapeCenter = CGPoint(x: shape.bounds.midX, y: shape.bounds.midY)
+        let visibleCenter = CGPoint(x: canvas.bounds.midX, y: canvas.bounds.midY)
+        let documentPoint = canvas.convert(shapeCenter, from: page)
+        let documentCenterInClip = canvas.convert(documentPoint, to: clip)
+        let visibleCenterInClip = canvas.convert(visibleCenter, to: clip)
+        let centered = CGPoint(x: clip.bounds.minX + documentCenterInClip.x - visibleCenterInClip.x,
+                              y: clip.bounds.minY + documentCenterInClip.y - visibleCenterInClip.y)
+        clip.scroll(to: clip.constrainBoundsRect(CGRect(origin: centered, size: clip.bounds.size)).origin)
+        scroll.reflectScrolledClipView(clip)
+        let start = canvas.convert(shapeCenter, from: page)
+        let prior = clip.bounds.origin
+        let end = CGPoint(x: start.x - 90, y: start.y + 110)
+        mouse(.leftMouseDown, start, [])
+        mouse(.leftMouseDragged, end, [])
+        mouse(.leftMouseUp, end, [])
+        try check(abs(clip.bounds.minX - prior.x) > 30 && abs(clip.bounds.minY - prior.y) > 30,
+                  "the hand tool pans both axes from an annotation at 200 percent")
+        mouse(.leftMouseDown, end, [])
+        mouse(.leftMouseDragged, start, [])
+        mouse(.leftMouseUp, start, [])
+        try check(abs(clip.bounds.minX - prior.x) < 2 && abs(clip.bounds.minY - prior.y) < 2,
+                  "reversing the drag returns both axes to the original positions")
+        try check(state.objects == originalObjects && state.undoCount == history.0,
+                  "hand panning does not alter annotations or edit history")
+        state.selectTool(.connector)
         for tool in [MacPDFTool.view, .select, .pen, .highlighter, .neon, .eraser, .lasso, .shape, .text, .image] {
             flags([]); state.selectTool(tool); state.optionsTool = nil
+            let normalCursor = canvas.editingCursor
             state.selection = [shape.id]; state.menuVisible = false
             canvas.autoScales = false; canvas.scaleFactor = 1; pump(0.04)
             flags(.command)
@@ -51,7 +85,7 @@ import SwiftUI
             mouse(.leftMouseUp, CGPoint(x: p.x - 120, y: p.y))
             try check(canvas.editingCursor === NSCursor.openHand, "\(tool.rawValue): held Command keeps the hand cursor after mouse-up")
             flags([])
-            try check(canvas.editingCursor === (tool == .view ? NSCursor.openHand : NSCursor.crosshair) && state.tool == tool, "\(tool.rawValue): releasing Command restores the original tool/cursor")
+            try check(canvas.editingCursor === normalCursor && state.tool == tool, "\(tool.rawValue): releasing Command restores the original tool/cursor")
             try check(state.objects == originalObjects && state.selection == [shape.id] && state.undoCount == history.0 && state.redoCount == history.1, "\(tool.rawValue): zoom never draws, erases, moves objects or changes edit history")
         }
         state.selectTool(.pen); state.optionsTool = nil; canvas.scaleFactor = 1; pump(0.05)
