@@ -652,8 +652,14 @@ struct MacRemotePDFPreviewView: View {
     @State private var markdownSearchQuery = ""
     @State private var isMoreMenuPresented = false
     @State private var pendingMoreMenuAction: MoreMenuAction?
+    @State private var detailWorkspace: DetailPDFWorkspace?
+    @State private var saveDetailEdits: (() async -> Bool)?
+    @State private var isReturningToDetail = false
 
     private enum MoreMenuAction { case sharePDF, openOriginal, saveOriginal, fullscreen }
+    private var isDetailPDF: Bool {
+        DetailPDFWorkspace.matches(request.url, origin: URL(string: MacPortalConfig.origin)!)
+    }
 
     private var attachmentPreviewDescription: String? {
         if let csvDocument { return "CSV 미리보기 · 읽기 전용 · \(csvDocument.rows.count)행 \(csvDocument.columnCount)열 · \(csvDocument.encodingName)" }
@@ -672,8 +678,8 @@ struct MacRemotePDFPreviewView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(isFullscreen ? nil : KeyboardShortcut.cancelAction)
-                .help(isFullscreen ? "모니터 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : "뒤로")
-                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : "첨부 미리보기 닫기")
+                .help(isFullscreen ? "모니터 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "뒤로")
+                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "첨부 미리보기 닫기")
                 .accessibilityIdentifier("attachment.viewer.back")
                 Spacer()
                 Text(title).font(.headline).lineLimit(1)
@@ -700,6 +706,12 @@ struct MacRemotePDFPreviewView: View {
                 .accessibilityIdentifier("attachment.viewer.more")
                 .popover(isPresented: $isMoreMenuPresented, arrowEdge: .top) {
                     VStack(spacing: 0) {
+                        if isDetailPDF {
+                            MacAttachmentMenuRow(title: DetailPDFWorkspace.returnTitle, systemImage: "chevron.left", isEnabled: !isReturningToDetail) {
+                                isMoreMenuPresented = false
+                                returnToDetailPage()
+                            }
+                        }
                         if onTogglePaneExpanded != nil, !isFullscreen {
                             MacAttachmentMenuRow(title: isPaneExpanded ? "분할 영역 전체보기 종료" : "분할 영역 전체보기", systemImage: "rectangle.split.2x1", isEnabled: true) {
                                 isMoreMenuPresented = false
@@ -812,12 +824,12 @@ struct MacRemotePDFPreviewView: View {
                 if let pdfDocument {
                     MacPDFWorkspace(
                         document: pdfDocument,
-                        identifier: storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
+                        identifier: detailWorkspace?.identifier ?? storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
                         fileName: title,
-                        sourceURL: isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
+                        sourceURL: isDetailPDF || isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
                         initialFreeNote: request.initialFreeNote,
                         cookieHeader: request.cookieHeader,
-                        sourceData: attachmentData,
+                        sourceData: isDetailPDF ? nil : attachmentData,
                         isContainerResizing: isContainerResizing,
                         isFullscreen: isFullscreen,
                         onToggleFullscreen: onToggleFullscreen,
@@ -825,7 +837,9 @@ struct MacRemotePDFPreviewView: View {
                         isPaneExpanded: isPaneExpanded,
                         onTogglePaneExpanded: onTogglePaneExpanded,
                         editorDirectory: editorDirectory,
-                        onSave: { data in
+                        detailWorkspace: detailWorkspace,
+                        registerDetailExit: isDetailPDF ? { saveDetailEdits = $0 } : nil,
+                        onSave: isDetailPDF ? nil : { data in
                             if (isConvertedPowerPoint || request.localDocument != nil), let storedPDF {
                                 try repository.updateData(storedPDF, data: data)
                                 return
@@ -855,9 +869,15 @@ struct MacRemotePDFPreviewView: View {
                         MacCSVPreviewView(document: csvDocument)
                     }
                 } else if let errorMessage {
-                    ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("attachment.viewer.error")
+                    VStack {
+                        ContentUnavailableView("첨부 파일을 열 수 없습니다", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("attachment.viewer.error")
+                        if isDetailPDF {
+                            Button("다시 시도") { Task { await load() } }
+                                .padding(.bottom, 20)
+                        }
+                    }
                 } else if isParsingCSV {
                     ProgressView("CSV 표를 불러오는 중…")
                 } else if attachmentData != nil {
@@ -880,7 +900,21 @@ struct MacRemotePDFPreviewView: View {
     private func exitOrClose() {
         if isFullscreen { onToggleFullscreen?() }
         else if isPaneExpanded { onTogglePaneExpanded?() }
+        else if isDetailPDF { returnToDetailPage() }
         else { onClose() }
+    }
+
+    private func returnToDetailPage() {
+        guard !isReturningToDetail else { return }
+        isReturningToDetail = true
+        Task { @MainActor in
+            defer { isReturningToDetail = false }
+            if let saveDetailEdits {
+                guard await saveDetailEdits() else { return }
+            }
+            if isFullscreen { onToggleFullscreen?() }
+            onClose()
+        }
     }
 
     private func runPendingMoreMenuAction() {
@@ -898,8 +932,19 @@ struct MacRemotePDFPreviewView: View {
         isConvertedPowerPoint = false
         pdfDocument = nil; storedPDF = nil; image = nil; markdown = nil; quickLookFile = nil; csvDocument = nil; isParsingCSV = false
         attachmentData = nil; attachmentIsMovie = false; errorMessage = nil; didStoreLocally = false
-        title = "첨부 파일"
+        detailWorkspace = nil; saveDetailEdits = nil
+        title = isDetailPDF ? "상세페이지 PDF" : "첨부 파일"
         do {
+            if isDetailPDF {
+                let workspace = try await DetailPDFWorkspace.open(url: request.url, origin: URL(string: MacPortalConfig.origin)!, cookieHeader: request.cookieHeader)
+                try Task.checkCancellation()
+                guard let document = PDFDocument(data: workspace.data) else { throw CocoaError(.fileReadCorruptFile) }
+                title = Self.safeFileName(workspace.fileName)
+                detailWorkspace = workspace
+                attachmentData = workspace.data
+                pdfDocument = document
+                return
+            }
             if let local = request.localDocument {
                 title = local.fileName
                 let data = try Data(contentsOf: local.localFileURL, options: .mappedIfSafe)
@@ -981,7 +1026,7 @@ struct MacRemotePDFPreviewView: View {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            errorMessage = "네트워크 연결과 파일 형식을 확인해 주세요."
+            errorMessage = isDetailPDF ? "문서 접근 권한과 연결 상태를 확인해 주세요." : "네트워크 연결과 파일 형식을 확인해 주세요."
         }
     }
 

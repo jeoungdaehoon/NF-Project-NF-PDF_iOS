@@ -222,6 +222,11 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
                         self.finishTextEditing(); editor.selection = []; editor.menuVisible = false; editor.currentPage = doc.index(for: page)
                     }
                     editor.zoom = Int((self.scaleFactor * 100).rounded())
+                    if name == NSView.boundsDidChangeNotification,
+                       let clip = self.documentView?.enclosingScrollView?.contentView,
+                       notification.object as? NSClipView === clip {
+                        self.freeNotes?.viewportChanged()
+                    }
                     if notification.name == .PDFViewScaleChanged { self.finishTextEditing(); self.refreshAnnotations() }
                     else { self.updateInteractionOverlay() }
                 }

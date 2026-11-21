@@ -332,26 +332,29 @@ extension PortalPDFPreviewView {
         }
         .accessibilityLabel("문서 도구")
         .accessibilityAddTraits(freeNotes.documentTool ? .isSelected : [])
-        .popover(isPresented: $freeNotes.showsDocumentOptions) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Label("문서 설정", systemImage: "doc.text").font(.headline)
-                        Spacer()
-                        Button("닫기", systemImage: "xmark") { freeNotes.showsDocumentOptions = false }
-                            .labelStyle(.iconOnly)
-                    }
-                    Divider()
-                    PDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
-                                           onChooseIcon: freeNotes.chooseDocumentIcon)
-                }.padding(14)
+    }
+
+    var pdfDocumentOptionsPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("문서 설정", systemImage: "doc.text").font(.headline)
+                Spacer()
+                Button("닫기", systemImage: "xmark") { freeNotes.showsDocumentOptions = false }
+                    .labelStyle(.iconOnly)
             }
-            .frame(width: 270, height: 435)
-            .foregroundStyle(portalTheme.foregroundColor)
-            .tint(portalTheme.accentColor)
-            .background(portalTheme.surfaceColor)
-            .presentationCompactAdaptation(.popover)
+            Divider()
+            ScrollView {
+                PDFDocumentToolOptions(style: Binding(get: { freeNotes.configuredMarkerStyle }, set: { freeNotes.configuredMarkerStyle = $0 }),
+                                       recent: freeNotes.recentDocumentIcons,
+                                       onChooseIcon: freeNotes.chooseDocumentIcon)
+            }
         }
+        .padding(12)
+        .foregroundStyle(portalTheme.foregroundColor)
+        .tint(portalTheme.accentColor)
+        .background(portalTheme.surfaceColor, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(radius: 5)
+        .accessibilityIdentifier("pdf.toolOptions.panel")
     }
 
     /// 지우개 크기를 조정하는 하단 상세 편집 박스입니다.

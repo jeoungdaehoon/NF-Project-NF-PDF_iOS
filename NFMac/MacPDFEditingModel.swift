@@ -162,6 +162,7 @@ struct MacPDFEditArchive: Codable {
     var favorites: Set<Int> = []
     var sourceHashes: Set<String>?
     var baseFileName: String?
+    var detailSourceDigest: String?
 }
 
 @MainActor
@@ -232,11 +233,13 @@ final class MacPDFEditorState: ObservableObject {
     private var toolOptions: [String: MacPDFStyle] = [:]
     private var archiveReadFailed = false
     private var baseFileName = "base.pdf"
+    private var detailSourceDigest: String?
+    private(set) var keepsPreviousDetailPDF = false
     func markImportedAnnotationsChanged() { baseChanged = true; pendingDocumentSave = true }
     private struct Snapshot { var objects: [MacPDFObject]; var favorites: Set<Int>; var base: Data? }
     private struct Change { var before: Snapshot; var after: Snapshot }
 
-    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, directory: URL? = nil) {
+    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, directory: URL? = nil, detailWorkspace: DetailPDFWorkspace? = nil) {
         self.document = document; self.identifier = identifier; self.fileName = fileName
         self.sourceURL = sourceURL; self.cookieHeader = cookieHeader
         let digest = SHA256.hash(data: Data(identifier.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -244,6 +247,19 @@ final class MacPDFEditorState: ObservableObject {
             .appendingPathComponent("NF/PDFEdits/mac-\(digest)", isDirectory: true)
         if let data = sourceData { sourceHashes.insert(Self.hash(data)) }
         restore()
+        if let detailWorkspace, !archiveReadFailed {
+            if let previous = detailSourceDigest, previous != detailWorkspace.digest {
+                if detailWorkspace.canRefresh(edited: self.document, previousDigest: previous, hasPageEdits: !objects.isEmpty || !favorites.isEmpty) {
+                    self.document = document
+                    detailSourceDigest = detailWorkspace.digest
+                    baseChanged = true
+                } else {
+                    keepsPreviousDetailPDF = true
+                }
+            } else {
+                detailSourceDigest = detailWorkspace.digest
+            }
+        }
         if !archiveReadFailed { importEditableAnnotations() }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.style"), let saved = try? JSONDecoder().decode(MacPDFStyle.self, from: data) { style = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.palette"), let saved = try? JSONDecoder().decode([MacPDFRGBA].self, from: data), !saved.isEmpty { palette = saved }
@@ -667,7 +683,7 @@ final class MacPDFEditorState: ObservableObject {
                 try data.write(to: directory.appendingPathComponent(nextBaseFileName), options: .atomic)
             }
             let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
-            let archive = MacPDFEditArchive(objects: objects.filter { !$0.isTransient }, favorites: favorites, sourceHashes: sourceHashes, baseFileName: nextBaseFileName)
+            let archive = MacPDFEditArchive(objects: objects.filter { !$0.isTransient }, favorites: favorites, sourceHashes: sourceHashes, baseFileName: nextBaseFileName, detailSourceDigest: detailSourceDigest)
             try encoder.encode(archive).write(to: directory.appendingPathComponent("edits.plist"), options: .atomic)
             // The atomic manifest is the commit point for base + edit objects.
             // Never overwrite the base referenced by the previous manifest.
@@ -692,7 +708,7 @@ final class MacPDFEditorState: ObservableObject {
             sourceHashes.formUnion(archive.sourceHashes ?? [])
             let name = archive.baseFileName ?? "base.pdf"
             guard name == (name as NSString).lastPathComponent, name.hasSuffix(".pdf"), let base = PDFDocument(url: directory.appendingPathComponent(name)) else { throw CocoaError(.fileReadCorruptFile) }
-            document = base; baseFileName = name
+            document = base; baseFileName = name; detailSourceDigest = archive.detailSourceDigest
             objects = archive.objects.filter { $0.page >= 0 && $0.page < document.pageCount }; favorites = archive.favorites.filter { $0 >= 0 && $0 < document.pageCount }
         } catch { archiveReadFailed = true; self.error = "저장된 편집 데이터를 복원하지 못했습니다. 원본과 기존 편집 파일은 유지됩니다: \(error.localizedDescription)" }
     }
@@ -720,6 +736,11 @@ final class MacPDFEditorState: ObservableObject {
             if pendingDocumentSave { status += " · 이후 편집은 미저장" }
         }
         catch { self.error = "PDF 저장 실패: \(error.localizedDescription)"; status = "저장 실패" }
+    }
+    func persistBeforeReturningToDetail() -> Bool {
+        canvas?.finishTextEditing()
+        saveTask?.cancel()
+        return persist()
     }
     func close() { canvas?.finishTextEditing(); find.dismiss(restoreFocus: false); clearNeon(); saveTask?.cancel(); persist(); rememberSettings(); if pendingDocumentSave && sourceURL == nil { Task { await save() } } }
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }

@@ -124,6 +124,7 @@ struct PDFPageLinkPicker: View {
                         .onSubmit { if !searching { chooseSelection() } }
                         .onKeyPress(.downArrow) { moveSelection(1); return .handled }
                         .onKeyPress(.upArrow) { moveSelection(-1); return .handled }
+                        .onKeyPress(.escape) { onClose(); return .handled }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 Menu(scope.title) {
                     ForEach(Scope.allCases, id: \.self) { option in

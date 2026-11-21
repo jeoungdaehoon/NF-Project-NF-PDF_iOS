@@ -91,6 +91,15 @@ struct PortalAttachmentPreviewItem: Identifiable, Hashable {
         self.localFileURL = localDocument.localFileURL
     }
 
+    init(detailWorkspace: DetailPDFWorkspace, source: PortalAttachmentPreviewItem) {
+        self.url = source.url
+        self.cookieHeader = source.cookieHeader
+        self.title = detailWorkspace.fileName
+        self.localDocumentID = detailWorkspace.identifier
+        self.localFileURL = detailWorkspace.editableFile
+        self.initialFreeNote = source.initialFreeNote
+    }
+
     /** 저장된 PDF 열람 기록을 현재 인증 세션과 결합해 다시 열 수 있는 항목으로 복원합니다. */
     init(historyRecord: PortalPDFDocumentHistoryRecord, cookieHeader: String?) {
         self.url = historyRecord.url

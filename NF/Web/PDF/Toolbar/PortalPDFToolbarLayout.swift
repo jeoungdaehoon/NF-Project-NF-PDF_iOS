@@ -14,6 +14,13 @@ import QuickLook
 import SwiftUI
 import UIKit
 
+private struct PDFDocumentToolbarBounds: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        if let next = nextValue() { value = next }
+    }
+}
+
 extension PortalPDFPreviewView {
     /// 현재 선택된 도구에 대응하는 상세 편집 영역이 표시 중인지 여부입니다.
     var isMarkupOptionPanelPresented: Bool {
@@ -62,6 +69,7 @@ extension PortalPDFPreviewView {
         ) { moveGesture in
             // 상세 편집창은 overlay로 표시해 기본 편집창의 레이아웃 크기와 위치에 영향을 주지 않습니다.
             pdfMarkupToolbar(moveGesture: moveGesture)
+                .anchorPreference(key: PDFDocumentToolbarBounds.self, value: .bounds) { $0 }
                 .overlay(alignment: .leading) {
                     if isMarkupOptionPanelPresented,
                        !isDetachedPenOptionPanelPresented,
@@ -195,6 +203,17 @@ extension PortalPDFPreviewView {
                 .zIndex(6)
         }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .overlayPreferenceValue(PDFDocumentToolbarBounds.self) { anchor in
+            if freeNotes.showsDocumentOptions, let anchor {
+                GeometryReader { geometry in
+                    let bounds = documentOptionsFrame(near: geometry[anchor], in: geometry.size)
+                    pdfDocumentOptionsPanel
+                        .frame(width: bounds.width, height: bounds.height)
+                        .position(x: bounds.midX, y: bounds.midY)
+                }
+            }
+        }
         .onAppear {
             updateMarkupToolbarContainerSize(containerSize)
         }
@@ -208,6 +227,29 @@ extension PortalPDFPreviewView {
             // 상세 편집창이 열리거나 닫힐 때도 현재 화면 안쪽 위치를 다시 계산합니다.
             normalizeMarkupToolbarOffset()
         }
+    }
+
+    private func documentOptionsFrame(near toolbar: CGRect, in viewport: CGSize) -> CGRect {
+        let inset: CGFloat = 8
+        let width = min(344, max(1, viewport.width - 2 * inset))
+        let height = min(520, max(1, viewport.height - 2 * inset))
+        let left = toolbar.minX - 2 * inset
+        let right = viewport.width - toolbar.maxX - 2 * inset
+        if isMarkupToolbarVertical && max(left, right) >= min(220, width) {
+            let panelWidth = min(width, max(left, right))
+            let x = left >= right ? toolbar.minX - inset - panelWidth : toolbar.maxX + inset
+            let y = max(inset, min(toolbar.minY, viewport.height - inset - height))
+            return CGRect(x: x, y: y, width: panelWidth, height: height)
+        }
+        let above = toolbar.minY - 2 * inset
+        let below = viewport.height - toolbar.maxY - 2 * inset
+        let x = max(inset, min(toolbar.midX - width / 2, viewport.width - inset - width))
+        if max(above, below) < min(144, height) {
+            return CGRect(x: x, y: above >= below ? inset : viewport.height - inset - height, width: width, height: height)
+        }
+        let panelHeight = min(height, max(above, below))
+        let y = above >= below ? toolbar.minY - inset - panelHeight : toolbar.maxY + inset
+        return CGRect(x: x, y: y, width: width, height: panelHeight)
     }
 
     var penOptionPanelDetachedPlacementOffset: CGSize {

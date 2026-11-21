@@ -475,7 +475,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
         webView.hideKeyboardAssistantBar()
         /// 기본 UserAgent를 보존한 상태에서 NF iOS 식별 값을 추가합니다.
         let defaultUserAgent = webView.value(forKey: "userAgent") as? String ?? ""
-        webView.customUserAgent = "\(defaultUserAgent) \(PortalConfig.userAgentSuffix)"
+        webView.customUserAgent = "\(defaultUserAgent) \(PortalConfig.userAgentSuffix) \(DetailPDFWorkspace.userAgentToken)"
 #if targetEnvironment(macCatalyst)
         /// 저장된 Mac 전용 화면 배율과 데스크톱 탐색 상태를 연결합니다.
         webView.scrollView.showsHorizontalScrollIndicator = false

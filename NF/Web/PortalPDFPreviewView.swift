@@ -19,6 +19,7 @@ import UIKit
 final class PortalPDFAutosaveController {
     var scheduledTask: Task<Void, Never>?
     var hasPendingSave = false
+    var flushPageEdits: (() -> Bool)?
 
     func cancelScheduledSave() {
         scheduledTask?.cancel()
@@ -55,6 +56,7 @@ final class PortalPDFBackgroundSaveController {
  */
 struct PortalPDFPreviewView: View {
     @StateObject var freeNotes = PDFNoteWorkspaceState(origin: URL(string: PortalConfig.portalOrigin)!)
+    @State private var isPDFSearchPresented = false
     /// 전체 화면 PDF 보기 닫기 처리를 위한 SwiftUI dismiss 환경 값입니다.
     @Environment(\.dismiss) var dismiss
     /// 웹 위 슬라이드 패널에서는 모달 dismiss 대신 부모의 패널 상태를 닫습니다.
@@ -62,14 +64,33 @@ struct PortalPDFPreviewView: View {
     /// 슬라이드 패널은 너비 상태와 무관하게 X·탭·설정 한 줄 상단 UI를 사용합니다.
     let usesCompactTitleBar: Bool
     let onApplyImageMarkup: ((PDFDocument) -> Void)?
+    private let detailPageURL: URL?
+    @State private var keepsPreviousDetailPDF = false
+    @State private var isReturningToDetailPage = false
 
     var usesFullscreenTitleBar: Bool {
         usesCompactTitleBar || isPDFEditorFullscreenModeEnabled
     }
 
     func closePDFPreview() {
+        guard !isReturningToDetailPage else { return }
+        isReturningToDetailPage = detailPageURL != nil
         Task { @MainActor in
+            defer { isReturningToDetailPage = false }
+            if detailPageURL != nil {
+                localAutosaveController.cancelScheduledSave()
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                await Task.yield()
+            }
             guard await freeNotes.flush() else { return }
+            if detailPageURL != nil {
+                guard localAutosaveController.flushPageEdits?() != false else {
+                    saveErrorMessage = "PDF 편집 내용을 저장하지 못했습니다."
+                    return
+                }
+                persistPendingLocalPDFEdits()
+                guard !localAutosaveController.hasPendingSave else { return }
+            }
             if let onClose { onClose() } else { dismiss() }
         }
     }
@@ -131,6 +152,7 @@ struct PortalPDFPreviewView: View {
         self.onClose = onClose
         self.usesCompactTitleBar = usesCompactTitleBar
         self.onApplyImageMarkup = onApplyImageMarkup
+        detailPageURL = DetailPDFWorkspace.matches(item.url, origin: URL(string: PortalConfig.portalOrigin)!) ? item.url : nil
         if let imageMarkupDocument { _state = State(initialValue: .loaded(imageMarkupDocument)) }
     }
 
@@ -413,7 +435,17 @@ struct PortalPDFPreviewView: View {
         case .loading:
             loadingView
         case .loaded(let document):
-            pdfEditorView(document: document)
+            VStack(spacing: 0) {
+                if keepsPreviousDetailPDF {
+                    Text(DetailPDFWorkspace.retainedEditsMessage)
+                        .font(.footnote)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(portalTheme.surfaceColor)
+                }
+                pdfEditorView(document: document)
+            }
         case .markdown(let content):
             PortalMarkdownAttachmentView(markdown: content, title: item.title, onClose: closePDFPreview)
         case .failed(let message):
@@ -476,6 +508,11 @@ struct PortalPDFPreviewView: View {
                     }
 
                     ToolbarItem(placement: .topBarTrailing) {
+                        pdfSearchButton
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+
+                    ToolbarItem(placement: .topBarTrailing) {
                         pdfSettingsToolbarButton
                     }
                     .sharedBackgroundVisibility(.hidden)
@@ -486,6 +523,10 @@ struct PortalPDFPreviewView: View {
 
                     ToolbarItem(placement: .principal) {
                         pdfDocumentTitleToolbarContent
+                    }
+
+                    ToolbarItem(placement: .topBarTrailing) {
+                        pdfSearchButton
                     }
 
                     ToolbarItem(placement: .topBarTrailing) {
@@ -502,18 +543,29 @@ struct PortalPDFPreviewView: View {
             if isPDFPresentationModeEnabled {
                 disablePDFPresentationMode()
             } else {
-                persistPendingLocalPDFEdits()
+                if detailPageURL == nil { persistPendingLocalPDFEdits() }
                 closePDFPreview()
             }
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: detailPageURL == nil || isPDFPresentationModeEnabled ? "xmark" : "chevron.left")
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isPDFPresentationModeEnabled ? "프레젠테이션 모드 종료" : "첨부 미리보기 닫기"
+            isPDFPresentationModeEnabled ? "프레젠테이션 모드 종료" : pdfReturnAccessibilityLabel
         )
+    }
+
+    private var pdfSearchButton: some View {
+        Button {
+            isPDFSearchPresented.toggle()
+        } label: {
+            Image(systemName: "magnifyingglass").frame(width: 34, height: 40)
+        }
+        .buttonStyle(.plain)
+        .disabled(loadedDocument == nil)
+        .accessibilityLabel("PDF 문구 검색")
     }
 
     /// PDF 설정 팝업을 여는 아이콘 전용 버튼입니다.
@@ -586,10 +638,16 @@ struct PortalPDFPreviewView: View {
                     .accessibilityLabel("문서 이름 \(activeItem.title)")
 
                 Menu {
-                    Button {
-                        beginPDFDocumentTitleEditing()
-                    } label: {
-                        Label("이름 변경", systemImage: "pencil")
+                    if detailPageURL != nil {
+                        Button(action: closePDFPreview) {
+                            Label(DetailPDFWorkspace.returnTitle, systemImage: "chevron.left")
+                        }
+                    } else {
+                        Button {
+                            beginPDFDocumentTitleEditing()
+                        } label: {
+                            Label("이름 변경", systemImage: "pencil")
+                        }
                     }
 
                     if item.localFileURL != nil {
@@ -610,16 +668,17 @@ struct PortalPDFPreviewView: View {
                     }
                     .disabled(loadedDocument?.pageCount == 0)
 
-                    Divider()
-
-                    Button {
-                        duplicateCurrentPDFDocument()
-                    } label: {
-                        Label("문서 복제", systemImage: "doc.on.doc")
+                    if detailPageURL == nil {
+                        Divider()
+                        Button {
+                            duplicateCurrentPDFDocument()
+                        } label: {
+                            Label("문서 복제", systemImage: "doc.on.doc")
+                        }
+                        .disabled(loadedDocument == nil || isPDFDocumentOperationInProgress)
                     }
-                    .disabled(loadedDocument == nil || isPDFDocumentOperationInProgress)
 
-                    if activeItem.localDocumentID != nil {
+                    if activeItem.localDocumentID != nil, detailPageURL == nil {
                         Button {
                             presentPDFDocumentMoveSheet()
                         } label: {
@@ -729,6 +788,7 @@ struct PortalPDFPreviewView: View {
             .frame(maxWidth: .infinity)
 
             if usesFullscreenTitleBar {
+                pdfSearchButton
                 pdfFullscreenTabBarSettingsButton
             }
         }
@@ -742,18 +802,22 @@ struct PortalPDFPreviewView: View {
         }
     }
 
+    private var pdfReturnAccessibilityLabel: String {
+        detailPageURL == nil ? "첨부 미리보기 닫기" : DetailPDFWorkspace.returnTitle
+    }
+
     /// 전체화면 중에도 문서 종료 동작을 유지하는 탭바의 가장 왼쪽 버튼입니다.
     var pdfFullscreenTabBarCloseButton: some View {
         Button {
-            persistPendingLocalPDFEdits()
+            if detailPageURL == nil { persistPendingLocalPDFEdits() }
             closePDFPreview()
         } label: {
-            Image(systemName: "xmark")
+            Image(systemName: detailPageURL == nil ? "xmark" : "chevron.left")
                 .frame(width: 42, height: 42)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("첨부 미리보기 닫기")
+        .accessibilityLabel(pdfReturnAccessibilityLabel)
     }
 
     /// 전체화면 중에도 PDF 설정을 여는 탭바의 가장 오른쪽 버튼입니다.
@@ -782,6 +846,7 @@ struct PortalPDFPreviewView: View {
 
     /// 이름 변경 메뉴 선택 시 기존 PDF 입력을 종료하고 중앙 제목 영역에 키보드 포커스를 줍니다.
     func beginPDFDocumentTitleEditing() {
+        guard detailPageURL == nil else { return }
         pdfDocumentTitleBeforeEditing = activeItem.title
         isEditingPDFDocumentTitle = true
         UIApplication.shared.sendAction(
@@ -997,7 +1062,7 @@ struct PortalPDFPreviewView: View {
             .task(id: item.id) {
                 restoreMarkupToolbarState()
                 guard onApplyImageMarkup == nil else { return }
-                documentHistoryRecords = PortalPDFDocumentHistoryStore.record(item)
+                documentHistoryRecords = detailPageURL == nil ? PortalPDFDocumentHistoryStore.record(item) : [PortalPDFDocumentHistoryRecord(item: item)]
                 restoreFavoritePDFPages()
                 await preparePDFDocumentOpening()
                 updateFavoritePDFPages(favoritePDFPageIndexes)
@@ -1506,6 +1571,15 @@ struct PortalPDFPreviewView: View {
 
             pdfSettingsSection("문서")
 
+            if detailPageURL != nil {
+                Button {
+                    isPDFSettingsPresented = false
+                    closePDFPreview()
+                } label: {
+                    pdfSettingsRow(DetailPDFWorkspace.returnTitle, systemImage: "chevron.left")
+                }
+            }
+
             if item.localFileURL != nil {
                 Button {
                     shareLocalPDFExternally()
@@ -1819,7 +1893,8 @@ struct PortalPDFPreviewView: View {
                     },
                     onDocumentChanged: {
                         scheduleLocalPDFAutosave()
-                    }
+                    },
+                    registerEditFlush: detailPageURL == nil ? nil : { localAutosaveController.flushPageEdits = $0 }
                 )
                 // 편집 알약 이동 중에는 PDF 입력값이 변하지 않으므로 PDFView의
                 // UIViewRepresentable 갱신을 생략해 화면 깜빡임과 재렌더링 비용을 줄입니다.
@@ -1883,11 +1958,21 @@ struct PortalPDFPreviewView: View {
                 .padding(.bottom, 12)
                 .zIndex(10)
             }
+            .overlay(alignment: .top) {
+                if isPDFSearchPresented && !isPDFPresentationModeEnabled {
+                    PortalPDFSearchBar(document: document, canvas: { freeNotes.canvas }) {
+                        isPDFSearchPresented = false
+                    }
+                    .id(ObjectIdentifier(document))
+                    .frame(maxWidth: 480)
+                    .padding(8)
+                }
+            }
             .animation(pdfPageSideListSpringAnimation, value: isPDFPageSideListPresented)
             }
         }
         .task(id: document) {
-            freeNotes.activate(document, source: item.url, localID: item.localDocumentID, note: item.initialFreeNote,
+            freeNotes.activate(document, source: item.url, localID: detailPageURL == nil ? item.localDocumentID : nil, note: item.initialFreeNote,
                                popupLayoutDirectory: URL.applicationSupportDirectory.appendingPathComponent("PDFNotePopupLayouts", isDirectory: true))
         }
     }
@@ -1970,10 +2055,13 @@ struct PortalPDFPreviewView: View {
                 .font(.footnote)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-            Button("외부 앱에서 열기") {
-                UIApplication.shared.open(item.url)
+            if detailPageURL != nil {
+                Button("다시 시도") { Task { await preparePDFDocumentOpening() } }
+                    .buttonStyle(.borderedProminent)
+            } else {
+                Button("외부 앱에서 열기") { UIApplication.shared.open(item.url) }
+                    .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.borderedProminent)
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2004,7 +2092,7 @@ struct PortalPDFPreviewView: View {
         do {
             /// 로컬 문서 또는 로컬 저장 설정이 켜진 문서는 서버 요청 전 편집본을 보관합니다.
             if shouldUseLocalPDFFile {
-                try pdfLocalStorageRepository.save(localData, for: item)
+                try writeLocalPDF(localData)
             }
             /// 네이티브 문서 라이브러리에서 연 파일은 로컬 편집본 저장으로 완료합니다.
             guard item.localFileURL == nil else {
@@ -2073,7 +2161,7 @@ struct PortalPDFPreviewView: View {
         do {
             // 자동 저장은 화면 뒤 문서 목록까지 매번 갱신하지 않습니다. PDFView가 닫히면
             // 목록의 onDismiss가 수정 시각을 한 번 갱신하므로 편집 중 View invalidation을 막습니다.
-            try pdfLocalStorageRepository.save(data, for: item, notifyObservers: false)
+            try writeLocalPDF(data, notifyObservers: false)
             localAutosaveController.hasPendingSave = false
         } catch {
             saveStatus = .failed
@@ -2229,9 +2317,38 @@ struct PortalPDFPreviewView: View {
         }
     }
 
+    private func writeLocalPDF(_ data: Data, notifyObservers: Bool = true) throws {
+        if detailPageURL != nil, let file = item.localFileURL {
+            try data.write(to: file, options: .atomic)
+        } else {
+            try pdfLocalStorageRepository.save(data, for: item, notifyObservers: notifyObservers)
+        }
+    }
+
     /** 로컬 저장 여부를 먼저 확인하고 최초 문서에 필요한 안내를 표시합니다. */
     @MainActor
     func preparePDFDocumentOpening() async {
+        if let detailPageURL, item.localFileURL == nil {
+            let source = item
+            state = .loading
+            do {
+                let workspace = try await DetailPDFWorkspace.open(url: detailPageURL, origin: URL(string: PortalConfig.portalOrigin)!, cookieHeader: source.cookieHeader)
+                try Task.checkCancellation()
+                guard item.id == source.id else { return }
+                let edits = PortalPDFPageEditRepository()
+                let id = workspace.identifier
+                let hasPageEdits = edits.load(identifier: id)?.hasEditableObjects
+                    ?? FileManager.default.fileExists(atPath: edits.fileURL(for: id).path)
+                keepsPreviousDetailPDF = try !workspace.prepareEditableFile(
+                    hasPageEdits: hasPageEdits || !PortalPDFFavoritePageStore.load(for: id).isEmpty
+                )
+                activeItem = PortalAttachmentPreviewItem(detailWorkspace: workspace, source: source)
+            } catch {
+                guard !Task.isCancelled, item.id == source.id else { return }
+                state = .failed("상세페이지 PDF를 불러오지 못했습니다. 문서 접근 권한과 연결 상태를 확인해 주세요.")
+            }
+            return
+        }
         if item.localFileURL == nil, let converted = pdfLocalStorageRepository.documents().first(where: { $0.sourceURL == convertedSourceURL }) {
             activeItem = PortalAttachmentPreviewItem(localDocument: converted)
             return

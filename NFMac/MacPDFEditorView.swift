@@ -14,15 +14,18 @@ struct MacPDFWorkspace: View {
     var isPaneExpanded = false
     var onTogglePaneExpanded: (() -> Void)?
     var initialFreeNote: String?
-    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, initialFreeNote: String? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, isFullscreen: Bool = false, onToggleFullscreen: (() -> Void)? = nil, onExitPaneExpansion: (() -> Void)? = nil, isPaneExpanded: Bool = false, onTogglePaneExpanded: (() -> Void)? = nil, editorDirectory: URL? = nil, onSave: ((Data) async throws -> Void)? = nil) {
-        let editor = MacPDFEditorState(document: document, identifier: identifier, fileName: fileName, sourceURL: sourceURL, cookieHeader: cookieHeader, sourceData: sourceData, directory: editorDirectory)
+    var registerDetailExit: ((@escaping () async -> Bool) -> Void)?
+    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, initialFreeNote: String? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, isContainerResizing: Bool = false, exportOnSave: Bool = false, isFullscreen: Bool = false, onToggleFullscreen: (() -> Void)? = nil, onExitPaneExpansion: (() -> Void)? = nil, isPaneExpanded: Bool = false, onTogglePaneExpanded: (() -> Void)? = nil, editorDirectory: URL? = nil, detailWorkspace: DetailPDFWorkspace? = nil, registerDetailExit: ((@escaping () async -> Bool) -> Void)? = nil, onSave: ((Data) async throws -> Void)? = nil) {
+        let directory = detailWorkspace?.directory.appendingPathComponent("editor", isDirectory: true) ?? editorDirectory
+        let editor = MacPDFEditorState(document: document, identifier: identifier, fileName: fileName, sourceURL: sourceURL, cookieHeader: cookieHeader, sourceData: sourceData, directory: directory, detailWorkspace: detailWorkspace)
         editor.onSave = onSave; editor.exportOnSave = exportOnSave; _state = StateObject(wrappedValue: editor); self.isContainerResizing = isContainerResizing
         self.isFullscreen = isFullscreen; self.onToggleFullscreen = onToggleFullscreen
         self.onExitPaneExpansion = onExitPaneExpansion
         self.isPaneExpanded = isPaneExpanded; self.onTogglePaneExpanded = onTogglePaneExpanded
         self.initialFreeNote = initialFreeNote
+        self.registerDetailExit = registerDetailExit
     }
-    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing, isFullscreen: isFullscreen, onToggleFullscreen: onToggleFullscreen, onExitPaneExpansion: onExitPaneExpansion, isPaneExpanded: isPaneExpanded, onTogglePaneExpanded: onTogglePaneExpanded, initialFreeNote: initialFreeNote) }
+    var body: some View { MacPDFEditorView(state: state, isContainerResizing: isContainerResizing, isFullscreen: isFullscreen, onToggleFullscreen: onToggleFullscreen, onExitPaneExpansion: onExitPaneExpansion, isPaneExpanded: isPaneExpanded, onTogglePaneExpanded: onTogglePaneExpanded, initialFreeNote: initialFreeNote, registerDetailExit: registerDetailExit) }
 }
 
 struct MacPDFEditorView: View {
@@ -36,6 +39,7 @@ struct MacPDFEditorView: View {
     var isPaneExpanded = false
     var onTogglePaneExpanded: (() -> Void)?
     var initialFreeNote: String?
+    var registerDetailExit: ((@escaping () async -> Bool) -> Void)?
     @StateObject private var sharing = MacPDFExportController()
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
@@ -47,6 +51,14 @@ struct MacPDFEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !state.presentation { header; Divider() }
+            if state.keepsPreviousDetailPDF && !state.presentation {
+                Text(DetailPDFWorkspace.retainedEditsMessage)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                Divider()
+            }
             MacPDFFindBar(find: state.find)
             HStack(spacing: 0) {
                 if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 190); Divider() }
@@ -89,11 +101,17 @@ struct MacPDFEditorView: View {
                     }
                 }
                 .task(id: state.identifier) {
-                    freeNotes.activate(state.document, source: state.sourceURL, localID: state.identifier,
+                    freeNotes.activate(state.document, source: state.sourceURL, localID: registerDetailExit == nil ? state.identifier : nil,
                                        note: initialFreeNote, popupLayoutDirectory: state.notePopupLayoutDirectory)
                 }
             }
             if !state.presentation { footer }
+        }
+        .onAppear {
+            registerDetailExit? {
+                guard await freeNotes.flush() else { return false }
+                return state.persistBeforeReturningToDetail()
+            }
         }
         .onDisappear { Task { _ = await freeNotes.flush() } }
         .sheet(item: $modal, onDismiss: { state.menuVisible = !state.selection.isEmpty; state.canvas?.window?.makeFirstResponder(state.canvas) }) { item in
@@ -282,7 +300,8 @@ struct MacPDFEditorView: View {
                 }
                 Divider()
                 if freeNotes.documentTool {
-                    PDFDocumentToolOptions(style: $freeNotes.documentMarkerStyle, recent: freeNotes.recentDocumentIcons,
+                    PDFDocumentToolOptions(style: Binding(get: { freeNotes.configuredMarkerStyle }, set: { freeNotes.configuredMarkerStyle = $0 }),
+                                              recent: freeNotes.recentDocumentIcons,
                                               onChooseIcon: freeNotes.chooseDocumentIcon)
                 } else {
                     toolOptions

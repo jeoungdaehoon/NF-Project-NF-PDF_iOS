@@ -321,6 +321,7 @@ struct PortalPDFKitView: UIViewRepresentable {
     let onHistoryAvailabilityChanged: (Bool, Bool) -> Void
     /// PDF Annotation의 내용·위치·크기 등이 변경되었음을 자동 저장 흐름에 전달합니다.
     let onDocumentChanged: () -> Void
+    var registerEditFlush: ((@escaping () -> Bool) -> Void)? = nil
 
     /**
      PDFView 인스턴스를 생성합니다.
@@ -348,6 +349,11 @@ struct PortalPDFKitView: UIViewRepresentable {
         context.coordinator.updateCurrentPageChangedHandler(onCurrentPageChanged)
         context.coordinator.updateZoomPercentageChangedHandler(onZoomPercentageChanged)
         context.coordinator.attach(to: pdfView)
+        registerEditFlush? { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return true }
+            coordinator.finishTextEditing()
+            return coordinator.persistPageEditDocument()
+        }
         freeNotes?.attach(pdfView)
         freeNotes?.selectedArea = { [weak coordinator = context.coordinator] in
             guard let coordinator else { return nil }
@@ -450,6 +456,7 @@ struct PortalPDFKitView: UIViewRepresentable {
         context.coordinator.applyPageEditCommandIfNeeded(pageEditCommand, in: pdfView)
         context.coordinator.applyPageNavigationCommandIfNeeded(pageNavigationCommand, in: pdfView)
         context.coordinator.applyPageStructureRefreshCommandIfNeeded(pageStructureRefreshCommand, in: pdfView)
+        freeNotes?.observeScrollView(context.coordinator.viewportScrollView(in: pdfView))
         guard context.coordinator.shouldApplyRenderState(
             document: document,
             selectedTool: selectedTool,
@@ -3210,14 +3217,17 @@ extension PortalPDFKitView {
         }
 
         /// 메모리의 편집 정본을 원자적으로 저장합니다. 연속 입력은 마지막 변경 한 번으로 합칩니다.
-        func persistPageEditDocument() {
+        @discardableResult
+        func persistPageEditDocument() -> Bool {
             pageEditSaveWorkItem?.cancel()
             pageEditSaveWorkItem = nil
-            guard let identifier = pageEditPersistenceIdentifier else { return }
+            guard let identifier = pageEditPersistenceIdentifier else { return true }
             do {
                 try pageEditRepository.save(pageEditDocument, identifier: identifier)
+                return true
             } catch {
                 NSLog("PortalPDF page edit save error: %@", error.localizedDescription)
+                return false
             }
         }
 
@@ -3795,6 +3805,7 @@ extension PortalPDFKitView {
             dismissTextActionMenu()
             dismissImageActionMenu()
             finishTextEditing()
+            if pageEditSaveWorkItem != nil { persistPageEditDocument() }
             clearTransientNeonStrokes()
             if let pencilInteraction, let pdfView {
                 pdfView.removeInteraction(pencilInteraction)

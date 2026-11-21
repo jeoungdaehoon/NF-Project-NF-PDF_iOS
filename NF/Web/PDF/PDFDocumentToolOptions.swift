@@ -89,33 +89,53 @@ struct PDFDocumentIcon: Identifiable {
 struct PDFDocumentMarkerStyle: Codable, Equatable {
     private static let defaultsKey = "nf.mac.pdf.documentMarkerStyle"
     private static let recentsKey = "nf.mac.pdf.documentMarkerRecentIcons"
+    static let lineWidths = 0.5...12.0
+    static let queryNames: Set<String> = ["markerIcon", "markerColor", "markerLineColor", "markerLineWidth"]
     var icon = PDFDocumentIcon.defaultID
     var rgb: UInt32?
+    var lineRGB: UInt32?
+    private var storedLineWidth: Double?
 
-    init(icon: String = PDFDocumentIcon.defaultID, rgb: UInt32? = nil) {
+    init(icon: String = PDFDocumentIcon.defaultID, rgb: UInt32? = nil, lineRGB: UInt32? = nil, lineWidth: Double = 1.5) {
         self.icon = PDFDocumentIcon.byID[icon] == nil ? PDFDocumentIcon.defaultID : icon
         self.rgb = rgb.flatMap { $0 <= 0xFFFFFF ? $0 : nil }
+        self.lineRGB = lineRGB.flatMap { $0 <= 0xFFFFFF ? $0 : nil }
+        self.lineWidth = lineWidth
+    }
+
+    var lineWidth: Double {
+        get { storedLineWidth.flatMap { Self.lineWidths.contains($0) ? $0 : nil } ?? 1.5 }
+        set { storedLineWidth = Self.lineWidths.contains(newValue) && newValue != 1.5 ? newValue : nil }
     }
 
     init(query: [URLQueryItem]) {
         let name = query.first { $0.name == "markerIcon" }?.value ?? PDFDocumentIcon.defaultID
-        let colorValue = query.first { $0.name == "markerColor" }?.value
-        let color = colorValue.flatMap { $0.count == 6 ? UInt32($0, radix: 16) : nil }
-        self.init(icon: name, rgb: color)
+        func color(_ key: String) -> UInt32? {
+            query.first { $0.name == key }?.value.flatMap { $0.count == 6 ? UInt32($0, radix: 16) : nil }
+        }
+        let width = query.first { $0.name == "markerLineWidth" }?.value.flatMap(Double.init) ?? 1.5
+        self.init(icon: name, rgb: color("markerColor"), lineRGB: color("markerLineColor"), lineWidth: width)
     }
 
     var queryItems: [URLQueryItem] {
         var items: [URLQueryItem] = []
         if icon != PDFDocumentIcon.defaultID { items.append(.init(name: "markerIcon", value: icon)) }
         if let rgb { items.append(.init(name: "markerColor", value: String(format: "%06X", rgb))) }
+        if let lineRGB { items.append(.init(name: "markerLineColor", value: String(format: "%06X", lineRGB))) }
+        if lineWidth != 1.5 { items.append(.init(name: "markerLineWidth", value: String(lineWidth))) }
         return items
     }
 
     var background: Color {
-        rgb.map { rgb in
-            let (red, green, blue) = Self.components(rgb)
-            return Color(.sRGB, red: red, green: green, blue: blue)
-        } ?? .accentColor
+        Self.color(rgb)
+    }
+
+    var lineColor: Color { Self.color(lineRGB) }
+
+    private static func color(_ rgb: UInt32?) -> Color {
+        guard let rgb else { return .accentColor }
+        let (red, green, blue) = components(rgb)
+        return Color(.sRGB, red: red, green: green, blue: blue)
     }
 
     var foreground: Color {
@@ -146,7 +166,7 @@ struct PDFDocumentMarkerStyle: Codable, Equatable {
 
     static func load(from defaults: UserDefaults = .standard) -> Self {
         guard let data = defaults.data(forKey: defaultsKey), let stored = try? JSONDecoder().decode(Self.self, from: data) else { return .init() }
-        return .init(icon: stored.icon, rgb: stored.rgb)
+        return .init(icon: stored.icon, rgb: stored.rgb, lineRGB: stored.lineRGB, lineWidth: stored.lineWidth)
     }
 
     func save(to defaults: UserDefaults = .standard) {
@@ -201,10 +221,26 @@ struct PDFDocumentToolOptions: View {
         let pages = max(1, (results.count + pageSize - 1) / pageSize)
         let recentIcons = recent.compactMap { PDFDocumentIcon.byID[$0] }
         VStack(alignment: .leading, spacing: 10) {
-            PDFDocumentMarkerView(style: style, size: 34)
+            HStack(spacing: 0) {
+                PDFDocumentMarkerView(style: style, size: 34)
+                Rectangle().fill(style.lineColor).frame(width: 48, height: style.lineWidth)
+            }
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .background(tile, in: RoundedRectangle(cornerRadius: 7))
                 .accessibilityLabel("선택한 문서 아이콘 미리보기")
+            HStack {
+                Text("연결선 색상").font(.caption.weight(.medium))
+                Spacer()
+                Button("테마 기본") { style.lineRGB = nil }
+                    .disabled(style.lineRGB == nil).font(.caption)
+                ColorPicker("연결선 색상", selection: Binding(get: { style.lineColor }, set: { style.lineRGB = PDFDocumentMarkerStyle.rgb($0) }),
+                            supportsOpacity: false)
+                    .labelsHidden().accessibilityLabel("사용자 지정 연결선 색상")
+            }
+            Stepper(value: $style.lineWidth, in: PDFDocumentMarkerStyle.lineWidths, step: 0.5) {
+                Text("연결선 두께 \(style.lineWidth, specifier: "%.1f") pt").font(.caption.weight(.medium))
+            }
+            Divider()
             if !recentIcons.isEmpty {
                 Text("최근 사용").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                 iconGrid(recentIcons)

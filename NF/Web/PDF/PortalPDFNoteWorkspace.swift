@@ -5,7 +5,11 @@ import WebKit
 
 @MainActor
 final class PDFNoteWorkspaceState: ObservableObject {
-    enum Mode { case popup, slide, split, note }
+    enum Mode {
+        case popup, slide, split, note
+
+        var showsLinkedMarker: Bool { self == .slide || self == .split }
+    }
     struct Anchor: Identifiable {
         let id: String
         let note: String
@@ -54,10 +58,20 @@ final class PDFNoteWorkspaceState: ObservableObject {
     }
     @Published private(set) var recentDocumentIcons = PDFDocumentMarkerStyle.recentIcons()
     @Published private(set) var closingPopups: Set<String> = []
+    @Published var editingMarkerID: String?
+    @Published private(set) var markerRevision = 0
+    private var focusedMarkerID: String?
     private var closeRequests: Set<String> = []
     private var popupLayoutDirectory: URL?
     private var browsers: [String: WKWebView] = [:]
     private lazy var linkDelegate = PDFNoteLinkDelegate(workspace: self)
+    let viewportChanges = PassthroughSubject<Void, Never>()
+    private var viewportChangePending = false
+    private var viewportNotifications: AnyCancellable?
+    #if os(iOS)
+    private weak var scrollView: UIScrollView?
+    private var scrollObservation: NSKeyValueObservation?
+    #endif
 
     init(origin: URL) { self.origin = origin }
 
@@ -70,6 +84,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
             selectingArea = false
             documentTool = false
             closingPopups.removeAll()
+            editingMarkerID = nil
+            focusedMarkerID = nil
         }
         activeDocument = document
         sourceURL = source
@@ -81,11 +97,39 @@ final class PDFNoteWorkspaceState: ObservableObject {
     func attach(_ view: PDFView) {
         canvas = view
         view.delegate = linkDelegate
+        let center = NotificationCenter.default
+        viewportNotifications = center.publisher(for: .PDFViewScaleChanged, object: view)
+            .merge(with: center.publisher(for: .PDFViewPageChanged, object: view),
+                   center.publisher(for: .PDFViewDocumentChanged, object: view))
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { self?.viewportChanged() }
+            }
         #if os(iOS)
         let tap = UITapGestureRecognizer(target: linkDelegate, action: #selector(PDFNoteLinkDelegate.placeDocument(_:)))
         tap.delegate = linkDelegate
         view.addGestureRecognizer(tap)
         #endif
+    }
+
+    #if os(iOS)
+    func observeScrollView(_ view: UIScrollView?) {
+        guard view !== scrollView else { return }
+        scrollView = view
+        scrollObservation = view?.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.viewportChanged() }
+        }
+        viewportChanged()
+    }
+    #endif
+
+    func viewportChanged() {
+        guard !viewportChangePending else { return }
+        viewportChangePending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.viewportChangePending = false
+            self.viewportChanges.send()
+        }
     }
 
     func openLink(_ url: URL, in view: PDFView) -> Bool {
@@ -137,7 +181,11 @@ final class PDFNoteWorkspaceState: ObservableObject {
     }
 
     func beginLink() {
-        if let area = selectedArea?() { chooseNote(area) }
+        editingMarkerID = nil
+        if var area = selectedArea?() {
+            area.markerStyle = documentMarkerStyle
+            chooseNote(area)
+        }
         else { selectingArea.toggle() }
     }
 
@@ -164,7 +212,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
         guard let page = canvas.page(for: CGPoint(x: rect.midX, y: rect.midY), nearest: false) else { return }
         let bounds = canvas.convert(rect, to: page).standardized.intersection(page.bounds(for: .cropBox))
         guard !bounds.isNull, !bounds.isEmpty else { return }
-        chooseNote(Target(page: page, bounds: bounds))
+        chooseNote(Target(page: page, bounds: bounds, markerStyle: documentMarkerStyle))
     }
 
     private func chooseNote(_ area: Target) {
@@ -174,8 +222,66 @@ final class PDFNoteWorkspaceState: ObservableObject {
 
     func chooseDocumentIcon(_ icon: String) {
         guard PDFDocumentIcon.byID[icon] != nil else { return }
-        documentMarkerStyle.icon = icon
+        var style = configuredMarkerStyle
+        style.icon = icon
+        configuredMarkerStyle = style
         recentDocumentIcons = PDFDocumentMarkerStyle.rememberIcon(icon)
+    }
+
+    var configuredMarkerStyle: PDFDocumentMarkerStyle {
+        get {
+            guard let id = configuredMarkerID, let (_, annotation) = markerAnnotation(id),
+                  let url = Self.ownedLink(annotation),
+                  let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return documentMarkerStyle }
+            return PDFDocumentMarkerStyle(query: query)
+        }
+        set {
+            guard let id = configuredMarkerID else { documentMarkerStyle = newValue; return }
+            guard let (page, annotation) = markerAnnotation(id), let url = Self.ownedLink(annotation),
+                  var parts = URLComponents(url: url, resolvingAgainstBaseURL: false), newValue != configuredMarkerStyle else { return }
+            parts.queryItems = (parts.queryItems ?? []).filter { !PDFDocumentMarkerStyle.queryNames.contains($0.name) } + newValue.queryItems
+            guard let updated = parts.url else { return }
+            changeDocument?(page) { annotation.url = updated }
+            markerRevision &+= 1
+        }
+    }
+
+    private var configuredMarkerID: String? {
+        if let editingMarkerID { return editingMarkerID }
+        if let focusedMarkerID, sessions.contains(where: { $0.id == focusedMarkerID && !$0.collapsed }) { return focusedMarkerID }
+        return sessions.last(where: { !$0.collapsed })?.id
+    }
+
+    private func markerAnnotation(_ id: String) -> (PDFPage, PDFAnnotation)? {
+        guard let document = canvas?.document else { return nil }
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index),
+                  let annotation = page.annotations.first(where: { Self.ownedLink($0)?.fragment == id }) else { continue }
+            return (page, annotation)
+        }
+        return nil
+    }
+
+    func markerStyle(for id: String) -> PDFDocumentMarkerStyle {
+        guard let (_, annotation) = markerAnnotation(id), let link = Self.ownedLink(annotation),
+              let query = URLComponents(url: link, resolvingAgainstBaseURL: false)?.queryItems else {
+            return PDFDocumentMarkerStyle()
+        }
+        return PDFDocumentMarkerStyle(query: query)
+    }
+
+    func moveDocumentMarker(_ id: String, to frame: CGRect) {
+        guard let canvas, let (page, annotation) = markerAnnotation(id),
+              anchors(on: page).contains(where: { $0.id == id && $0.isDocumentMarker }) else { return }
+        let rect = canvas.isFlippedForNoteWorkspace ? frame : frame.offsetBy(dx: 0, dy: canvas.bounds.height - frame.maxY - frame.minY)
+        let bounds = canvas.convert(rect, to: page).standardized.intersection(page.bounds(for: canvas.displayBox))
+        guard !bounds.isNull, !bounds.isEmpty, bounds != annotation.bounds else { return }
+        changeDocument?(page) { annotation.bounds = bounds }
+        markerRevision &+= 1
+    }
+
+    func markerPageFrame(_ anchor: Anchor) -> CGRect {
+        viewFrame(anchor.page.bounds(for: canvas?.displayBox ?? .cropBox), on: anchor.page)
     }
 
     func selectPortalPage(_ url: URL) {
@@ -203,8 +309,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
         parts.fragment = id
         if area.isDocumentMarker {
             parts.queryItems?.append(.init(name: "marker", value: "1"))
-            parts.queryItems?.append(contentsOf: area.markerStyle.queryItems)
         }
+        parts.queryItems?.append(contentsOf: area.markerStyle.queryItems)
         if let pageHref { parts.queryItems?.append(.init(name: "page", value: pageHref)) }
         let annotation = PDFAnnotation(bounds: area.bounds, forType: .link, withProperties: nil)
         annotation.url = parts.url
@@ -267,7 +373,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
             var anchor = Anchor(id: id, note: note, page: page, bounds: annotation.bounds,
                                 isDocumentMarker: annotation.contents == "nf-note-marker" ||
                                     query.contains { $0.name == "marker" && $0.value == "1" })
-            if anchor.isDocumentMarker { anchor.markerStyle = PDFDocumentMarkerStyle(query: query) }
+            anchor.markerStyle = PDFDocumentMarkerStyle(query: query)
             return anchor
         }
     }
@@ -329,6 +435,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
 
     func open(id: String, note: String) {
         if closeRequests.contains(id) { return }
+        editingMarkerID = nil
+        focusedMarkerID = id
         showsDocumentOptions = false
         if let index = sessions.firstIndex(where: { $0.id == id }) {
             sessions[index].collapsed = false
@@ -375,18 +483,19 @@ final class PDFNoteWorkspaceState: ObservableObject {
         mode(.slide, for: id)
     }
 
-    func reveal(_ id: String, restoringScale: Bool = false) {
-        guard let document = canvas?.document else { return }
+    func reveal(_ id: String, restoringScale: Bool = false, onlyIfOffscreen: Bool = false) {
+        guard let canvas, let document = canvas.document else { return }
         for index in 0..<document.pageCount {
             guard let page = document.page(at: index),
                   let anchor = anchors(on: page).first(where: { $0.id == id }) else { continue }
+            if onlyIfOffscreen && canvas.bounds.contains(canvas.convert(anchor.bounds, from: page).standardized) { return }
             if restoringScale, let session = sessions.firstIndex(where: { $0.id == id }),
                let scale = sessions[session].pdfScaleBeforeNoteOnly, scale.isFinite, scale > 0 {
-                canvas?.autoScales = false
-                canvas?.scaleFactor = scale
+                canvas.autoScales = false
+                canvas.scaleFactor = scale
                 sessions[session].pdfScaleBeforeNoteOnly = nil
             }
-            canvas?.go(to: anchor.bounds, on: page)
+            canvas.go(to: anchor.bounds, on: page)
             return
         }
     }
@@ -512,7 +621,7 @@ struct PDFNotePlacement: Codable {
         contentScaleRatio = contentScale / scale
     }
 
-    func contentScale(at scale: CGFloat) -> CGFloat { min(4, max(0.3, contentScaleRatio * scale)) }
+    func contentScale(at scale: CGFloat) -> CGFloat { contentScaleRatio * scale }
 
     func screenFrame(anchor: CGRect, scale: CGFloat) -> CGRect {
         CGRect(x: anchor.midX + bounds.minX * scale, y: anchor.midY + bounds.minY * scale,
@@ -525,7 +634,7 @@ struct PDFNotePlacement: Codable {
     }
 
     static func zoomedFrame(_ rect: CGRect, by translation: CGSize) -> CGRect {
-        let distance = -translation.width - translation.height
+        let distance = abs(translation.width) >= abs(translation.height) ? translation.width : -translation.height
         let factor = exp(distance / 180)
         let minimum = 88 / min(rect.width, rect.height)
         let maximum = 2400 / max(rect.width, rect.height)
@@ -541,10 +650,15 @@ struct PDFNoteWorkspace<Editor: View>: View {
     @State private var fraction: CGFloat = 0.52
     @State private var splitDrag: CGFloat?
     @State private var area: CGRect?
+    @State private var viewportRevision = 0
+    #if os(iOS)
+    @State private var keyboardVisible = false
+    #endif
     let enabled: Bool
     @ViewBuilder var editor: Editor
 
     var body: some View {
+        let _ = viewportRevision
         GeometryReader { geometry in
             let size = geometry.size
             let full = state.sessions.last { $0.mode != .popup }
@@ -556,9 +670,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
                     .opacity(noteOnly ? 0 : 1)
                     .allowsHitTesting(!noteOnly)
                 if enabled {
-                    TimelineView(.periodic(from: .now, by: 0.12)) { _ in
-                        layer(size: size, pdfWidth: pdfWidth, full: full)
-                    }
+                    layer(size: size, pdfWidth: pdfWidth, full: full)
                     if !noteOnly {
                         Button { state.beginLink() } label: {
                             Label("자유노트 연결", systemImage: "link.badge.plus")
@@ -607,6 +719,11 @@ struct PDFNoteWorkspace<Editor: View>: View {
             .coordinateSpace(name: "PDFNoteWorkspace")
             .clipped()
         }
+        .onReceive(state.viewportChanges) { viewportRevision &+= 1 }
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
+        #endif
         .alert("자유노트", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
             Button("확인") { state.error = nil }
         } message: { Text(state.error ?? "") }
@@ -644,7 +761,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
     private func boxes(size: CGSize, anchors: [String: CGRect], documentMarkers: Set<String>,
                        full: PDFNoteWorkspaceState.Session?, pdfWidth: CGFloat) -> [String: CGRect] {
         if let full {
-            let width = min(420, size.width * 0.92)
+            let width = min(420, size.width - min(64, size.width / 3))
             let box = switch full.mode {
             case .note: CGRect(origin: .zero, size: size)
             case .split: CGRect(x: pdfWidth + 1, y: 0, width: max(1, size.width - pdfWidth - 1), height: size.height)
@@ -663,6 +780,15 @@ struct PDFNoteWorkspace<Editor: View>: View {
             guard let anchor = anchors[session.id] else { continue }
             if let placement = state.placements[session.id] {
                 let frame = placement.screenFrame(anchor: anchor, scale: state.displayScale)
+                #if os(iOS)
+                if keyboardVisible {
+                    let top = min(28, max(0, size.height - 1))
+                    let height = min(frame.height, max(1, size.height - top))
+                    let y = min(max(top, frame.minY), max(top, size.height - height))
+                    result[session.id] = CGRect(x: frame.minX, y: y, width: frame.width, height: height)
+                    continue
+                }
+                #endif
                 if workspace.intersects(frame) {
                     result[session.id] = frame
                     continue
@@ -699,27 +825,45 @@ struct PDFNoteWorkspace<Editor: View>: View {
     private func layer(size: CGSize, pdfWidth: CGFloat, full: PDFNoteWorkspaceState.Session?) -> some View {
         let anchors = state.visibleAnchors()
         let positions = Dictionary(anchors.map { ($0.0.id, $0.1) }, uniquingKeysWith: { first, _ in first })
+        let styles = Dictionary(anchors.map { ($0.0.id, $0.0.markerStyle) }, uniquingKeysWith: { first, _ in first })
         let documentMarkers = Set(anchors.compactMap { $0.0.isDocumentMarker ? $0.0.id : nil })
         let frames = boxes(size: size, anchors: positions, documentMarkers: documentMarkers, full: full, pdfWidth: pdfWidth)
         let newest = state.sessions.last.flatMap { $0.collapsed ? nil : $0.id }
         let fallback = newest.flatMap { full == nil && positions[$0] != nil && frames[$0] == nil && state.placements[$0] == nil ? $0 : nil }
+        let docked = full.flatMap { $0.mode.showsLinkedMarker ? $0 : nil }
+        let visiblePDFWidth = min(pdfWidth, docked.flatMap { frames[$0.id]?.minX } ?? pdfWidth)
         return ZStack(alignment: .topLeading) {
-            if full == nil {
+            if full == nil || docked != nil {
+                if state.editingMarkerID != nil {
+                    Color.clear.frame(width: visiblePDFWidth, height: size.height)
+                        .contentShape(Rectangle()).onTapGesture { state.editingMarkerID = nil }
+                }
                 ForEach(anchors, id: \.0.id) { anchor, frame in
-                    if CGRect(x: 0, y: 0, width: pdfWidth, height: size.height).intersects(frame) {
-                        markerButton(anchor, frame: frame)
-                            .position(markerCenter(frame, documentMarker: anchor.isDocumentMarker, pdfWidth: pdfWidth, height: size.height))
+                    if CGRect(x: 0, y: 0, width: visiblePDFWidth, height: size.height).intersects(frame) {
+                        let active = docked?.id == anchor.id
+                        if anchor.isDocumentMarker {
+                            PDFDocumentMarkerControl(state: state, anchor: anchor, frame: frame,
+                                active: active,
+                                canEdit: !state.sessions.contains { $0.id == anchor.id && !$0.collapsed },
+                                onOpen: { openMarker(anchor, using: docked?.mode) })
+                        } else {
+                            standardMarkerButton(anchor, frame: frame, dockedMode: docked?.mode, active: active)
+                                .position(markerCenter(frame, documentMarker: false, pdfWidth: visiblePDFWidth, height: size.height))
+                        }
                     }
                 }
+            }
+            if full == nil {
                 ForEach(state.sessions) { session in
                     if let anchor = positions[session.id], let frame = frames[session.id] {
+                        let style = styles[session.id] ?? PDFDocumentMarkerStyle()
                         Path { path in
-                            let start = CGPoint(x: anchor.midX, y: anchor.midY)
+                            let start = CGPoint(x: documentMarkers.contains(session.id) ? anchor.midX : anchor.maxX, y: anchor.midY)
                             let end = CGPoint(x: min(frame.maxX, max(frame.minX, start.x)), y: min(frame.maxY, max(frame.minY, start.y)))
                             path.move(to: start)
                             path.addLine(to: CGPoint(x: end.x, y: start.y))
                             path.addLine(to: end)
-                        }.stroke(.tint, lineWidth: 1.5).allowsHitTesting(false)
+                        }.stroke(style.lineColor, lineWidth: style.lineWidth * state.displayScale).allowsHitTesting(false)
                     }
                 }
             }
@@ -737,13 +881,13 @@ struct PDFNoteWorkspace<Editor: View>: View {
                 let marker = positions[session.id].map { anchor in
                     markerCenter(anchor, documentMarker: documentMarkers.contains(session.id), pdfWidth: pdfWidth, height: size.height)
                 }
-                PDFNoteCard(state: state, session: session, frame: frame, visualScale: visualScale) { next, contentScale in
+                PDFNoteCard(state: state, session: session, frame: frame, visualScale: visualScale,
+                            clippedBottom: max(0, frame.maxY - size.height),
+                            activeLinkStyle: docked?.id == session.id ? styles[session.id] ?? state.markerStyle(for: session.id) : nil) { next, contentScale in
                     if let anchor = positions[session.id] {
                         state.placePopup(next, for: session.id, beside: anchor, scale: state.displayScale, contentScale: contentScale)
                     }
                 }
-                    .frame(width: frame.width / visualScale, height: frame.height / visualScale)
-                    .scaleEffect(visualScale)
                     .frame(width: frame.width, height: frame.height)
                     .scaleEffect(shrinking ? 0.045 : 1)
                     .position(shrinking ? marker ?? center : center)
@@ -770,29 +914,172 @@ struct PDFNoteWorkspace<Editor: View>: View {
                 y: min(height - 16, max(16, frame.midY)))
     }
 
-    @ViewBuilder
-    private func markerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect) -> some View {
-        if anchor.isDocumentMarker {
-            Button { state.open(id: anchor.id, note: anchor.note) } label: {
-                PDFDocumentMarkerView(style: anchor.markerStyle, size: max(14, min(frame.width, frame.height)))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("연결된 문서 열기")
-        } else {
-            standardMarkerButton(anchor, frame: frame)
-        }
-
+    private func openMarker(_ anchor: PDFNoteWorkspaceState.Anchor, using dockedMode: PDFNoteWorkspaceState.Mode?) {
+        state.open(id: anchor.id, note: anchor.note)
+        if let dockedMode { state.mode(dockedMode, for: anchor.id) }
     }
 
-    private func standardMarkerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect) -> some View {
-        Button { state.open(id: anchor.id, note: anchor.note) } label: {
+    private func standardMarkerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect,
+                                      dockedMode: PDFNoteWorkspaceState.Mode?, active: Bool) -> some View {
+        Button { openMarker(anchor, using: dockedMode) } label: {
             Image(systemName: "doc.text")
                 .font(.system(size: anchor.isDocumentMarker ? max(8, frame.height * 0.7) : 12, weight: .semibold))
                 .frame(width: anchor.isDocumentMarker ? max(14, frame.width) : 25,
                        height: anchor.isDocumentMarker ? max(14, frame.height) : 25)
         }
         .buttonStyle(.borderedProminent)
+        .pdfActiveDocumentMarker(active)
         .accessibilityLabel("연결된 문서 열기")
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+}
+
+private extension View {
+    func pdfActiveDocumentMarker(_ active: Bool = true) -> some View {
+        overlay {
+            if active {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(.background, lineWidth: 5)
+                    .overlay { RoundedRectangle(cornerRadius: 7).stroke(Color.accentColor, lineWidth: 2) }
+                    .padding(-2)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
+private struct PDFDocumentMarkerControl: View {
+    @ObservedObject var state: PDFNoteWorkspaceState
+    let anchor: PDFNoteWorkspaceState.Anchor
+    let frame: CGRect
+    let active: Bool
+    let canEdit: Bool
+    let onOpen: () -> Void
+    @State private var preview: CGRect?
+    @State private var startingFrame: CGRect?
+    @State private var movingAfterHold = false
+    @State private var directMove = false
+
+    private var editing: Bool { state.editingMarkerID == anchor.id }
+    private let corners: [UnitPoint] = [.topLeading, .topTrailing, .bottomLeading, .bottomTrailing]
+    private let cornerNames = ["왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래"]
+
+    var body: some View {
+        let displayed = preview ?? frame
+        let iconSize = max(1, min(displayed.width, displayed.height))
+        ZStack(alignment: .topLeading) {
+            PDFDocumentMarkerView(style: anchor.markerStyle, size: iconSize)
+                .pdfActiveDocumentMarker(active)
+                .frame(width: max(24, iconSize), height: max(24, iconSize))
+                .contentShape(Rectangle())
+                .gesture(holdToMove.exclusively(before: TapGesture().onEnded { _ in activate() }))
+                .simultaneousGesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
+                    .onChanged { value in
+                        guard editing, canEdit, !movingAfterHold else { return }
+                        directMove = true
+                        update(value.translation)
+                    }.onEnded { _ in
+                        guard directMove else { return }
+                        directMove = false
+                        finish()
+                    })
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("연결된 문서 열기")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAddTraits(active ? .isSelected : [])
+                .accessibilityAction { activate() }
+                .accessibilityAction(named: Text("문서 아이콘 편집")) {
+                    if canEdit { state.editingMarkerID = anchor.id }
+                }
+                .position(x: displayed.midX, y: displayed.midY)
+            if editing {
+                Rectangle().strokeBorder(.tint, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .frame(width: displayed.width, height: displayed.height)
+                    .position(x: displayed.midX, y: displayed.midY)
+                    .allowsHitTesting(false)
+                ForEach(corners.indices, id: \.self) { index in
+                    let corner = corners[index]
+                    let outwardX = corner.x == 0 ? -5.0 : 5.0
+                    let outwardY = corner.y == 0 ? -5.0 : 5.0
+                    Circle().fill(.background).overlay { Circle().strokeBorder(.tint) }
+                        .frame(width: 7, height: 7)
+                        .offset(x: -outwardX, y: -outwardY)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                        .position(x: displayed.minX + displayed.width * corner.x + outwardX,
+                                  y: displayed.minY + displayed.height * corner.y + outwardY)
+                        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
+                            .onChanged { update($0.translation, corner: corner) }
+                            .onEnded { _ in finish() })
+                        .accessibilityLabel("문서 아이콘 크기 조절 \(cornerNames[index])")
+                }
+            }
+        }
+        .onChange(of: editing) { _, isEditing in
+            if !isEditing {
+                preview = nil
+                startingFrame = nil
+                movingAfterHold = false
+                directMove = false
+            }
+        }
+    }
+
+    private var holdToMove: some Gesture {
+        LongPressGesture(minimumDuration: 0.45, maximumDistance: 12)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named("PDFNoteWorkspace")))
+            .onChanged { phase in
+                guard canEdit else { return }
+                switch phase {
+                case .first(true):
+                    movingAfterHold = true
+                    state.editingMarkerID = anchor.id
+                case .second(true, let drag):
+                    movingAfterHold = true
+                    state.editingMarkerID = anchor.id
+                    if let drag { update(drag.translation) }
+                default: break
+                }
+            }
+            .onEnded { _ in
+                guard movingAfterHold else { return }
+                movingAfterHold = false
+                finish()
+            }
+    }
+
+    private func activate() {
+        if state.editingMarkerID == nil { onOpen() }
+        else if !editing { state.editingMarkerID = nil }
+    }
+
+    private func update(_ delta: CGSize, corner: UnitPoint? = nil) {
+        let page = state.markerPageFrame(anchor)
+        guard !page.isEmpty else { return }
+        let initial = startingFrame ?? frame
+        startingFrame = initial
+        guard let corner else {
+            preview = initial.offsetBy(dx: delta.width, dy: delta.height).clamped(to: page)
+            return
+        }
+        let xSign: CGFloat = corner.x == 0 ? -1 : 1
+        let ySign: CGFloat = corner.y == 0 ? -1 : 1
+        let fixedX = xSign < 0 ? initial.maxX : initial.minX
+        let fixedY = ySign < 0 ? initial.maxY : initial.minY
+        let availableX = xSign < 0 ? fixedX - page.minX : page.maxX - fixedX
+        let availableY = ySign < 0 ? fixedY - page.minY : page.maxY - fixedY
+        let maximum = max(1, min(availableX, availableY))
+        let dx = delta.width * xSign
+        let dy = delta.height * ySign
+        let extent = min(maximum, max(min(14, maximum), min(initial.width, initial.height) + (abs(dx) >= abs(dy) ? dx : dy)))
+        preview = CGRect(x: fixedX + (xSign < 0 ? -extent : 0),
+                         y: fixedY + (ySign < 0 ? -extent : 0), width: extent, height: extent)
+    }
+
+    private func finish() {
+        if let preview { state.moveDocumentMarker(anchor.id, to: preview) }
+        preview = nil
+        startingFrame = nil
     }
 }
 
@@ -809,6 +1096,8 @@ private struct PDFNoteCard: View {
     let session: PDFNoteWorkspaceState.Session
     let frame: CGRect
     let visualScale: CGFloat
+    let clippedBottom: CGFloat
+    let activeLinkStyle: PDFDocumentMarkerStyle?
     let onFrameChange: (CGRect, CGFloat?) -> Void
     @State private var actions = false
     @State private var resizing = false
@@ -822,13 +1111,33 @@ private struct PDFNoteCard: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("문서", systemImage: "doc.text").font(.subheadline.weight(.semibold))
-                Spacer(minLength: 0)
-                pdfViewToggle
+                HStack(spacing: 7) {
+                    if let activeLinkStyle {
+                        PDFDocumentMarkerView(style: activeLinkStyle, size: 19)
+                            .pdfActiveDocumentMarker()
+                        Text("문서").accessibilityLabel("현재 연결된 문서")
+                    } else {
+                        Label("문서", systemImage: "doc.text")
+                    }
+                }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onLongPressGesture { if popup { actions = true } }
+                if popup {
+                    Button { change(.slide) } label: {
+                        Image(systemName: "rectangle.righthalf.inset.filled")
+                    }
+                    .help("오른쪽 슬라이드 보기")
+                    .accessibilityLabel("오른쪽 슬라이드 보기")
+                    .accessibilityIdentifier("pdf.document.popup.slide")
+                } else {
+                    pdfViewToggle
+                }
                 if !popup { moreButton }
                 if popup {
                     Button { actions = false; resizing.toggle() } label: {
-                        Image(systemName: resizing ? "checkmark" : "arrow.up.left.and.arrow.down.right")
+                        Image(systemName: resizing ? "checkmark" : "square.dashed")
                     }
                     .help(resizing ? "크기 편집 완료" : "크기 편집")
                     .accessibilityLabel(resizing ? "크기 편집 완료" : "크기 편집")
@@ -865,7 +1174,8 @@ private struct PDFNoteCard: View {
         let binding = embedded.flatMap { PDFPageLink.attachmentBinding(in: $0) }
 
         return PDFNoteBrowser(origin: state.origin, url: primary, browser: state.browser(session), fallback: fallback,
-                              volumePopup: popup, attachmentBinding: binding) { command, _ in
+                              volumePopup: popup, pageScale: visualScale, clippedBottom: clippedBottom,
+                              attachmentBinding: binding) { command, _ in
             if command == "split" { change(.split) }
             if command == "close" { Task { await state.close(session.id, animated: !reduceMotion) } }
         }
@@ -876,7 +1186,7 @@ private struct PDFNoteCard: View {
         let title = hidden ? "PDFView 켜기" : "PDFView 끄기"
         let symbol = hidden ? "rectangle.split.2x1" : "eye.slash"
         return Button { change(hidden ? .split : .note) } label: {
-            if frame.width / visualScale >= 280 {
+            if frame.width >= 280 {
                 Label(title, systemImage: symbol)
             } else {
                 Image(systemName: symbol)
@@ -1020,8 +1330,11 @@ private struct PDFNoteCard: View {
             actions = false
             state.mode(mode, for: session.id)
         } completion: {
-            if returningToPDF && state.sessions.contains(where: { $0.id == session.id && $0.mode == mode }) {
+            guard state.sessions.contains(where: { $0.id == session.id && $0.mode == mode }) else { return }
+            if returningToPDF {
                 state.reveal(session.id, restoringScale: true)
+            } else if mode.showsLinkedMarker {
+                state.reveal(session.id, onlyIfOffscreen: true)
             }
         }
     }
@@ -1048,6 +1361,8 @@ private struct PDFNoteBrowser: View {
     let browser: WKWebView?
     var fallback: URL? = nil
     var volumePopup = false
+    var pageScale: CGFloat = 1
+    var clippedBottom: CGFloat = 0
     var attachmentBinding: PDFNoteAttachmentBinding? = nil
     let action: (String, String?) -> Void
     @State private var unavailable = false
@@ -1055,6 +1370,7 @@ private struct PDFNoteBrowser: View {
     var body: some View {
         ZStack {
             PDFNoteWebContent(origin: origin, url: url, browser: browser, fallback: fallback, volumePopup: volumePopup,
+                              pageScale: pageScale, clippedBottom: clippedBottom,
                               attachmentBinding: attachmentBinding, action: action) {
                 unavailable = true
             }
@@ -1081,6 +1397,8 @@ private struct PDFNoteWebContent {
     let browser: WKWebView?
     let fallback: URL?
     let volumePopup: Bool
+    let pageScale: CGFloat
+    let clippedBottom: CGFloat
     let attachmentBinding: PDFNoteAttachmentBinding?
     let action: (String, String?) -> Void
     let onUnavailable: () -> Void
@@ -1089,6 +1407,7 @@ private struct PDFNoteWebContent {
     func prepare(_ coordinator: Coordinator) -> WKWebView {
         let view = browser ?? WKWebView(frame: .zero)
         view.navigationDelegate = coordinator
+        coordinator.applyPageScale(to: view)
         if let url, view.url == nil, !view.isLoading { view.load(URLRequest(url: url)) }
         return view
     }
@@ -1100,18 +1419,45 @@ private struct PDFNoteWebContent {
         init(_ parent: PDFNoteWebContent) { self.parent = parent }
 
         func update(_ content: PDFNoteWebContent, in webView: WKWebView) {
-            let modeChanged = parent.volumePopup != content.volumePopup
+            let modeChanged = parent.volumePopup != content.volumePopup || parent.pageScale != content.pageScale
+                || parent.clippedBottom != content.clippedBottom
             parent = content
-            if modeChanged { publishMode(to: webView) }
+            if modeChanged {
+                applyPageScale(to: webView)
+                publishMode(to: webView)
+            }
+        }
+
+        func applyPageScale(to webView: WKWebView) {
+            let scale = parent.volumePopup && parent.pageScale.isFinite ? min(10, max(0.1, parent.pageScale)) : 1
+            if abs(webView.pageZoom - scale) > 0.001 { webView.pageZoom = scale }
         }
 
         private func publishMode(to webView: WKWebView) {
             guard let url = webView.url, matchesOrigin(url), matchesPage(url) else { return }
+            let clipped = parent.clippedBottom.isFinite ? parent.clippedBottom / webView.pageZoom : 0
             webView.evaluateJavaScript("""
-                if (document.documentElement.dataset.pdfVolumePopup !== '\(parent.volumePopup)') {
-                    document.documentElement.dataset.pdfVolumePopup = '\(parent.volumePopup)';
+                (() => {
+                    const root = document.documentElement;
+                    root.dataset.pdfVolumePopup = '\(parent.volumePopup)';
+                    root.dataset.nfPdfClippedBottom = '\(clipped)';
+                    if (!document.getElementById('nf-pdf-native-viewport')) {
+                        const style = document.createElement('style');
+                        style.id = 'nf-pdf-native-viewport';
+                        style.textContent = '[data-mobile-keyboard-bar="true"] { top: auto !important; bottom: var(--nf-pdf-assistant-bottom, 0px) !important; }';
+                        document.head.appendChild(style);
+                        const updateBottom = () => {
+                            const visual = window.visualViewport;
+                            const bottom = Math.max(Number(root.dataset.nfPdfClippedBottom) || 0,
+                                visual ? window.innerHeight - visual.offsetTop - visual.height : 0);
+                            root.style.setProperty('--nf-pdf-assistant-bottom', bottom + 'px');
+                        };
+                        window.addEventListener('resize', updateBottom);
+                        window.visualViewport?.addEventListener('resize', updateBottom);
+                        window.visualViewport?.addEventListener('scroll', updateBottom);
+                    }
                     window.dispatchEvent(new Event('resize'));
-                }
+                })()
                 """, completionHandler: nil)
         }
 
