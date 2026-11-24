@@ -32,6 +32,15 @@ struct MacPortalSearchResult: Decodable, Identifiable {
     }
 }
 
+private struct MacPortalSearchPage: Decodable {
+    let items: [MacPortalSearchResult]
+    let complete: Bool
+}
+
+private func normalizedPortalSearchTitle(_ text: String) -> String {
+    text.precomposedStringWithCompatibilityMapping.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
+
 struct MacPortalGlobalSearch: View {
     let webView: WKWebView?
     let repository: MacPDFLocalStorageRepository
@@ -41,31 +50,44 @@ struct MacPortalGlobalSearch: View {
     let onClose: () -> Void
 
     @FocusState private var focused: Bool
-    @State private var webResults: [MacPortalSearchResult] = []
+    @State private var history: [(query: String, page: MacPortalSearchPage)] = []
     @State private var pdfs: [MacLocalPDFDocument] = []
-    @State private var completedQuery = ""
     @State private var selection = 0
     @State private var busy = false
     @State private var loadError = ""
     @State private var openError = ""
 
-    private var term: String { String(query.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)) }
+    private var term: String { String(normalizedPortalSearchTitle(query).prefix(80)) }
+    private var exact: MacPortalSearchPage? { history.last { $0.query == term }?.page }
+    private var coveringPage: MacPortalSearchPage? {
+        let words = term.split(separator: " ")
+        return history.last { entry in
+            entry.query != term && entry.page.complete && entry.query.split(separator: " ").allSatisfy { previous in
+                words.contains { $0.contains(previous) }
+            }
+        }?.page
+    }
+    private var ready: Bool { exact != nil || coveringPage != nil }
+
     private var results: [MacPortalSearchResult] {
         guard !term.isEmpty else { return [] }
-        let words = term.split(whereSeparator: \.isWhitespace)
-        func matches(_ title: String) -> Bool { words.allSatisfy { title.localizedStandardContains(String($0)) } }
+        let words = term.split(separator: " ")
+        func matches(_ title: String) -> Bool {
+            let compact = normalizedPortalSearchTitle(title).replacingOccurrences(of: " ", with: "")
+            return words.allSatisfy { compact.contains($0) }
+        }
         let library = includesLibrary && matches("파일 리스트 PDF 문서함")
             ? [MacPortalSearchResult(id: "pdf-library", title: "파일 리스트", kind: "library")] : []
         let local = pdfs.filter { matches($0.fileName) }.prefix(30).map {
             MacPortalSearchResult(id: "pdf:" + $0.id, title: $0.fileName, kind: "pdf", document: $0)
         }
-        let portal = completedQuery == term ? webResults : []
-        return (portal + library + local).sorted {
-            func score(_ result: MacPortalSearchResult) -> Int {
-                if result.title.localizedCaseInsensitiveCompare(term) == .orderedSame { return 0 }
-                return result.title.range(of: term, options: [.caseInsensitive, .anchored]) != nil ? 1 : 2
-            }
-            return score($0) < score($1)
+        let current = exact
+        let previous = (current == nil ? coveringPage?.items : nil) ?? history.filter { $0.query != term }.flatMap(\.page.items)
+        let confirmed = current?.complete == true ? Set(current?.items.map { $0.href ?? $0.id } ?? []) : nil
+        let kept = previous.filter { matches($0.title) && (confirmed?.contains($0.href ?? $0.id) ?? true) }
+        var seen = Set<String>()
+        return (kept + library + local + (current?.items ?? [])).filter { result in
+            seen.insert(result.href ?? result.id).inserted
         }
     }
 
@@ -116,8 +138,8 @@ struct MacPortalGlobalSearch: View {
                         .onChange(of: active) { _, index in if items.indices.contains(index) { proxy.scrollTo(items[index].id) } }
                     }
                 }
-                if !openError.isEmpty || !loadError.isEmpty || term.isEmpty || completedQuery != term || items.isEmpty {
-                    Text(!openError.isEmpty ? openError : !loadError.isEmpty ? loadError : term.isEmpty ? "검색어를 입력하세요." : completedQuery != term ? "검색 중…" : "검색 결과가 없습니다.")
+                if !openError.isEmpty || !loadError.isEmpty || term.isEmpty || !ready || items.isEmpty {
+                    Text(!openError.isEmpty ? openError : !loadError.isEmpty ? loadError : term.isEmpty ? "검색어를 입력하세요." : !ready ? (items.isEmpty ? "검색 중…" : "추가 결과 검색 중…") : "검색 결과가 없습니다.")
                         .font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 }
             }
@@ -141,24 +163,27 @@ struct MacPortalGlobalSearch: View {
     }
 
     private func lookup(_ query: String) async {
-        guard !query.isEmpty else { webResults = []; completedQuery = ""; return }
+        guard !query.isEmpty, !ready else { return }
         do {
             try await Task.sleep(for: .milliseconds(140))
             guard let webView, let url = webView.url, url.scheme == "https", MacPortalConfig.isPortalURL(url) else {
                 throw CocoaError(.fileReadNoPermission)
             }
             let value = try await webView.callAsyncJavaScript(
-                "if (typeof window.__nfGlobalSearch !== 'function') throw new Error('Search unavailable'); return await window.__nfGlobalSearch(query);",
+                """
+                if (typeof window.__nfGlobalSearchPage === 'function') return await window.__nfGlobalSearchPage(query);
+                if (typeof window.__nfGlobalSearch === 'function') return { items: await window.__nfGlobalSearch(query), complete: false };
+                throw new Error('Search unavailable');
+                """,
                 arguments: ["query": query], in: nil, contentWorld: .page
             )
             try Task.checkCancellation()
-            guard let records = value as? [[String: Any]] else { throw CocoaError(.coderInvalidValue) }
+            guard let records = value as? [String: Any] else { throw CocoaError(.coderInvalidValue) }
             let data = try JSONSerialization.data(withJSONObject: records)
-            webResults = try JSONDecoder().decode([MacPortalSearchResult].self, from: data)
-            completedQuery = query
+            let page = try JSONDecoder().decode(MacPortalSearchPage.self, from: data)
+            history = Array((history.filter { $0.query != query } + [(query, page)]).suffix(8))
         } catch {
             guard !Task.isCancelled else { return }
-            webResults = []; completedQuery = query
             loadError = "포털 검색을 불러오지 못했습니다."
         }
     }
