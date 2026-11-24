@@ -1,4 +1,4 @@
-((token, noteID, saved) => {
+((token, noteID, saved, nativeToolbarHeight = 0, pageZoom = 1) => {
   const panels = '[data-linked-document-panel="true"]';
   const visible = node => node?.getClientRects().length && !node.hasAttribute('data-linked-document-closing');
   const focusedPanel = document.activeElement?.closest(panels);
@@ -10,6 +10,7 @@
   const body = detail ? panel.querySelector('[data-linked-document-body="true"]') : panel;
   const bridge = window.webkit?.messageHandlers?.NFAppleLiveDetailPDF;
   if (!panel || !body || !bridge) return false;
+  let nativePageZoom = nativeToolbarHeight > 0 ? pageZoom : 0;
 
   let objects;
   let savedLayout;
@@ -37,6 +38,7 @@
   };
 
   const scrollAtEntry = { left: body.scrollLeft, top: body.scrollTop };
+  const paddingEdges = ['top', 'right', 'bottom', 'left'];
   const style = element('style');
   style.textContent = `
     [data-apple-live-detail][data-linked-document-panel] {
@@ -52,13 +54,19 @@
     }
     [data-apple-live-detail] > [data-linked-document-resizer] { display: none; }
     [data-apple-live-detail] > [data-linked-document-viewport] { margin-top: var(--nf-apple-pdf-toolbar-height, 0px); }
-    #portal-content[data-apple-live-detail] > :is([data-apple-pdf-tools], [data-apple-pdf-options]) { position: fixed; }
-    [data-apple-pdf-body] { overflow: auto !important; touch-action: pan-x pan-y; }
+    [data-apple-pdf-native-toolbar] > :is([data-apple-pdf-tools], [data-apple-pdf-popover]) { display: none !important; }
+    #portal-content[data-apple-live-detail] > :is([data-apple-pdf-tools], [data-apple-pdf-popover]) { position: fixed; }
+    [data-apple-pdf-body] { overflow: auto !important; overflow-anchor: none; touch-action: pan-x pan-y; }
     [data-apple-pdf-body][data-apple-pdf-zoom] {
-      zoom: var(--nf-apple-pdf-zoom); width: calc(100% / var(--nf-apple-pdf-zoom));
-      height: calc(100% / var(--nf-apple-pdf-zoom)); right: auto; bottom: auto;
+      padding: calc(var(--nf-apple-pdf-padding-top) * var(--nf-apple-pdf-zoom))
+        calc(var(--nf-apple-pdf-padding-right) * var(--nf-apple-pdf-zoom))
+        calc(var(--nf-apple-pdf-padding-bottom) * var(--nf-apple-pdf-zoom))
+        calc(var(--nf-apple-pdf-padding-left) * var(--nf-apple-pdf-zoom));
     }
-    [data-apple-pdf-body][data-apple-pdf-fixed-width] > :not([data-apple-pdf-layer]) {
+    [data-apple-pdf-body][data-apple-pdf-zoom] > :not([data-apple-pdf-layer], [data-apple-pdf-tools], [data-apple-pdf-popover], [data-apple-pdf-dialog]) {
+      zoom: var(--nf-apple-pdf-zoom);
+    }
+    [data-apple-pdf-body][data-apple-pdf-fixed-width] > :not(.portal-titlebar, [data-apple-pdf-layer], [data-apple-pdf-tools], [data-apple-pdf-popover], [data-apple-pdf-dialog]) {
       min-width: var(--nf-apple-pdf-content-width);
     }
     [data-apple-pdf-body][data-apple-pdf-fixed-width] > .contents { display: block; }
@@ -75,26 +83,44 @@
     [data-apple-pdf-tools] > [data-tool-scroll] {
       display: flex; align-items: center; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none;
     }
-    [data-apple-pdf-tools] button, [data-apple-pdf-options] button, [data-apple-pdf-dialog] button {
+    [data-apple-pdf-tools] > [data-tool-actions] { display: flex; flex: none; align-items: center; gap: 2px; }
+    [data-apple-pdf-tools] button, [data-apple-pdf-popover] button, [data-apple-pdf-dialog] button {
       border: 0; background: transparent; color: inherit; border-radius: 6px;
     }
     [data-apple-pdf-tools] button {
       flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
       padding: 0 8px; min-width: 32px; height: 32px; white-space: nowrap; font-size: 12px;
     }
-    [data-apple-pdf-tools] button:is(:hover, [aria-pressed="true"]),
-    [data-apple-pdf-options] button:hover { background: var(--theme-surface-hover, #8883); }
-    [data-apple-pdf-tools] button:disabled { opacity: .4; }
-    [data-apple-pdf-tools] svg { width: 17px; height: 17px; flex: none; }
-    [data-apple-pdf-options] {
-      position: absolute; z-index: 6; top: 49px; left: 8px; display: flex; flex-wrap: wrap; align-items: center;
-      gap: 8px; padding: 8px; border: 1px solid var(--card-border, #8886); border-radius: 8px;
-      color: var(--foreground, CanvasText); background: var(--theme-surface-raised, Canvas);
-      max-width: calc(100% - 16px); box-sizing: border-box; font-size: 13px;
+    [data-apple-pdf-tools] button:enabled:hover,
+    [data-apple-pdf-popover] button:hover { background: var(--theme-surface-hover, #8883); }
+    [data-apple-pdf-tools] button:is([aria-pressed="true"], [aria-expanded="true"]),
+    [data-apple-pdf-popover] button[aria-pressed="true"] {
+      background: color-mix(in srgb, var(--detail-animation-color, #438af4) 20%, var(--theme-surface-raised, Canvas));
+      color: var(--foreground, CanvasText);
+      box-shadow: inset 0 0 0 1px var(--detail-animation-color, #438af4);
     }
-    [data-apple-pdf-options] label { display: inline-flex; align-items: center; gap: 6px; }
-    [data-apple-pdf-options] input[type="range"] { width: 90px; }
-    [data-apple-pdf-options] input[type="color"] { width: 32px; height: 28px; }
+    [data-apple-pdf-tools] button:disabled { opacity: .4; }
+    :is([data-apple-pdf-tools], [data-apple-pdf-popover]) svg { width: 17px; height: 17px; flex: none; }
+    [data-apple-pdf-popover] {
+      position: absolute; z-index: 6; top: var(--nf-apple-pdf-popover-top, 49px); left: 8px;
+      display: grid; gap: 6px; align-content: start; padding: 8px;
+      border: 1px solid var(--card-border, #8886); border-radius: 10px;
+      color: var(--foreground, CanvasText); background: var(--theme-surface-raised, Canvas);
+      width: min(320px, calc(100% - 16px)); max-height: calc(100% - var(--nf-apple-pdf-popover-top, 49px) - 8px);
+      overflow: auto; overscroll-behavior: contain; box-sizing: border-box; font-size: 13px; box-shadow: 0 8px 28px #0004;
+    }
+    [data-apple-pdf-popover] header, [data-apple-pdf-options] label {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px;
+    }
+    [data-apple-pdf-popover] header { border-bottom: 1px solid var(--card-border, #8886); }
+    [data-apple-pdf-popover] header button { display: grid; place-items: center; width: 28px; height: 28px; }
+    [data-apple-pdf-popover] [data-popup-menu-row] {
+      display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 5px 8px; text-align: left;
+    }
+    [data-apple-pdf-tool-menu] [data-tool-check] { margin-inline-start: auto; }
+    [data-apple-pdf-options] [role="group"] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+    [data-apple-pdf-options] input[type="range"] { width: min(50%, 130px); }
+    [data-apple-pdf-options] input[type="color"] { width: 36px; height: 28px; }
     [data-apple-pdf-dialog] {
       border: 1px solid var(--card-border, #8886); border-radius: 12px; width: min(420px, calc(100% - 24px));
       color: var(--foreground, CanvasText); background: var(--theme-surface-raised, Canvas); padding: 14px;
@@ -120,12 +146,12 @@
     @media (max-width: 580px) {
       [data-apple-pdf-tools] [data-close-label] { display: none; }
       [data-apple-pdf-tools] button { min-width: 36px; height: 36px; }
-      [data-apple-pdf-options] { top: 53px; }
     }
-    [data-apple-pdf-options][hidden], [data-apple-pdf-tools] [hidden] { display: none !important; }
+    :is([data-apple-pdf-popover], [data-apple-pdf-popover] *, [data-apple-pdf-tools] *)[hidden] { display: none !important; }
   `;
 
   panel.setAttribute('data-apple-live-detail', '');
+  panel.toggleAttribute('data-apple-pdf-native-toolbar', nativePageZoom > 0);
   body.setAttribute('data-apple-pdf-body', '');
   document.head.append(style);
 
@@ -137,11 +163,13 @@
 
   const toolbar = element('div', { 'data-apple-pdf-tools': '', role: 'toolbar', 'aria-label': '상세페이지 PDF 도구' });
   const toolScroll = element('div', { 'data-tool-scroll': '' });
-  const options = element('div', { 'data-apple-pdf-options': '', hidden: '' });
+  const toolActions = element('div', { 'data-tool-actions': '' });
+  const options = element('div', { id: 'nf-apple-pdf-tool-options', 'data-apple-pdf-popover': '', 'data-apple-pdf-options': '', role: 'region', hidden: '' });
+  const toolMenu = element('div', { id: 'nf-apple-pdf-tool-menu', 'data-apple-pdf-popover': '', 'data-apple-pdf-tool-menu': '', 'data-popup-menu-list': '', role: 'region', 'aria-label': '도구 지원', hidden: '' });
   const status = element('span', { role: 'status', hidden: '' });
   const fileInput = element('input', { type: 'file', accept: 'image/*', hidden: '' });
-  toolbar.append(toolScroll, status, fileInput);
-  panel.append(toolbar, options);
+  toolbar.append(toolScroll, toolActions, status, fileInput);
+  panel.append(toolbar, options, toolMenu);
 
   const icons = {
     close: 'M14 6l-6 6 6 6M8 12h12',
@@ -163,6 +191,8 @@
     redo: 'm15 5 5 5-5 5m5-5H10q-7 0-7 7',
     minus: 'M4 12h16', plus: 'M4 12h16M12 4v16',
     settings: 'M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-6 0v6',
+    list: 'M8 6h13M8 12h13M8 18h13M3 6h.1M3 12h.1M3 18h.1',
+    dismiss: 'M6 6l12 12M6 18 18 6',
     trash: 'M3 6h18M8 6V3h8v3M5 6l1 15h12l1-15m-9 4v7m4-7v7',
   };
   function button(icon, label, action, parent = toolScroll) {
@@ -191,6 +221,8 @@
   let lineWidth = 2;
   let shape = 'rectangle';
   let fill = false;
+  let textSize = 17;
+  let eraserSize = 8;
   let zoom = 1;
   let pinch = null;
   let documentLayout = savedLayout || null;
@@ -201,29 +233,79 @@
   let needsSave = false;
   let saving = null;
   let pendingLayout = 0;
+  let toolbarTop = 0;
+  let lastToolbarState = '';
+  let toolbarUpdateQueued = false;
   const timers = new Set();
 
   const undoButton = button('undo', 'PDF 실행 취소', () => restore(previous, next));
   const redoButton = button('redo', 'PDF 다시 실행', () => restore(next, previous));
   const minus = button('minus', '상세페이지 축소', () => changeZoom(zoom / 1.25));
   const plus = button('plus', '상세페이지 확대', () => changeZoom(zoom * 1.25));
-  const toolButtons = new Map();
-  for (const [key, label] of [
+  const supportedTools = new Map([
     ['view', '원본 보기·편집'], ['hand', '손 도구'], ['select', '선택'], ['pen', '펜'],
     ['handwriting', '손글씨'], ['highlighter', '형광펜'], ['neon', '네온'], ['eraser', '지우개'],
     ['shape', '도형'], ['text', '텍스트 주석'], ['image', '이미지 삽입'],
     ['connector', '연결선'], ['document', '문서 연결'], ['link', '웹 링크 연결'],
-  ]) {
-    toolButtons.set(key, button(key, label, () => {
-      if (key === 'image') fileInput.click();
-      else setTool(key);
-    }));
+  ]);
+  const inkTools = new Set(['pen', 'handwriting', 'highlighter', 'neon', 'shape', 'connector', 'document', 'link', 'text']);
+  const passiveTools = new Set(['view', 'hand', 'image']);
+  const toolsWithOptions = new Set([...inkTools, 'eraser', 'image']);
+  const autoShowOptions = new Set(['shape', 'text', 'image', 'connector']);
+  const toolButtons = new Map();
+  const menuButtons = new Map();
+  for (const [key, label] of supportedTools) {
+    const node = button(key, label, () => chooseTool(key));
+    node.setAttribute('data-apple-pdf-tool', key);
+    toolButtons.set(key, node);
   }
-  const settings = button('settings', '도구 상세 설정', () => {
-    options.hidden = !options.hidden;
-    settings.setAttribute('aria-expanded', String(!options.hidden));
-  });
   const remove = button('trash', '선택 주석 삭제', removeSelected);
+  const menuToggle = button('list', '도구 지원', () => togglePopover(toolMenu), toolActions);
+  const settings = button('settings', '도구 상세 설정', () => togglePopover(options), toolActions);
+  menuToggle.setAttribute('aria-controls', toolMenu.id);
+  settings.setAttribute('aria-controls', options.id);
+
+  function showPopover(popover = null) {
+    toolMenu.hidden = popover !== toolMenu;
+    options.hidden = popover !== options;
+    menuToggle.setAttribute('aria-expanded', String(!toolMenu.hidden));
+    settings.setAttribute('aria-expanded', String(!options.hidden));
+    publishToolbarState();
+  }
+  function togglePopover(popover) {
+    showPopover(popover.hidden ? popover : null);
+    if (popover === toolMenu && !popover.hidden) menuButtons.get(active)?.focus();
+  }
+  function popoverHeader(popover, title, toggle) {
+    const header = element('header');
+    const heading = element('strong');
+    heading.textContent = title;
+    header.append(heading);
+    button('dismiss', title + ' 닫기', () => {
+      showPopover();
+      toggle.focus({ preventScroll: true });
+    }, header);
+    popover.append(header);
+    return heading;
+  }
+  popoverHeader(toolMenu, '도구 지원', menuToggle);
+  for (const [key, label] of supportedTools) {
+    const node = button(key, label, () => {
+      chooseTool(key);
+      const button = toolButtons.get(key);
+      button.focus({ preventScroll: true });
+      const frame = button.getBoundingClientRect();
+      const scroller = toolScroll.getBoundingClientRect();
+      toolScroll.scrollLeft += Math.min(0, frame.left - scroller.left) + Math.max(0, frame.right - scroller.right);
+    }, toolMenu);
+    node.setAttribute('data-popup-menu-row', '');
+    node.append(document.createTextNode(label));
+    const check = element('span', { 'data-tool-check': '', 'aria-hidden': 'true', hidden: '' });
+    check.textContent = '✓';
+    node.append(check);
+    menuButtons.set(key, node);
+  }
+  const optionTitle = popoverHeader(options, '도구 설정', settings);
 
   function field(label, input) {
     const node = element('label');
@@ -234,9 +316,15 @@
   const colorInput = field('색상', element('input', { type: 'color', value: color }));
   const widthInput = field('두께', element('input', { type: 'range', min: '1', max: '36', value: lineWidth }));
   const fillInput = field('도형 채우기', element('input', { type: 'checkbox' }));
+  const textSizeInput = field('글자 크기', element('input', { type: 'range', min: '10', max: '48', value: textSize }));
+  const eraserSizeInput = field('지우개 크기', element('input', { type: 'range', min: '6', max: '100', value: eraserSize }));
+  const imageButton = button('image', '이미지 파일 가져오기', () => fileInput.click(), options);
+  imageButton.setAttribute('data-popup-menu-row', '');
+  imageButton.append(document.createTextNode('이미지 파일 가져오기'));
   const shapes = element('div', { role: 'group', 'aria-label': '도형 종류' });
   for (const [value, label] of [['rectangle', '사각형'], ['rounded', '둥근 사각형'], ['ellipse', '원'], ['triangle', '삼각형'], ['arrow', '화살표']]) {
-    const node = element('button', { type: 'button', 'aria-pressed': String(value === shape) });
+    const node = element('button', { type: 'button', 'data-pdf-shape': value, 'aria-pressed': String(value === shape) });
+    node.setAttribute('data-popup-menu-row', '');
     node.textContent = label;
     listen(node, 'click', () => {
       shape = value;
@@ -248,20 +336,65 @@
   listen(colorInput, 'input', () => { color = colorInput.value; });
   listen(widthInput, 'input', () => { lineWidth = Number(widthInput.value); });
   listen(fillInput, 'change', () => { fill = fillInput.checked; });
+  listen(textSizeInput, 'input', () => { textSize = Number(textSizeInput.value); });
+  listen(eraserSizeInput, 'input', () => { eraserSize = Number(eraserSizeInput.value); });
+  showPopover();
 
   function setStatus(message) {
     status.textContent = message || '';
     status.hidden = !message;
+    publishToolbarState();
+  }
+  function publishToolbarState() {
+    if (!nativePageZoom || closed || toolbarUpdateQueued) return;
+    toolbarUpdateQueued = true;
+    queueMicrotask(() => {
+      toolbarUpdateQueued = false;
+      if (closed || !nativePageZoom) return;
+      const state = JSON.stringify({
+        top: toolbarTop, tool: active, optionsOpen: !options.hidden,
+        settingsAvailable: !settings.disabled, dialogOpen: !!dialog?.open,
+        canUndo: !undoButton.disabled, canRedo: !redoButton.disabled,
+        canZoomIn: !plus.disabled, canZoomOut: !minus.disabled, canRemove: !remove.hidden,
+        zoomPercent: Math.round(zoom * 100), color, lineWidth, textSize, eraserSize, shape, fill, status: status.textContent,
+      });
+      if (state === lastToolbarState) return;
+      lastToolbarState = state;
+      void bridge.postMessage({ token, toolbar: state }).catch(() => {
+        if (closed) return;
+        nativePageZoom = 0;
+        panel.removeAttribute('data-apple-pdf-native-toolbar');
+        scheduleLayout();
+      });
+    });
   }
   function updateTools() {
-    for (const [key, node] of toolButtons) node.setAttribute('aria-pressed', String(key === active));
-    layer.toggleAttribute('data-drawing', !['view', 'hand'].includes(active));
+    for (const [key, node] of toolButtons) {
+      const pressed = key === active;
+      node.setAttribute('aria-pressed', String(pressed));
+      node.title = supportedTools.get(key) + (pressed ? ' · 선택됨' : '');
+      const menuButton = menuButtons.get(key);
+      menuButton.setAttribute('aria-pressed', String(pressed));
+      menuButton.querySelector('[data-tool-check]').hidden = !pressed;
+    }
+    const title = supportedTools.get(active) + ' 설정';
+    if (optionTitle.textContent !== title) optionTitle.textContent = title;
+    options.setAttribute('aria-label', title);
+    settings.disabled = !toolsWithOptions.has(active);
+    colorInput.parentElement.hidden = !inkTools.has(active);
+    widthInput.parentElement.hidden = !inkTools.has(active) || ['text', 'document', 'link'].includes(active);
+    fillInput.parentElement.hidden = shapes.hidden = active !== 'shape';
+    textSizeInput.parentElement.hidden = active !== 'text';
+    eraserSizeInput.parentElement.hidden = active !== 'eraser';
+    imageButton.hidden = active !== 'image';
+    layer.toggleAttribute('data-drawing', !passiveTools.has(active));
     layer.toggleAttribute('data-hand', active === 'hand');
     undoButton.disabled = !previous.length;
     redoButton.disabled = !next.length;
     remove.hidden = !selected;
     minus.disabled = zoom <= 1;
     plus.disabled = zoom >= 4;
+    publishToolbarState();
   }
   function setTool(value) {
     if (gesture) cancelGesture();
@@ -271,19 +404,79 @@
     updateTools();
     render();
   }
+  function chooseTool(value) {
+    const wasActive = active === value;
+    const showOptions = toolsWithOptions.has(value) && (wasActive ? options.hidden : autoShowOptions.has(value));
+    setTool(value);
+    showPopover(showOptions ? options : null);
+  }
+  function performToolbarCommand(sessionToken, command, value) {
+    if (sessionToken !== token || !nativePageZoom || closed || closing || dialog?.open) return false;
+    switch (command) {
+      case 'close': return close(true);
+      case 'tool':
+        if (!supportedTools.has(value)) return false;
+        chooseTool(value);
+        break;
+      case 'settings':
+        if (settings.disabled) return false;
+        togglePopover(options);
+        break;
+      case 'dismissSettings': showPopover(); break;
+      case 'undo': restore(previous, next); break;
+      case 'redo': restore(next, previous); break;
+      case 'zoomIn': changeZoom(zoom * 1.25); break;
+      case 'zoomOut': changeZoom(zoom / 1.25); break;
+      case 'remove': removeSelected(); break;
+      case 'image':
+        if (active !== 'image') return false;
+        fileInput.click();
+        break;
+      case 'color':
+        if (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)) return false;
+        color = colorInput.value = value;
+        break;
+      case 'lineWidth':
+      case 'textSize':
+      case 'eraserSize': {
+        const input = { lineWidth: widthInput, textSize: textSizeInput, eraserSize: eraserSizeInput }[command];
+        if (!Number.isFinite(value) || value < Number(input.min) || value > Number(input.max)) return false;
+        input.value = String(Math.round(value));
+        input.dispatchEvent(new Event('input'));
+        break;
+      }
+      case 'shape': {
+        const choice = [...shapes.children].find(node => node.dataset.pdfShape === value);
+        if (!choice) return false;
+        choice.click();
+        break;
+      }
+      case 'fill':
+        if (typeof value !== 'boolean') return false;
+        fillInput.checked = fill = value;
+        break;
+      default: return false;
+    }
+    publishToolbarState();
+    return true;
+  }
   function changeZoom(value, focus) {
     const nextZoom = Math.min(4, Math.max(1, value));
     if (nextZoom === zoom) return;
     const frame = body.getBoundingClientRect();
-    const x = focus ? Math.max(0, focus[0] - frame.left) : 0;
-    const y = focus ? Math.max(0, focus[1] - frame.top) : 0;
-    const left = body.scrollLeft + x / zoom, top = body.scrollTop + y / zoom;
+    const x = focus ? Math.max(0, focus[0] - frame.left) : body.clientWidth / 2;
+    const y = focus ? Math.max(0, focus[1] - frame.top) : body.clientHeight / 2;
+    const left = (body.scrollLeft + x) / zoom, top = (body.scrollTop + y) / zoom;
+    if (zoom === 1) {
+      const computed = getComputedStyle(body);
+      for (const edge of paddingEdges) body.style.setProperty('--nf-apple-pdf-padding-' + edge, computed.getPropertyValue('padding-' + edge));
+    }
     zoom = nextZoom;
     body.style.setProperty('--nf-apple-pdf-zoom', String(zoom));
     body.toggleAttribute('data-apple-pdf-zoom', zoom !== 1);
     layout();
-    body.scrollLeft = left - x / zoom;
-    body.scrollTop = top - y / zoom;
+    body.scrollLeft = left * zoom - x;
+    body.scrollTop = top * zoom - y;
     updateTools();
   }
   function box(object) {
@@ -306,30 +499,46 @@
       void saveAnnotations();
     }
     body.style.setProperty('--nf-apple-pdf-content-width', (documentLayout?.content || width) + 'px');
-    body.toggleAttribute('data-apple-pdf-fixed-width', width < (documentLayout?.width || 0) - 1);
+    body.toggleAttribute('data-apple-pdf-fixed-width', zoom !== 1 || width < (documentLayout?.width || 0) - 1);
+    const left = body.scrollLeft, top = body.scrollTop;
+    // Measure the document extent independently of the annotation canvas.
     layer.setAttribute('width', 0);
     layer.setAttribute('height', 0);
-    let maxX = Math.max(body.clientWidth, body.scrollWidth);
-    let maxY = Math.max(body.clientHeight, body.scrollHeight);
+    let maxX = Math.max(body.clientWidth, body.scrollWidth) / zoom;
+    let maxY = Math.max(body.clientHeight, body.scrollHeight) / zoom;
     for (const object of objects) {
       const rect = box(object);
       if (rect.x + rect.w > maxX) maxX = rect.x + rect.w + 16;
       if (rect.y + rect.h > maxY) maxY = rect.y + rect.h + 16;
     }
-    layer.setAttribute('width', Math.ceil(maxX));
-    layer.setAttribute('height', Math.ceil(maxY));
-    layer.setAttribute('viewBox', [0, 0, Math.ceil(maxX), Math.ceil(maxY)].join(' '));
+    layer.setAttribute('width', maxX * zoom);
+    layer.setAttribute('height', maxY * zoom);
+    layer.setAttribute('viewBox', [0, 0, maxX, maxY].join(' '));
+    body.scrollLeft = left;
+    body.scrollTop = top;
+    const height = nativePageZoom ? nativeToolbarHeight / nativePageZoom : toolbar.offsetHeight;
+    const header = detail ? panel.querySelector('[data-linked-document-header]') : body.querySelector(':scope > .portal-titlebar');
+    const headerHeight = (header?.offsetHeight || 0) * (detail ? 1 : zoom);
+    if (nativePageZoom) {
+      toolbarTop = Math.max(0, (panel.getBoundingClientRect().top + headerHeight) * nativePageZoom + 6);
+      publishToolbarState();
+    }
+    panel.style.setProperty('--nf-apple-pdf-popover-top', headerHeight + height + 11 + 'px');
+    toolbar.style.top = headerHeight + 6 + 'px';
     if (detail) {
-      const header = panel.querySelector('[data-linked-document-header]');
-      const height = toolbar.offsetHeight;
-      const reserve = height + 12 + 'px';
+      const reserve = (nativePageZoom ? (nativeToolbarHeight + 12) / nativePageZoom : height + 12) + 'px';
       if (panel.style.getPropertyValue('--nf-apple-pdf-toolbar-height') !== reserve) {
         panel.style.setProperty('--nf-apple-pdf-toolbar-height', reserve);
       }
-      toolbar.style.top = (header?.offsetHeight || 0) + 6 + 'px';
-      options.style.top = (header?.offsetHeight || 0) + height + 11 + 'px';
     }
   }
+  listen(window, 'nfPortalMacZoomState', event => {
+    const scale = event.detail?.percent / 100;
+    if (nativePageZoom && scale >= .25 && scale <= 5) {
+      nativePageZoom = scale;
+      scheduleLayout();
+    }
+  });
   function scheduleLayout() {
     if (closed || pendingLayout) return;
     pendingLayout = requestAnimationFrame(() => { pendingLayout = 0; layout(); });
@@ -457,13 +666,12 @@
   }
   function point(event) {
     const rect = layer.getBoundingClientRect();
-    const scale = rect.width / Number(layer.getAttribute('width')) || 1;
-    return [Math.max(0, (event.clientX - rect.left) / scale), Math.max(0, (event.clientY - rect.top) / scale)];
+    return [Math.max(0, (event.clientX - rect.left) / zoom), Math.max(0, (event.clientY - rect.top) / zoom)];
   }
   function objectAt(x, y) {
     return [...objects].reverse().find(object => {
       const rect = box(object);
-      const padding = active === 'eraser' ? Math.max(8, lineWidth) : Math.max(5, object.width || 0);
+      const padding = active === 'eraser' ? eraserSize : Math.max(5, object.width || 0);
       if (x < rect.x - padding || x > rect.x + rect.w + padding ||
           y < rect.y - padding || y > rect.y + rect.h + padding) return false;
       if (!object.points || object.points.length < 2) return true;
@@ -523,7 +731,7 @@
   }
 
   listen(layer, 'pointerdown', event => {
-    if (closed || closing || active === 'view' || !event.isPrimary || event.button !== 0) return;
+    if (closed || closing || active === 'view' || active === 'image' || !event.isPrimary || event.button !== 0) return;
     if (active === 'hand' && event.pointerType === 'touch') return;
     event.preventDefault();
     event.stopPropagation();
@@ -567,8 +775,8 @@
     if (!g || g.pointer !== event.pointerId) return;
     event.preventDefault();
     if (g.kind === 'hand') {
-      body.scrollLeft = g.left - (event.clientX - g.start[0]) / zoom;
-      body.scrollTop = g.top - (event.clientY - g.start[1]) / zoom;
+      body.scrollLeft = g.left - (event.clientX - g.start[0]);
+      body.scrollTop = g.top - (event.clientY - g.start[1]);
       return;
     }
     const samples = event.getCoalescedEvents?.();
@@ -649,8 +857,13 @@
     pop.append(form);
     panel.append(pop);
     dialog = pop;
-    listen(pop, 'close', () => { pop.remove(); if (dialog === pop) dialog = null; });
+    listen(pop, 'close', () => {
+      pop.remove();
+      if (dialog === pop) dialog = null;
+      publishToolbarState();
+    });
     pop.showModal();
+    publishToolbarState();
     input?.focus();
     return pop;
   }
@@ -662,10 +875,10 @@
       return input;
     }, value => {
       if (!value.trim()) return false;
-      const size = Math.max(10, lineWidth + 15);
+      const size = existing?.fontSize || textSize;
       const lines = value.split('\n');
       const rect = { x, y, w: Math.max(24, Math.max(...lines.map(line => line.length)) * size), h: lines.length * size * 1.18 };
-      const object = { ...(existing || newObject('text')), ...rect, text: value, fontSize: existing?.fontSize || size };
+      const object = { ...(existing || newObject('text')), ...rect, text: value, fontSize: size };
       change(existing ? objects.map(item => item.id === existing.id ? object : item) : [...objects, object]);
     });
   }
@@ -861,20 +1074,36 @@
       canvas.height = Math.max(1, Math.round(image.height * ratio));
       canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
       const data = canvas.toDataURL('image/webp', .82);
-      const fit = Math.min(1, (body.clientWidth * .62) / canvas.width, (body.clientHeight * .55) / canvas.height);
+      const viewWidth = body.clientWidth / zoom, viewHeight = body.clientHeight / zoom;
+      const fit = Math.min(1, (viewWidth * .62) / canvas.width, (viewHeight * .55) / canvas.height);
       const w = canvas.width * fit, h = canvas.height * fit;
-      change([...objects, { ...newObject('image', { x: body.scrollLeft + (body.clientWidth - w) / 2,
-        y: body.scrollTop + (body.clientHeight - h) / 2, w, h }), image: data }]);
+      change([...objects, { ...newObject('image', { x: body.scrollLeft / zoom + (viewWidth - w) / 2,
+        y: body.scrollTop / zoom + (viewHeight - h) / 2, w, h }), image: data }]);
     } catch { setStatus('이미지를 열지 못했습니다.'); }
     finally { URL.revokeObjectURL(url); }
   });
 
+  listen(document, 'click', event => {
+    if (!event.target.closest?.('[data-apple-pdf-tools], [data-apple-pdf-popover]')) showPopover();
+  }, { capture: true });
   listen(document, 'keydown', event => {
-    if (event.defaultPrevented || event.isComposing || dialog?.open || event.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+    if (event.defaultPrevented || event.isComposing || dialog?.open) return;
+    if (event.key === 'Escape' && nativePageZoom && !options.hidden) {
+      event.preventDefault();
+      showPopover();
+      return;
+    }
+    if (event.key === 'Escape' && (!toolMenu.hidden || !options.hidden)) {
+      event.preventDefault();
+      const toggle = toolMenu.hidden ? settings : menuToggle;
+      showPopover();
+      toggle.focus({ preventScroll: true });
+      return;
+    }
+    if (event.target.closest?.('input, textarea, [contenteditable="true"]')) return;
     if (event.key === 'Escape') {
       event.preventDefault();
-      if (!options.hidden) { options.hidden = true; settings.setAttribute('aria-expanded', 'false'); }
-      else if (active !== 'view') setTool('view');
+      if (active !== 'view') setTool('view');
       else void close(true);
     } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z' && active !== 'view') {
       event.preventDefault();
@@ -913,7 +1142,8 @@
   resize.observe(toolbar);
   const changes = new MutationObserver(records => {
     if (!body.isConnected) { void close(false); return; }
-    if (records.some(record => !layer.contains(record.target) && !toolbar.contains(record.target) && !options.contains(record.target))) scheduleLayout();
+    if (records.some(record => !layer.contains(record.target) && !toolbar.contains(record.target) &&
+      !options.contains(record.target) && !toolMenu.contains(record.target))) scheduleLayout();
   });
   changes.observe(panel, { childList: true, subtree: true, characterData: true });
   const detach = new MutationObserver(() => { if (!body.isConnected) void close(false); });
@@ -929,7 +1159,7 @@
         await window.__nfDisplayPrepare?.();
       }
       if (!await closeDocument() || !await saveAnnotations()) return false;
-      const left = body.scrollLeft, top = body.scrollTop;
+      const left = body.scrollLeft / zoom, top = body.scrollTop / zoom;
       closed = true;
       cancelGesture();
       life.abort();
@@ -943,10 +1173,15 @@
       layer.remove();
       toolbar.remove();
       options.remove();
+      toolMenu.remove();
       for (const attr of ['data-apple-pdf-body', 'data-apple-pdf-zoom', 'data-apple-pdf-fixed-width']) body.removeAttribute(attr);
-      for (const name of ['--nf-apple-pdf-zoom', '--nf-apple-pdf-content-width']) body.style.removeProperty(name);
+      for (const name of ['--nf-apple-pdf-zoom', '--nf-apple-pdf-content-width', ...paddingEdges.map(edge => '--nf-apple-pdf-padding-' + edge)]) {
+        body.style.removeProperty(name);
+      }
       panel.removeAttribute('data-apple-live-detail');
+      panel.removeAttribute('data-apple-pdf-native-toolbar');
       panel.style.removeProperty('--nf-apple-pdf-toolbar-height');
+      panel.style.removeProperty('--nf-apple-pdf-popover-top');
       style.remove();
       body.scrollLeft = left;
       body.scrollTop = top;
@@ -959,7 +1194,7 @@
       return false;
     } finally { closing = false; }
   }
-  window.__nfAppleLiveDetailPDF = { close };
+  window.__nfAppleLiveDetailPDF = { close, perform: performToolbarCommand };
   refresh();
   body.scrollLeft = scrollAtEntry.left;
   body.scrollTop = scrollAtEntry.top;

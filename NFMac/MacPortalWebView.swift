@@ -75,6 +75,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
+        model.liveDetailPDFToolbar.bridge = context.coordinator.liveDetailPDF
         controller.addScriptMessageHandler(context.coordinator.liveDetailPDF, contentWorld: .page, name: LiveDetailPDF.bridgeName)
         controller.addUserScript(WKUserScript(source: Self.slideConfigurationScript(model.slideRoutingConfiguration),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -133,6 +134,11 @@ struct MacPortalWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        if context.coordinator.model !== model {
+            context.coordinator.model.liveDetailPDFToolbar.update(nil)
+            context.coordinator.model.liveDetailPDFToolbar.bridge = nil
+            model.liveDetailPDFToolbar.bridge = context.coordinator.liveDetailPDF
+        }
         context.coordinator.model = model
         context.coordinator.preferences = preferences
         context.coordinator.onFocus = onFocus
@@ -234,6 +240,11 @@ struct MacPortalWebView: NSViewRepresentable {
             self.onSidebarNavigate = onSidebarNavigate
             self.onFindCommand = onFindCommand
             self.onFindNextCommand = onFindNextCommand
+            super.init()
+            liveDetailPDF.nativeToolbarHeight = MacPDFToolbarLayout.horizontalHeight
+            liveDetailPDF.onToolbarState = { [weak self] state in
+                self?.model.liveDetailPDFToolbar.update(state)
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -256,6 +267,10 @@ struct MacPortalWebView: NSViewRepresentable {
             model.onSlideRoutingMessage?(["action": "reset"])
             model.refreshNavigationState()
             model.applySidebarVisibility()
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            liveDetailPDF.reset()
         }
 
         func webView(

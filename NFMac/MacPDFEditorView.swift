@@ -220,14 +220,10 @@ struct MacPDFEditorView: View {
         else { state.canvas?.window?.toggleFullScreen(nil) }
     }
     private func floatingToolbar(handle: MacPDFToolbarDragHandle, availableSize: CGSize) -> some View {
-        Group {
-            if state.verticalToolbar {
-                ScrollView(.vertical, showsIndicators: false) { VStack(spacing: 8) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) { toolbarUtilities(handle: handle); toolButtons } }.frame(width: min(720, max(32, availableSize.width - 16)), height: 36)
-            }
+        MacPDFToolPalette(vertical: state.verticalToolbar, availableSize: availableSize) {
+            toolbarUtilities(handle: handle)
+            toolButtons
         }
-        .padding(8).background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1)).shadow(color: .black.opacity(0.12), radius: 8, y: 4)
     }
 
     // Keep the settings in the PDF canvas so AppKit does not have to negotiate
@@ -264,14 +260,15 @@ struct MacPDFEditorView: View {
     }
     @ViewBuilder private var toolButtons: some View {
         ForEach(MacPDFTool.allCases) { tool in
-            MacPDFActionButton(title: "", symbol: tool.symbol, identifier: "pdf.tool.\(tool.rawValue)", accessibilityTitle: tool.title) {
+            MacPDFToolPaletteButton(toolID: tool.rawValue, title: tool.title, symbol: tool.symbol,
+                                    isSelected: tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool,
+                                    tooltip: tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : nil,
+                                    onOffValue: tool == .connector) {
                 freeNotes.documentTool = false
                 state.selectTool(tool)
             }
-                .frame(width: 32, height: 30).background((tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool) ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6)).help(tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : tool.title).accessibilityLabel(tool.title)
-                .accessibilityValue(tool == .connector ? (state.connectorEnabled ? "켜짐" : "꺼짐") : (state.tool == tool ? "선택됨" : ""))
         }
-        MacPDFActionButton(title: "", symbol: "doc.text", identifier: "pdf.tool.document", accessibilityTitle: "문서 도구") {
+        MacPDFToolPaletteButton(toolID: "document", title: "문서 도구", symbol: "doc.text", isSelected: freeNotes.documentTool) {
             if freeNotes.documentTool {
                 freeNotes.showsDocumentOptions.toggle()
                 return
@@ -282,23 +279,12 @@ struct MacPDFEditorView: View {
             freeNotes.documentTool = true
             freeNotes.showsDocumentOptions = true
         }
-        .frame(width: 32, height: 30)
-        .background(freeNotes.documentTool ? Color.primary.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6))
-        .accessibilityValue(freeNotes.documentTool ? "선택됨" : "")
     }
     private func options(maxHeight: CGFloat = 360, onClose: (() -> Void)? = nil) -> some View {
         MacPDFCompactOptions(maxHeight: maxHeight) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label(freeNotes.documentTool ? "문서 설정" : "\(state.tool.title) 설정",
-                          systemImage: freeNotes.documentTool ? "doc.text" : state.tool.symbol).font(.headline)
-                    if let onClose {
-                        Spacer(minLength: 4)
-                        MacPDFActionButton(title: "", symbol: "xmark", identifier: "pdf.toolOptions.close", accessibilityTitle: "도구 설정 닫기", action: onClose)
-                            .frame(width: 22, height: 22)
-                    }
-                }
-                Divider()
+                MacPDFToolOptionsHeader(title: freeNotes.documentTool ? "문서 설정" : "\(state.tool.title) 설정",
+                                        symbol: freeNotes.documentTool ? "doc.text" : state.tool.symbol, onClose: onClose)
                 if freeNotes.documentTool {
                     PDFDocumentToolOptions(style: Binding(get: { freeNotes.configuredMarkerStyle }, set: { freeNotes.configuredMarkerStyle = $0 }),
                                               recent: freeNotes.recentDocumentIcons,
@@ -503,12 +489,7 @@ struct MacPDFEditorView: View {
     }
 
     private func panelSlider(_ title: String, value: Binding<Double>, in range: ClosedRange<Double>, display: String) -> some View {
-        HStack(spacing: 8) {
-            Text(title).fixedSize()
-            Slider(value: value, in: range).accessibilityLabel(title)
-            Text(display).monospacedDigit().foregroundStyle(.secondary).fixedSize()
-        }
-        .font(.caption)
+        MacPDFOptionSlider(title: title, value: value, range: range, display: display)
     }
 
     private var textOptions: some View {
@@ -707,7 +688,7 @@ private final class MacPDFOptionsSizing: ObservableObject {
 }
 
 /// Short palettes hug their contents; longer palettes remain fully scrollable.
-private struct MacPDFCompactOptions<Content: View>: View {
+struct MacPDFCompactOptions<Content: View>: View {
     let maxHeight: CGFloat
     @ViewBuilder var content: () -> Content
     @StateObject private var sizing = MacPDFOptionsSizing()
@@ -718,6 +699,41 @@ private struct MacPDFCompactOptions<Content: View>: View {
         }
         .frame(height: min(maxHeight, sizing.height))
         .onPreferenceChange(MacPDFOptionsHeight.self) { sizing.measure($0) }
+    }
+}
+
+struct MacPDFToolOptionsHeader: View {
+    let title: String
+    let symbol: String
+    let onClose: (() -> Void)?
+
+    var body: some View {
+        HStack {
+            Label(title, systemImage: symbol).font(.headline)
+            if let onClose {
+                Spacer(minLength: 4)
+                MacPDFActionButton(title: "", symbol: "xmark", identifier: "pdf.toolOptions.close",
+                                   accessibilityTitle: "도구 설정 닫기", action: onClose)
+                    .frame(width: 22, height: 22)
+            }
+        }
+        Divider()
+    }
+}
+
+struct MacPDFOptionSlider: View {
+    let title: String
+    let value: Binding<Double>
+    let range: ClosedRange<Double>
+    let display: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title).fixedSize()
+            Slider(value: value, in: range).accessibilityLabel(title)
+            Text(display).monospacedDigit().foregroundStyle(.secondary).fixedSize()
+        }
+        .font(.caption)
     }
 }
 

@@ -17,6 +17,40 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
 
     private var pending: Task<Void, Never>?
     private var session: Session?
+    private weak var toolbarWebView: WKWebView?
+
+    struct ToolbarState: Decodable, Equatable {
+        var top: Double
+        var tool: String
+        var optionsOpen: Bool
+        var settingsAvailable: Bool
+        var dialogOpen: Bool
+        var canUndo: Bool
+        var canRedo: Bool
+        var canZoomIn: Bool
+        var canZoomOut: Bool
+        var canRemove: Bool
+        var zoomPercent: Int
+        var color: String
+        var lineWidth: Double
+        var textSize: Double
+        var eraserSize: Double
+        var shape: String
+        var fill: Bool
+        var status: String
+    }
+
+    var nativeToolbarHeight: CGFloat = 0
+    var onToolbarState: ((ToolbarState?) -> Void)?
+
+    func performToolbarCommand(_ command: String, value: Any? = nil) {
+        guard let session, let webView = toolbarWebView else { return }
+        webView.callAsyncJavaScript(
+            "return await window.__nfAppleLiveDetailPDF?.perform(token, command, value);",
+            arguments: ["token": session.token, "command": command, "value": value ?? NSNull()],
+            in: nil, in: .page, completionHandler: nil
+        )
+    }
 
     @discardableResult
     func intercept(_ action: WKNavigationAction, webView: WKWebView, origin: URL) -> Bool {
@@ -63,6 +97,8 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         pending?.cancel()
         pending = nil
         session = nil
+        toolbarWebView = nil
+        onToolbarState?(nil)
     }
 
     private func open(webView: WKWebView, origin: URL, pageURL: URL, document: String, noteID: String?, account: String) async throws {
@@ -84,17 +120,23 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         let token = UUID().uuidString
         let revision = Self.digest(saved)
         session = Session(token: token, origin: origin, file: file, revision: revision)
+        toolbarWebView = nativeToolbarHeight > 0 ? webView : nil
         do {
             let script = try String(contentsOf: resource, encoding: .utf8)
             let opened = try await webView.callAsyncJavaScript(
-                "return (\(script))(token, noteID, previous);",
+                "return (\(script))(token, noteID, previous, nativeToolbarHeight, pageZoom);",
                 arguments: ["token": token, "noteID": noteID.map { $0 as Any } ?? NSNull(),
-                            "previous": String(decoding: saved, as: UTF8.self)],
+                            "previous": String(decoding: saved, as: UTF8.self),
+                            "nativeToolbarHeight": nativeToolbarHeight, "pageZoom": webView.pageZoom],
                 in: nil, contentWorld: .page
             )
             guard opened as? Bool == true else { throw CocoaError(.fileReadUnknown) }
         } catch {
-            if session?.token == token { session = nil }
+            if session?.token == token {
+                session = nil
+                toolbarWebView = nil
+                onToolbarState?(nil)
+            }
             throw error
         }
     }
@@ -110,6 +152,21 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         }
         if body["closed"] as? Bool == true {
             session = nil
+            toolbarWebView = nil
+            onToolbarState?(nil)
+            replyHandler(true, nil)
+            return
+        }
+        if let toolbar = body["toolbar"] as? String, let onToolbarState, toolbarWebView === message.webView {
+            guard toolbar.utf8.count < 4096,
+                  let state = try? JSONDecoder().decode(ToolbarState.self, from: Data(toolbar.utf8)),
+                  (0...10_000).contains(state.top), (100...400).contains(state.zoomPercent),
+                  (1...36).contains(state.lineWidth), (10...48).contains(state.textSize),
+                  (6...100).contains(state.eraserSize) else {
+                replyHandler(nil, "도구 상태를 읽지 못했습니다.")
+                return
+            }
+            onToolbarState(state)
             replyHandler(true, nil)
             return
         }

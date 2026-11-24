@@ -6,6 +6,7 @@ enum MacPDFToolbarLayout {
     static let topInset: CGFloat = 4
     static let sideInset: CGFloat = 8
     static let bottomInset: CGFloat = 14
+    static let horizontalHeight: CGFloat = 52
 
     static func availableSize(in viewport: CGSize, scale: CGFloat) -> CGSize {
         CGSize(width: max(1, viewport.width - 2 * sideInset) / scale,
@@ -53,6 +54,57 @@ struct MacPDFToolbarBounds: PreferenceKey {
     }
 }
 
+struct MacPDFToolPalette<Content: View>: View {
+    let vertical: Bool
+    let availableSize: CGSize
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        Group {
+            if vertical {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8, content: content)
+                }
+                .frame(width: 42, height: min(400, max(30, availableSize.height - 16)))
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8, content: content)
+                }
+                .frame(width: min(720, max(32, availableSize.width - 16)), height: MacPDFToolbarLayout.horizontalHeight - 16)
+            }
+        }
+        .padding(8)
+        .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12), lineWidth: 1).allowsHitTesting(false))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 4)
+    }
+}
+
+struct MacPDFToolPaletteButton: View {
+    let toolID: String
+    let title: String
+    let symbol: String
+    let isSelected: Bool
+    var tooltip: String? = nil
+    var onOffValue = false
+    let action: () -> Void
+
+    var body: some View {
+        MacPDFActionButton(title: "", symbol: symbol, identifier: "pdf.tool." + toolID, accessibilityTitle: title, action: action)
+            .frame(width: 32, height: 30)
+            .background(isSelected ? Color.accentColor.opacity(0.24) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor.opacity(0.65))
+                        .allowsHitTesting(false)
+                }
+            }
+            .help(tooltip ?? title)
+            .accessibilityLabel(title)
+            .accessibilityValue(onOffValue ? (isSelected ? "켜짐" : "꺼짐") : (isSelected ? "선택됨" : ""))
+    }
+}
+
 private struct ToolbarSizePreference: PreferenceKey {
     static let defaultValue = CGSize.zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
@@ -74,7 +126,7 @@ struct MacPDFMovableToolbar<Content: View>: View {
         if measuredVertical == state.verticalToolbar, measuredSize.width > 0, measuredSize.height > 0 { return measuredSize }
         return state.verticalToolbar
             ? CGSize(width: 58, height: min(416, availableSize.height))
-            : CGSize(width: min(736, availableSize.width), height: 52)
+            : CGSize(width: min(736, availableSize.width), height: MacPDFToolbarLayout.horizontalHeight)
     }
     private func bounded(_ offset: CGSize) -> CGSize {
         MacPDFToolbarLayout.clamp(offset, toolbar: toolbarSize, viewport: viewport, scale: scale)
