@@ -12,8 +12,25 @@ private final class MacPortalCommandWebView: WKWebView {
         let key = event.charactersIgnoringModifiers?.lowercased()
         let hasUnsupportedModifier = modifiers.contains(.control) || modifiers.contains(.option)
 
-        if modifiers.contains(.command), !hasUnsupportedModifier, key == "f" {
-            onFindCommand?()
+        let settingsDetail = url.map {
+            $0.scheme == "https" && MacPortalConfig.isPortalURL($0) && $0.path.hasPrefix("/settings/")
+        } ?? false
+        let settingsFind = settingsDetail && !modifiers.contains(.shift)
+            && (key == "f" || (key?.unicodeScalars.contains { !$0.isASCII } == true && event.keyCode == 3))
+
+        if modifiers.contains(.command), !hasUnsupportedModifier, key == "f" || settingsFind {
+            if settingsFind {
+                // Let the visible settings detail own Find before falling back to the pane search.
+                evaluateJavaScript("""
+                !window.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'f', code: 'KeyF', metaKey: true, cancelable: true
+                }))
+                """) { [weak self] result, _ in
+                    if result as? Bool != true { self?.onFindCommand?() }
+                }
+            } else {
+                onFindCommand?()
+            }
             return true
         }
         if modifiers.contains(.command), !hasUnsupportedModifier, key == "g" {

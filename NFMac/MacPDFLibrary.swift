@@ -644,6 +644,10 @@ struct MacRemotePDFPreviewView: View {
     @State private var numbersWorkbook: MacNumbersWorkbook?
     @State private var chartURL: URL?
     @StateObject private var chartSession = MacNumbersChartWebSession()
+    @State private var chartOriginal: MacAttachmentQuickLookFile?
+    @State private var chartFileAction: Task<Void, Never>?
+    @State private var chartFileStatus: String?
+    @State private var chartFileError: String?
     @State private var chartSaveError = false
     @State private var numbersFindRequest = 0
     @State private var csvDocument: MacCSVDocument?
@@ -683,11 +687,11 @@ struct MacRemotePDFPreviewView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(isFullscreen ? nil : KeyboardShortcut.cancelAction)
-                .help(isFullscreen ? "모니터 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "뒤로")
-                .accessibilityLabel(isFullscreen ? "PDF 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "첨부 미리보기 닫기")
+                .help(chartOriginal != nil ? "NF 차트로 돌아가기" : isFullscreen ? "모니터 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "뒤로")
+                .accessibilityLabel(chartOriginal != nil ? "NF 차트로 돌아가기" : isFullscreen ? "PDF 전체화면 종료" : isPaneExpanded ? "분할 영역 전체보기 종료" : isDetailPDF ? DetailPDFWorkspace.returnTitle : "첨부 미리보기 닫기")
                 .accessibilityIdentifier("attachment.viewer.back")
                 Spacer()
-                Text(title).font(.headline).lineLimit(1)
+                Text(chartOriginal?.url.lastPathComponent ?? title).font(.headline).lineLimit(1)
                 Spacer()
                 if didStoreLocally || (request.localDocument != nil && storedPDF != nil) {
                     Label(request.localDocument == nil ? "Mac 복사본 보관됨" : "Mac에 저장됨", systemImage: "checkmark.circle.fill")
@@ -747,6 +751,27 @@ struct MacRemotePDFPreviewView: View {
                             ) {
                                 pendingMoreMenuAction = .sharePDF
                                 isMoreMenuPresented = false
+                            }
+                        }
+                        if chartURL != nil {
+                            if chartOriginal == nil {
+                                MacAttachmentMenuRow(title: "Numbers 원본 파일 보기", systemImage: "doc.richtext", isEnabled: chartFileAction == nil) {
+                                    isMoreMenuPresented = false
+                                    viewOriginalNumbers()
+                                }
+                                .accessibilityIdentifier("attachment.viewer.chart.original")
+                                ForEach(MacNumbersChartExportFormat.allCases, id: \.self) { format in
+                                    MacAttachmentMenuRow(title: "\(format.title) 내보내기", systemImage: "square.and.arrow.down", isEnabled: chartFileAction == nil) {
+                                        isMoreMenuPresented = false
+                                        exportChart(format)
+                                    }
+                                    .accessibilityIdentifier("attachment.viewer.chart.export.\(format.rawValue)")
+                                }
+                            } else {
+                                MacAttachmentMenuRow(title: "NF 차트로 돌아가기", systemImage: "chevron.left", isEnabled: true) {
+                                    isMoreMenuPresented = false
+                                    chartOriginal = nil
+                                }
                             }
                         }
                         MacAttachmentMenuRow(title: "기본 앱에서 열기", systemImage: "arrow.up.right.square", isEnabled: attachmentData != nil) {
@@ -845,8 +870,21 @@ struct MacRemotePDFPreviewView: View {
                 } else if let markdown {
                     MacMarkdownPreviewView(markdown: markdown, controller: markdownPreviewController)
                 } else if let chartURL {
-                    MacNumbersChartWebView(url: chartURL, session: chartSession)
-                        .id(chartURL)
+                    ZStack(alignment: .top) {
+                        MacNumbersChartWebView(url: chartURL, session: chartSession)
+                            .id(chartURL)
+                            .opacity(chartOriginal == nil ? 1 : 0)
+                            .allowsHitTesting(chartOriginal == nil)
+                            .accessibilityHidden(chartOriginal != nil)
+                        if let chartOriginal {
+                            MacAttachmentQuickLookView(file: chartOriginal)
+                        } else if let chartFileStatus {
+                            ProgressView(chartFileStatus)
+                                .padding(10)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                                .padding(8)
+                        }
+                    }
                 } else if let numbersWorkbook {
                     MacNumbersPreview(workbook: numbersWorkbook, findRequest: numbersFindRequest,
                                       chartSource: request.url, cookieHeader: request.cookieHeader,
@@ -888,6 +926,15 @@ struct MacRemotePDFPreviewView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .task(id: request.id) { await load() }
         .onExitCommand { exitOrClose() }
+        .onDisappear { chartFileAction?.cancel() }
+        .alert("NF 차트 파일", isPresented: Binding(
+            get: { chartFileError != nil },
+            set: { if !$0 { chartFileError = nil } }
+        )) {
+            Button("확인", role: .cancel) {}
+        } message: {
+            Text(chartFileError ?? "")
+        }
         .alert("NF 차트 저장", isPresented: $chartSaveError) {
             Button("확인", role: .cancel) {}
         } message: {
@@ -938,7 +985,8 @@ struct MacRemotePDFPreviewView: View {
     }
 
     private func exitOrClose() {
-        if isFullscreen { onToggleFullscreen?() }
+        if chartOriginal != nil { chartOriginal = nil }
+        else if isFullscreen { onToggleFullscreen?() }
         else if isPaneExpanded { onTogglePaneExpanded?() }
         else if isDetailPDF { returnToDetailPage() }
         else if chartURL != nil {
@@ -985,6 +1033,9 @@ struct MacRemotePDFPreviewView: View {
     }
 
     private func load() async {
+        chartFileAction?.cancel()
+        chartOriginal = nil
+        chartFileError = nil
         isConvertedPowerPoint = false
         pdfDocument = nil; storedPDF = nil; image = nil; markdown = nil; quickLookFile = nil; csvDocument = nil; isParsingCSV = false
         numbersWorkbook = nil; numbersFindRequest = 0
@@ -1098,6 +1149,54 @@ struct MacRemotePDFPreviewView: View {
         } catch {
             guard !Task.isCancelled else { return }
             errorMessage = isDetailPDF ? "문서 접근 권한과 연결 상태를 확인해 주세요." : "네트워크 연결과 파일 형식을 확인해 주세요."
+        }
+    }
+
+    private func viewOriginalNumbers() {
+        runChartFileAction("Numbers 원본을 불러오는 중…") {
+            let original = try await MacNumbersChartFile.readOriginal(source: request.url, cookie: request.cookieHeader)
+            try Task.checkCancellation()
+            chartOriginal = original
+        }
+    }
+
+    private func exportChart(_ format: MacNumbersChartExportFormat) {
+        guard let chartURL else { return }
+        runChartFileAction("\(format.title) 파일을 만드는 중…") {
+            let file = try await chartSession.export(format, from: chartURL)
+            let panel = NSSavePanel()
+            panel.title = "\(format.title) 내보내기"
+            panel.prompt = "저장"
+            panel.canCreateDirectories = true
+            if let type = UTType(filenameExtension: format.rawValue) { panel.allowedContentTypes = [type] }
+            panel.nameFieldStringValue = Self.safeFileName(file.name)
+            chartFileStatus = nil
+            let destination: URL? = await withCheckedContinuation { continuation in
+                let finish: (NSApplication.ModalResponse) -> Void = { response in
+                    continuation.resume(returning: response == .OK ? panel.url : nil)
+                }
+                if let window = chartSession.webView?.window {
+                    panel.beginSheetModal(for: window, completionHandler: finish)
+                } else {
+                    panel.begin(completionHandler: finish)
+                }
+            }
+            try Task.checkCancellation()
+            if let destination { try file.data.write(to: destination, options: .atomic) }
+        }
+    }
+
+    private func runChartFileAction(_ status: String, action: @escaping @MainActor () async throws -> Void) {
+        guard chartFileAction == nil else { return }
+        chartFileStatus = status
+        chartFileError = nil
+        chartFileAction = Task { @MainActor in
+            defer {
+                chartFileStatus = nil
+                chartFileAction = nil
+            }
+            do { try await action() }
+            catch { if !Task.isCancelled { chartFileError = error.localizedDescription } }
         }
     }
 

@@ -31,6 +31,27 @@ enum MacNumbersChartFile {
         return URL(string: MacPortalConfig.origin + path + "?embedded=1")
     }
 
+    static func readOriginal(source: URL, cookie: String?) async throws -> MacAttachmentQuickLookFile {
+        guard let id = sourceID(source),
+              let url = URL(string: MacPortalConfig.origin + "/api/artifacts/files/" + id + "?original=1") else {
+            throw failure("Numbers 원본 첨부 주소를 확인할 수 없습니다.")
+        }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        if let cookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        let session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        let name = response.suggestedFilename ?? "Numbers 원본.numbers"
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, !data.isEmpty,
+              MacAttachmentQuickLookKind.detect(fileName: name, sourceURL: url, mimeType: response.mimeType ?? "") == .numbers else {
+            throw failure("Numbers 원본을 불러오지 못했습니다. 첨부 파일 접근 권한과 Drive 연결을 확인해 주세요.")
+        }
+        return try MacAttachmentQuickLookFile(data: data, fileName: name, kind: .numbers)
+    }
+
     static func create(source: URL, cookie: String?, contents: MacNumbersContents) async throws -> (URL, String) {
         guard let id = sourceID(source), let endpoint = URL(string: MacPortalConfig.origin + "/api/artifacts/files/" + id + "/chart"),
               let cookie, !cookie.isEmpty else { throw failure("포털에 로그인한 뒤 Numbers 첨부를 다시 열어 주세요.") }
@@ -59,8 +80,40 @@ enum MacNumbersChartFile {
     }
 }
 
+enum MacNumbersChartExportFormat: String, CaseIterable {
+    case pdf, csv, xlsx
+
+    var title: String { rawValue.uppercased() }
+}
+
+@MainActor
 final class MacNumbersChartWebSession: ObservableObject {
     weak var webView: WKWebView?
+
+    func export(_ format: MacNumbersChartExportFormat, from url: URL) async throws -> (name: String, data: Data) {
+        guard let webView, webView.url == url else {
+            throw MacNumbersChartFile.failure("차트가 열린 뒤 다시 시도해 주세요.")
+        }
+        let response = try await webView.callAsyncJavaScript(
+            """
+            if (typeof window.__nfChartExport !== 'function') {
+                return {error: '차트가 열린 뒤 다시 시도해 주세요.'};
+            }
+            return await window.__nfChartExport(format);
+            """,
+            arguments: ["format": format.rawValue], in: nil, contentWorld: .page
+        )
+        try Task.checkCancellation()
+        guard webView.url == url, let result = response as? [String: String] else {
+            throw MacNumbersChartFile.failure("차트 내보내기 응답을 읽지 못했습니다.")
+        }
+        if let error = result["error"] { throw MacNumbersChartFile.failure(error) }
+        guard let name = result["filename"], (name as NSString).pathExtension.lowercased() == format.rawValue,
+              let base64 = result["base64"], let data = Data(base64Encoded: base64), !data.isEmpty else {
+            throw MacNumbersChartFile.failure("내보낼 파일을 생성하지 못했습니다.")
+        }
+        return (name, data)
+    }
 
     func save() async -> Bool {
         guard let webView else { return true }
