@@ -41,6 +41,8 @@
 	<string>© NF Project Operations</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>PDF에 추가할 최근 사진을 선택하기 위해 사진 보관함에 접근합니다.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>NF에서 Numbers 첨부 파일의 시트를 검색하고 셀 편집본을 저장하기 위해 Numbers 앱에 접근합니다.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>회의 음성을 녹음하고 단말에서 전사하기 위해 마이크를 사용합니다.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -58,6 +58,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
+        controller.addScriptMessageHandler(context.coordinator.liveDetailPDF, contentWorld: .page, name: LiveDetailPDF.bridgeName)
         controller.addUserScript(WKUserScript(source: Self.slideConfigurationScript(model.slideRoutingConfiguration),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.addUserScript(WKUserScript(
@@ -154,6 +155,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         coordinator.closePopupWindows()
+        coordinator.liveDetailPDF.reset()
         let controller = webView.configuration.userContentController
         [
             "NFMeeting",
@@ -172,6 +174,7 @@ struct MacPortalWebView: NSViewRepresentable {
             "NFPortalMacSlideRouting",
         ]
             .forEach(controller.removeScriptMessageHandler(forName:))
+        controller.removeScriptMessageHandler(forName: LiveDetailPDF.bridgeName, contentWorld: .page)
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         if let commandWebView = webView as? MacPortalCommandWebView {
@@ -192,6 +195,7 @@ struct MacPortalWebView: NSViewRepresentable {
         var lastAppliedPDFLocalStorageEnabled: Bool?
         var lastAppliedPDFDocumentCount: Int?
         var lastSlideConfiguration: String?
+        let liveDetailPDF = LiveDetailPDF()
         private var popupWindows: [ObjectIdentifier: NSWindow] = [:]
         private var popupWebViews: [ObjectIdentifier: WKWebView] = [:]
         private var sharingPicker: NSSharingServicePicker?
@@ -231,6 +235,7 @@ struct MacPortalWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            liveDetailPDF.reset()
             model.onSlideRoutingMessage?(["action": "reset"])
             model.refreshNavigationState()
             model.applySidebarVisibility()
@@ -273,6 +278,11 @@ struct MacPortalWebView: NSViewRepresentable {
                 } else {
                     webView.evaluateJavaScript("alert('이 기기에서 연결된 PDF를 찾을 수 없습니다.')")
                 }
+                decisionHandler(.cancel)
+                return
+            }
+            if let origin = URL(string: MacPortalConfig.origin),
+               liveDetailPDF.intercept(navigationAction, webView: webView, origin: origin) {
                 decisionHandler(.cancel)
                 return
             }

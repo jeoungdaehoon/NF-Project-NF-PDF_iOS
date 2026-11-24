@@ -42,14 +42,13 @@ enum MacAttachmentQuickLookKind: Equatable {
     }
 
     static func handlesNavigation(_ url: URL) -> Bool {
-        ["ppt", "pptx", "csv", "xlsx"].contains(url.pathExtension.lowercased())
+        ["ppt", "pptx", "csv", "xlsx", "numbers"].contains(url.pathExtension.lowercased())
     }
 
     static func handlesResponse(_ response: URLResponse) -> Bool {
         guard let url = response.url else { return false }
         if MacCSVDocument.matches(fileName: response.suggestedFilename ?? "", sourceURL: url, mimeType: response.mimeType ?? "") { return true }
-        guard let kind = detect(fileName: response.suggestedFilename ?? "", sourceURL: url, mimeType: response.mimeType ?? "") else { return false }
-        return kind != .numbers
+        return detect(fileName: response.suggestedFilename ?? "", sourceURL: url, mimeType: response.mimeType ?? "") != nil
     }
 }
 

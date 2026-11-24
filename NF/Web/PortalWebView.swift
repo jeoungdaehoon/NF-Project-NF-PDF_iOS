@@ -417,6 +417,7 @@ private struct PortalWebViewContent: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         /// JavaScript Bridge를 연결하기 위한 UserContentController 입니다.
         let userContentController = WKUserContentController()
+        userContentController.addScriptMessageHandler(context.coordinator.liveDetailPDF, contentWorld: .page, name: LiveDetailPDF.bridgeName)
 #if !targetEnvironment(macCatalyst)
         userContentController.add(context.coordinator, name: "NFPortalWorkspace")
         userContentController.add(context.coordinator, name: "NFMeeting")
@@ -534,6 +535,8 @@ private struct PortalWebViewContent: UIViewRepresentable {
         - coordinator: WKWebView Coordinator 입니다.
      */
     static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.liveDetailPDF.reset()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: LiveDetailPDF.bridgeName, contentWorld: .page)
         PortalMeeting.shared.stopInlinePlayback()
         coordinator.parent.workspace?.detach(coordinator.parent.pane)
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "NFPortalWorkspace")
@@ -567,6 +570,7 @@ extension PortalWebViewContent {
      - Date: 2026.07.29
      */
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UIDocumentPickerDelegate {
+        let liveDetailPDF = LiveDetailPDF()
         var cloudAuthPopup: PortalCloudAuthPopup?
         /// Google 로그인 Bridge 이름 입니다.
         static let googleLoginBridgeName = "NFPortalIOSGoogleLogin"
@@ -901,6 +905,11 @@ extension PortalWebViewContent {
                 decisionHandler(.cancel)
                 return
             }
+            if let origin = URL(string: PortalConfig.portalOrigin),
+               liveDetailPDF.intercept(navigationAction, webView: webView, origin: origin) {
+                decisionHandler(.cancel)
+                return
+            }
             if isAttachmentNavigationURL(url) {
                 presentAttachmentPreview(url, from: webView)
                 decisionHandler(.cancel)
@@ -977,6 +986,7 @@ extension PortalWebViewContent {
 
         /// 응답 문서가 WKWebView에 반영되는 시점에 뒤로·앞으로 상태를 다시 계산합니다.
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            liveDetailPDF.reset()
 #if targetEnvironment(macCatalyst)
             parent.desktopChrome?.refreshNavigationState(in: webView)
 #endif

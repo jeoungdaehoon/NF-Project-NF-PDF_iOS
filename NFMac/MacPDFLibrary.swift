@@ -641,6 +641,11 @@ struct MacRemotePDFPreviewView: View {
     @State private var image: NSImage?
     @State private var markdown: String?
     @State private var quickLookFile: MacAttachmentQuickLookFile?
+    @State private var numbersWorkbook: MacNumbersWorkbook?
+    @State private var chartURL: URL?
+    @StateObject private var chartSession = MacNumbersChartWebSession()
+    @State private var chartSaveError = false
+    @State private var numbersFindRequest = 0
     @State private var csvDocument: MacCSVDocument?
     @State private var isParsingCSV = false
     @StateObject private var markdownPreviewController = MacMarkdownPreviewController()
@@ -691,6 +696,13 @@ struct MacRemotePDFPreviewView: View {
                         .help(request.localDocument == nil
                             ? "Mac에 보관된 복사본입니다. 서버 반영 여부는 편집기의 저장 상태에서 확인하세요."
                             : "PDF 문서함에 보관된 파일입니다.")
+                }
+                if numbersWorkbook != nil {
+                    MacPDFActionButton(title: "", symbol: "magnifyingglass", identifier: "numbers.find", accessibilityTitle: "Numbers 문구 검색 ⌘F") {
+                        numbersFindRequest &+= 1
+                    }
+                    .frame(width: 22, height: 22)
+                    .help("Numbers 문구 검색 ⌘F")
                 }
                 Button {
                     isMoreMenuPresented.toggle()
@@ -822,33 +834,7 @@ struct MacRemotePDFPreviewView: View {
             }
             Group {
                 if let pdfDocument {
-                    MacPDFWorkspace(
-                        document: pdfDocument,
-                        identifier: detailWorkspace?.identifier ?? storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
-                        fileName: title,
-                        sourceURL: isDetailPDF || isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
-                        initialFreeNote: request.initialFreeNote,
-                        cookieHeader: request.cookieHeader,
-                        sourceData: isDetailPDF ? nil : attachmentData,
-                        isContainerResizing: isContainerResizing,
-                        isFullscreen: isFullscreen,
-                        onToggleFullscreen: onToggleFullscreen,
-                        onExitPaneExpansion: isPaneExpanded && !isFullscreen ? onTogglePaneExpanded : nil,
-                        isPaneExpanded: isPaneExpanded,
-                        onTogglePaneExpanded: onTogglePaneExpanded,
-                        editorDirectory: editorDirectory,
-                        detailWorkspace: detailWorkspace,
-                        registerDetailExit: isDetailPDF ? { saveDetailEdits = $0 } : nil,
-                        onSave: isDetailPDF ? nil : { data in
-                            if (isConvertedPowerPoint || request.localDocument != nil), let storedPDF {
-                                try repository.updateData(storedPDF, data: data)
-                                return
-                            }
-                            try await MacPDFRemoteSave.shared.save(source: request.url, data: data)
-                            // A local cache failure must not turn a confirmed server save into an upload failure.
-                            if storesLocally { _ = try? repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
-                        }
-                    )
+                    pdfWorkspace(for: pdfDocument)
                 } else if let image {
                     ScrollView([.horizontal, .vertical]) {
                         Image(nsImage: image)
@@ -858,6 +844,13 @@ struct MacRemotePDFPreviewView: View {
                     }
                 } else if let markdown {
                     MacMarkdownPreviewView(markdown: markdown, controller: markdownPreviewController)
+                } else if let chartURL {
+                    MacNumbersChartWebView(url: chartURL, session: chartSession)
+                        .id(chartURL)
+                } else if let numbersWorkbook {
+                    MacNumbersPreview(workbook: numbersWorkbook, findRequest: numbersFindRequest,
+                                      chartSource: request.url, cookieHeader: request.cookieHeader,
+                                      onChartCreated: showChart)
                 } else if let quickLookFile {
                     MacAttachmentQuickLookView(file: quickLookFile)
                 } else if let csvDocument {
@@ -895,13 +888,76 @@ struct MacRemotePDFPreviewView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .task(id: request.id) { await load() }
         .onExitCommand { exitOrClose() }
+        .alert("NF 차트 저장", isPresented: $chartSaveError) {
+            Button("확인", role: .cancel) {}
+        } message: {
+            Text("차트의 변경사항을 저장하지 못했습니다. 차트 화면에서 저장 상태를 확인해 주세요.")
+        }
+    }
+
+    private func pdfWorkspace(for document: PDFDocument) -> MacPDFWorkspace {
+        let registerExit: ((@escaping () async -> Bool) -> Void)?
+        let save: ((Data) async throws -> Void)?
+        if isDetailPDF {
+            registerExit = { saveDetailEdits = $0 }
+            save = nil
+        } else {
+            registerExit = nil
+            save = savePDF
+        }
+
+        return MacPDFWorkspace(
+            document: document,
+            identifier: detailWorkspace?.identifier ?? storedPDF?.id ?? "remote:\(request.url.host ?? "")\(request.url.path)",
+            fileName: title,
+            sourceURL: isDetailPDF || isConvertedPowerPoint || request.localDocument != nil ? nil : request.url,
+            initialFreeNote: request.initialFreeNote,
+            cookieHeader: request.cookieHeader,
+            sourceData: isDetailPDF ? nil : attachmentData,
+            isContainerResizing: isContainerResizing,
+            isFullscreen: isFullscreen,
+            onToggleFullscreen: onToggleFullscreen,
+            onExitPaneExpansion: isPaneExpanded && !isFullscreen ? onTogglePaneExpanded : nil,
+            isPaneExpanded: isPaneExpanded,
+            onTogglePaneExpanded: onTogglePaneExpanded,
+            editorDirectory: editorDirectory,
+            detailWorkspace: detailWorkspace,
+            registerDetailExit: registerExit,
+            onSave: save
+        )
+    }
+
+    private func savePDF(_ data: Data) async throws {
+        if (isConvertedPowerPoint || request.localDocument != nil), let storedPDF {
+            try repository.updateData(storedPDF, data: data)
+            return
+        }
+        try await MacPDFRemoteSave.shared.save(source: request.url, data: data)
+        // A local cache failure must not turn a confirmed server save into an upload failure.
+        if storesLocally { _ = try? repository.saveRemote(data: data, fileName: title, sourceURL: request.url) }
     }
 
     private func exitOrClose() {
         if isFullscreen { onToggleFullscreen?() }
         else if isPaneExpanded { onTogglePaneExpanded?() }
         else if isDetailPDF { returnToDetailPage() }
+        else if chartURL != nil {
+            guard !isReturningToDetail else { return }
+            isReturningToDetail = true
+            Task {
+                defer { isReturningToDetail = false }
+                if await chartSession.save() { onClose() }
+                else { chartSaveError = true }
+            }
+        }
         else { onClose() }
+    }
+
+    private func showChart(_ url: URL, _ name: String) {
+        chartURL = url
+        title = name
+        numbersWorkbook = nil
+        attachmentData = nil
     }
 
     private func returnToDetailPage() {
@@ -931,6 +987,8 @@ struct MacRemotePDFPreviewView: View {
     private func load() async {
         isConvertedPowerPoint = false
         pdfDocument = nil; storedPDF = nil; image = nil; markdown = nil; quickLookFile = nil; csvDocument = nil; isParsingCSV = false
+        numbersWorkbook = nil; numbersFindRequest = 0
+        chartURL = nil
         attachmentData = nil; attachmentIsMovie = false; errorMessage = nil; didStoreLocally = false
         detailWorkspace = nil; saveDetailEdits = nil
         title = isDetailPDF ? "상세페이지 PDF" : "첨부 파일"
@@ -963,11 +1021,20 @@ struct MacRemotePDFPreviewView: View {
             }
             var urlRequest = URLRequest(url: previewURL, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
             urlRequest.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+            if MacNumbersChartFile.sourceID(previewURL) != nil {
+                urlRequest.setValue("native", forHTTPHeaderField: "X-NF-Attachment-Viewer")
+            }
             if let cookieHeader = request.cookieHeader {
                 urlRequest.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
             let (data, response) = try await URLSession.shared.data(for: urlRequest)
             try Task.checkCancellation()
+            if let http = response as? HTTPURLResponse, http.statusCode == 204,
+               let path = http.value(forHTTPHeaderField: "X-NF-Chart-Path"),
+               let chart = MacNumbersChartFile.editorURL(path: path, source: request.url) {
+                showChart(chart, response.suggestedFilename ?? "NF 차트")
+                return
+            }
             if let response = response as? HTTPURLResponse,
                !(200..<300).contains(response.statusCode) {
                 throw URLError(.badServerResponse)
@@ -1019,7 +1086,11 @@ struct MacRemotePDFPreviewView: View {
                 do {
                     let file = try MacAttachmentQuickLookFile(data: data, fileName: title, kind: quickLookKind)
                     title = file.url.lastPathComponent
-                    quickLookFile = file
+                    if quickLookKind == .numbers {
+                        numbersWorkbook = MacNumbersWorkbook(original: file, source: request.url, data: data)
+                    } else {
+                        quickLookFile = file
+                    }
                 } catch {
                     errorMessage = "\(quickLookKind.title) 미리보기를 준비하지 못했습니다. 기본 앱에서 열거나 원본 파일을 저장해 주세요."
                 }
