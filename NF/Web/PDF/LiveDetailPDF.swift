@@ -17,37 +17,25 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
 
     private var pending: Task<Void, Never>?
     private var session: Session?
-    private weak var toolbarWebView: WKWebView?
+    private weak var nativeWebView: WKWebView?
 
-    struct ToolbarState: Decodable, Equatable {
-        var top: Double
-        var tool: String
-        var optionsOpen: Bool
-        var settingsAvailable: Bool
-        var dialogOpen: Bool
-        var canUndo: Bool
-        var canRedo: Bool
-        var canZoomIn: Bool
-        var canZoomOut: Bool
-        var canRemove: Bool
-        var zoomPercent: Int
-        var color: String
-        var lineWidth: Double
-        var textSize: Double
-        var eraserSize: Double
-        var shape: String
-        var fill: Bool
-        var status: String
+    struct NativeViewport: Decodable, Equatable {
+        let x, y, width, height: Double
+        let scrollX, scrollY, scale, zoom, pageZoom: Double
+        let contentWidth, contentHeight: Double
     }
 
-    var nativeToolbarHeight: CGFloat = 0
-    var onToolbarState: ((ToolbarState?) -> Void)?
+    var openNativeEditor: ((URL, Data) throws -> Void)?
+    var updateNativeViewport: ((NativeViewport) -> Void)?
+    var reportNativeError: ((String) -> Void)?
+    var prepareNativeClose: (() async -> Bool)?
+    var closeNativeEditor: (() -> Void)?
 
-    func performToolbarCommand(_ command: String, value: Any? = nil) {
-        guard let session, let webView = toolbarWebView else { return }
+    func nativeCommand(_ command: String, x: Double = 0, y: Double = 0) {
+        guard let session, let webView = nativeWebView else { return }
         webView.callAsyncJavaScript(
-            "return await window.__nfAppleLiveDetailPDF?.perform(token, command, value);",
-            arguments: ["token": session.token, "command": command, "value": value ?? NSNull()],
+            "return await window.__nfAppleLiveDetailPDF?.nativeCommand(token, command, x, y);",
+            arguments: ["token": session.token, "command": command, "x": x, "y": y],
             in: nil, in: .page, completionHandler: nil
         )
     }
@@ -97,8 +85,8 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         pending?.cancel()
         pending = nil
         session = nil
-        toolbarWebView = nil
-        onToolbarState?(nil)
+        nativeWebView = nil
+        closeNativeEditor?()
     }
 
     private func open(webView: WKWebView, origin: URL, pageURL: URL, document: String, noteID: String?, account: String) async throws {
@@ -120,22 +108,23 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         let token = UUID().uuidString
         let revision = Self.digest(saved)
         session = Session(token: token, origin: origin, file: file, revision: revision)
-        toolbarWebView = nativeToolbarHeight > 0 ? webView : nil
+        nativeWebView = openNativeEditor == nil ? nil : webView
         do {
             let script = try String(contentsOf: resource, encoding: .utf8)
+            try openNativeEditor?(file.deletingPathExtension().appendingPathExtension("native"), saved)
             let opened = try await webView.callAsyncJavaScript(
-                "return (\(script))(token, noteID, previous, nativeToolbarHeight, pageZoom);",
+                "return (\(script))(token, noteID, previous, useNativeEditor, pageZoom);",
                 arguments: ["token": token, "noteID": noteID.map { $0 as Any } ?? NSNull(),
                             "previous": String(decoding: saved, as: UTF8.self),
-                            "nativeToolbarHeight": nativeToolbarHeight, "pageZoom": webView.pageZoom],
+                            "useNativeEditor": openNativeEditor != nil, "pageZoom": webView.pageZoom],
                 in: nil, contentWorld: .page
             )
             guard opened as? Bool == true else { throw CocoaError(.fileReadUnknown) }
         } catch {
             if session?.token == token {
                 session = nil
-                toolbarWebView = nil
-                onToolbarState?(nil)
+                nativeWebView = nil
+                closeNativeEditor?()
             }
             throw error
         }
@@ -152,21 +141,32 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         }
         if body["closed"] as? Bool == true {
             session = nil
-            toolbarWebView = nil
-            onToolbarState?(nil)
+            nativeWebView = nil
+            closeNativeEditor?()
             replyHandler(true, nil)
             return
         }
-        if let toolbar = body["toolbar"] as? String, let onToolbarState, toolbarWebView === message.webView {
-            guard toolbar.utf8.count < 4096,
-                  let state = try? JSONDecoder().decode(ToolbarState.self, from: Data(toolbar.utf8)),
-                  (0...10_000).contains(state.top), (100...400).contains(state.zoomPercent),
-                  (1...36).contains(state.lineWidth), (10...48).contains(state.textSize),
-                  (6...100).contains(state.eraserSize) else {
-                replyHandler(nil, "도구 상태를 읽지 못했습니다.")
+        if nativeWebView === message.webView, body["prepareNativeClose"] as? Bool == true {
+            Task { @MainActor in replyHandler(await prepareNativeClose?() ?? true, nil) }
+            return
+        }
+        if nativeWebView === message.webView, let error = body["nativeError"] as? String, !error.isEmpty {
+            reportNativeError?(String(error.prefix(240)))
+            replyHandler(true, nil)
+            return
+        }
+        if nativeWebView === message.webView, let raw = body["viewport"] as? String {
+            guard raw.utf8.count < 2048,
+                  let viewport = try? JSONDecoder().decode(NativeViewport.self, from: Data(raw.utf8)),
+                  (0.05...25).contains(viewport.scale), (0.25...5).contains(viewport.pageZoom),
+                  (0.1...10).contains(viewport.zoom),
+                  [viewport.x, viewport.y, viewport.width, viewport.height, viewport.scrollX, viewport.scrollY,
+                   viewport.contentWidth, viewport.contentHeight].allSatisfy({ abs($0) < 10_000_000 }),
+                  viewport.width > 0, viewport.height > 0, viewport.contentWidth > 0, viewport.contentHeight > 0 else {
+                replyHandler(nil, "상세페이지 영역을 확인하지 못했습니다.")
                 return
             }
-            onToolbarState(state)
+            updateNativeViewport?(viewport)
             replyHandler(true, nil)
             return
         }

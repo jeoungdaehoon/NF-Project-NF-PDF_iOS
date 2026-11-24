@@ -75,7 +75,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         let controller = WKUserContentController()
-        model.liveDetailPDFToolbar.bridge = context.coordinator.liveDetailPDF
+        model.livePDFSurface.bridge = context.coordinator.liveDetailPDF
         controller.addScriptMessageHandler(context.coordinator.liveDetailPDF, contentWorld: .page, name: LiveDetailPDF.bridgeName)
         controller.addUserScript(WKUserScript(source: Self.slideConfigurationScript(model.slideRoutingConfiguration),
             injectionTime: .atDocumentStart, forMainFrameOnly: true))
@@ -135,9 +135,9 @@ struct MacPortalWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if context.coordinator.model !== model {
-            context.coordinator.model.liveDetailPDFToolbar.update(nil)
-            context.coordinator.model.liveDetailPDFToolbar.bridge = nil
-            model.liveDetailPDFToolbar.bridge = context.coordinator.liveDetailPDF
+            context.coordinator.model.livePDFSurface.reset()
+            context.coordinator.model.livePDFSurface.bridge = nil
+            model.livePDFSurface.bridge = context.coordinator.liveDetailPDF
         }
         context.coordinator.model = model
         context.coordinator.preferences = preferences
@@ -241,10 +241,13 @@ struct MacPortalWebView: NSViewRepresentable {
             self.onFindCommand = onFindCommand
             self.onFindNextCommand = onFindNextCommand
             super.init()
-            liveDetailPDF.nativeToolbarHeight = MacPDFToolbarLayout.horizontalHeight
-            liveDetailPDF.onToolbarState = { [weak self] state in
-                self?.model.liveDetailPDFToolbar.update(state)
+            liveDetailPDF.openNativeEditor = { [weak self] directory, legacy in
+                try self?.model.livePDFSurface.open(directory: directory, legacy: legacy)
             }
+            liveDetailPDF.updateNativeViewport = { [weak self] viewport in self?.model.livePDFSurface.update(viewport) }
+            liveDetailPDF.reportNativeError = { [weak self] error in self?.model.livePDFSurface.editor?.error = error }
+            liveDetailPDF.prepareNativeClose = { [weak self] in await self?.model.livePDFSurface.prepareToClose() ?? true }
+            liveDetailPDF.closeNativeEditor = { [weak self] in self?.model.livePDFSurface.reset() }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

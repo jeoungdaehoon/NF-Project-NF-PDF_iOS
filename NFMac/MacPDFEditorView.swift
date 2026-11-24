@@ -40,6 +40,7 @@ struct MacPDFEditorView: View {
     var onTogglePaneExpanded: (() -> Void)?
     var initialFreeNote: String?
     var registerDetailExit: ((@escaping () async -> Bool) -> Void)?
+    var liveSurface: MacPDFLiveSurface?
     @StateObject private var sharing = MacPDFExportController()
     @State private var photo: PhotosPickerItem?
     @State private var modal: Modal?
@@ -50,7 +51,7 @@ struct MacPDFEditorView: View {
     enum Modal: String, Identifiable { case crop, board, imageEditor, systemImageEditor; var id: String { rawValue } }
     var body: some View {
         VStack(spacing: 0) {
-            if !state.presentation { header; Divider() }
+            if !state.presentation && liveSurface == nil { header; Divider() }
             if state.keepsPreviousDetailPDF && !state.presentation {
                 Text(DetailPDFWorkspace.retainedEditsMessage)
                     .font(.caption)
@@ -59,13 +60,13 @@ struct MacPDFEditorView: View {
                     .padding(.vertical, 6)
                 Divider()
             }
-            MacPDFFindBar(find: state.find)
+            if liveSurface == nil { MacPDFFindBar(find: state.find) }
             HStack(spacing: 0) {
-                if state.showPages && !state.presentation { MacPDFPagesView(state: state).frame(width: 190); Divider() }
+                if state.showPages && !state.presentation && liveSurface == nil { MacPDFPagesView(state: state).frame(width: 190); Divider() }
                 PDFNoteWorkspace(state: freeNotes, enabled: !state.presentation) {
                     GeometryReader { geometry in
                     ZStack(alignment: .bottom) {
-                        MacPDFCanvas(state: state, isContainerResizing: isContainerResizing, onExitPaneExpansion: onExitPaneExpansion, freeNotes: freeNotes)
+                        MacPDFCanvas(state: state, isContainerResizing: isContainerResizing, onExitPaneExpansion: onExitPaneExpansion, freeNotes: freeNotes, liveSurface: liveSurface)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         if !state.presentation {
                             MacPDFMovableToolbar(state: state, viewport: geometry.size) { handle, size in
@@ -77,6 +78,9 @@ struct MacPDFEditorView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .topLeading) {
+                        if let liveSurface { MacPDFLiveControls(surface: liveSurface, state: state).padding(8) }
+                    }
                     .overlay(alignment: .topTrailing) {
                         if detachedPaletteVisible { detachedPalette(in: geometry.size) }
                     }
@@ -89,7 +93,7 @@ struct MacPDFEditorView: View {
                         if state.isTextEditing { MacPDFTextAssistant(state: state).padding(8) }
                     }
                     .overlay(alignment: state.pageControlPosition == "left" ? .leading : .trailing) {
-                        if !state.presentation && state.pageControlPosition != "bottom" { sidePageControls }
+                        if !state.presentation && state.pageControlPosition != "bottom" && liveSurface == nil { sidePageControls }
                     }
                     .overlayPreferenceValue(MacPDFToolbarBounds.self) { anchor in
                         if (freeNotes.showsDocumentOptions || state.optionsTool != nil) && !detachedPaletteVisible && !state.presentation, let anchor {
@@ -105,7 +109,7 @@ struct MacPDFEditorView: View {
                                        note: initialFreeNote, popupLayoutDirectory: state.notePopupLayoutDirectory)
                 }
             }
-            if !state.presentation { footer }
+            if !state.presentation && liveSurface == nil { footer }
         }
         .onAppear {
             registerDetailExit? {
@@ -137,6 +141,12 @@ struct MacPDFEditorView: View {
         }
         .onDisappear { state.close() }
         .onChange(of: state.selection) { _, _ in state.canvas?.refreshAnnotations() }
+        .onChange(of: state.tool) { _, tool in
+            if tool != .view { liveSurface?.editsSource = false }
+        }
+        .onChange(of: freeNotes.documentTool) { _, active in
+            if active { liveSurface?.editsSource = false }
+        }
         .onChange(of: state.optionsTool) { _, tool in
             if tool == nil && !detachedPaletteVisible && state.editingPaletteIndex != nil { state.editingPaletteIndex = nil }
         }
@@ -255,30 +265,54 @@ struct MacPDFEditorView: View {
                     if freeNotes.documentTool { freeNotes.showsDocumentOptions.toggle() }
                     else { state.optionsTool = state.optionsTool == state.tool ? nil : state.tool }
                 }.frame(width: 32, height: 30)
+                Menu {
+                    ForEach(MacPDFTool.allCases) { tool in
+                        Button { selectTool(tool) } label: {
+                            Label(tool.title, systemImage: toolSelected(tool) ? "checkmark" : tool.symbol)
+                        }
+                    }
+                    Button(action: selectDocumentTool) {
+                        Label("문서 도구", systemImage: freeNotes.documentTool ? "checkmark" : "doc.text")
+                    }
+                } label: { Image(systemName: "list.bullet") }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 32, height: 30)
+                .help("도구 지원")
+                .accessibilityLabel("도구 지원")
                 Button { state.paletteLocked.toggle() } label: { Image(systemName: state.paletteLocked ? "lock.fill" : "lock.open") }.help("도구창 위치 잠금")
                 Button { state.verticalToolbar.toggle(); state.rememberSettings() } label: { Image(systemName: "rectangle.portrait.rotate") }.help("가로·세로 전환")
     }
     @ViewBuilder private var toolButtons: some View {
         ForEach(MacPDFTool.allCases) { tool in
             MacPDFToolPaletteButton(toolID: tool.rawValue, title: tool.title, symbol: tool.symbol,
-                                    isSelected: tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool,
+                                    isSelected: toolSelected(tool),
                                     tooltip: tool == .connector ? "연결점 표시 켜기·끄기 (다른 도구와 함께 사용)" : nil,
                                     onOffValue: tool == .connector) {
-                freeNotes.documentTool = false
-                state.selectTool(tool)
+                selectTool(tool)
             }
         }
-        MacPDFToolPaletteButton(toolID: "document", title: "문서 도구", symbol: "doc.text", isSelected: freeNotes.documentTool) {
-            if freeNotes.documentTool {
-                freeNotes.showsDocumentOptions.toggle()
-                return
-            }
-            state.selectTool(.view)
-            state.optionsTool = nil
-            state.menuVisible = false
-            freeNotes.documentTool = true
-            freeNotes.showsDocumentOptions = true
+        MacPDFToolPaletteButton(toolID: "document", title: "문서 도구", symbol: "doc.text",
+                                isSelected: freeNotes.documentTool, action: selectDocumentTool)
+    }
+    private func toolSelected(_ tool: MacPDFTool) -> Bool {
+        tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool
+    }
+    private func selectTool(_ tool: MacPDFTool) {
+        liveSurface?.editsSource = false
+        freeNotes.documentTool = false
+        state.selectTool(tool)
+    }
+    private func selectDocumentTool() {
+        if freeNotes.documentTool {
+            freeNotes.showsDocumentOptions.toggle()
+            return
         }
+        state.selectTool(.view)
+        state.optionsTool = nil
+        state.menuVisible = false
+        freeNotes.documentTool = true
+        freeNotes.showsDocumentOptions = true
     }
     private func options(maxHeight: CGFloat = 360, onClose: (() -> Void)? = nil) -> some View {
         MacPDFCompactOptions(maxHeight: maxHeight) {

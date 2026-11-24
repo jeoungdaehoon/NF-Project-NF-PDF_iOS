@@ -1,4 +1,4 @@
-((token, noteID, saved, nativeToolbarHeight = 0, pageZoom = 1) => {
+((token, noteID, saved, useNativeEditor = false, pageZoom = 1) => {
   const panels = '[data-linked-document-panel="true"]';
   const visible = node => node?.getClientRects().length && !node.hasAttribute('data-linked-document-closing');
   const focusedPanel = document.activeElement?.closest(panels);
@@ -10,7 +10,9 @@
   const body = detail ? panel.querySelector('[data-linked-document-body="true"]') : panel;
   const bridge = window.webkit?.messageHandlers?.NFAppleLiveDetailPDF;
   if (!panel || !body || !bridge) return false;
-  let nativePageZoom = nativeToolbarHeight > 0 ? pageZoom : 0;
+  let nativePageZoom = useNativeEditor ? pageZoom : 0;
+  let nativeWidth = 0, nativeHeight = 0;
+  let previousViewport = '';
 
   let objects;
   let savedLayout;
@@ -24,6 +26,9 @@
     if (!Array.isArray(objects) || objects.some(item => !item || typeof item.id !== 'string' || typeof item.kind !== 'string')) return false;
   } catch { return false; }
 
+  // macOS uses the PDF editor. Keep older portal-link markers available to the page.
+  const legacyObjects = objects;
+  if (useNativeEditor) objects = objects.filter(item => ['document', 'link'].includes(item.kind));
   const life = new AbortController();
   const listen = (node, event, action, options = {}) => node.addEventListener(event, action, { ...options, signal: life.signal });
   const element = (tag, attributes = {}) => {
@@ -233,9 +238,6 @@
   let needsSave = false;
   let saving = null;
   let pendingLayout = 0;
-  let toolbarTop = 0;
-  let lastToolbarState = '';
-  let toolbarUpdateQueued = false;
   const timers = new Set();
 
   const undoButton = button('undo', 'PDF 실행 취소', () => restore(previous, next));
@@ -270,7 +272,6 @@
     options.hidden = popover !== options;
     menuToggle.setAttribute('aria-expanded', String(!toolMenu.hidden));
     settings.setAttribute('aria-expanded', String(!options.hidden));
-    publishToolbarState();
   }
   function togglePopover(popover) {
     showPopover(popover.hidden ? popover : null);
@@ -343,30 +344,7 @@
   function setStatus(message) {
     status.textContent = message || '';
     status.hidden = !message;
-    publishToolbarState();
-  }
-  function publishToolbarState() {
-    if (!nativePageZoom || closed || toolbarUpdateQueued) return;
-    toolbarUpdateQueued = true;
-    queueMicrotask(() => {
-      toolbarUpdateQueued = false;
-      if (closed || !nativePageZoom) return;
-      const state = JSON.stringify({
-        top: toolbarTop, tool: active, optionsOpen: !options.hidden,
-        settingsAvailable: !settings.disabled, dialogOpen: !!dialog?.open,
-        canUndo: !undoButton.disabled, canRedo: !redoButton.disabled,
-        canZoomIn: !plus.disabled, canZoomOut: !minus.disabled, canRemove: !remove.hidden,
-        zoomPercent: Math.round(zoom * 100), color, lineWidth, textSize, eraserSize, shape, fill, status: status.textContent,
-      });
-      if (state === lastToolbarState) return;
-      lastToolbarState = state;
-      void bridge.postMessage({ token, toolbar: state }).catch(() => {
-        if (closed) return;
-        nativePageZoom = 0;
-        panel.removeAttribute('data-apple-pdf-native-toolbar');
-        scheduleLayout();
-      });
-    });
+    if (useNativeEditor && message) void bridge.postMessage({ token, nativeError: message }).catch(() => {});
   }
   function updateTools() {
     for (const [key, node] of toolButtons) {
@@ -394,7 +372,6 @@
     remove.hidden = !selected;
     minus.disabled = zoom <= 1;
     plus.disabled = zoom >= 4;
-    publishToolbarState();
   }
   function setTool(value) {
     if (gesture) cancelGesture();
@@ -410,58 +387,41 @@
     setTool(value);
     showPopover(showOptions ? options : null);
   }
-  function performToolbarCommand(sessionToken, command, value) {
-    if (sessionToken !== token || !nativePageZoom || closed || closing || dialog?.open) return false;
+  function publishViewport() {
+    if (!useNativeEditor || closed || !body.isConnected) return;
+    const rect = body.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const viewport = JSON.stringify({
+      x: rect.left * nativePageZoom, y: rect.top * nativePageZoom,
+      width: body.clientWidth * nativePageZoom, height: body.clientHeight * nativePageZoom,
+      scrollX: body.scrollLeft * nativePageZoom, scrollY: body.scrollTop * nativePageZoom,
+      scale: zoom * nativePageZoom, zoom, pageZoom: nativePageZoom,
+      contentWidth: Number(layer.getAttribute('width')) / zoom,
+      contentHeight: Number(layer.getAttribute('height')) / zoom,
+    });
+    if (viewport === previousViewport) return;
+    previousViewport = viewport;
+    void bridge.postMessage({ token, viewport }).catch(() => {});
+  }
+  function nativeCommand(sessionToken, command, x, y) {
+    if (!useNativeEditor || sessionToken !== token || closed || closing) return false;
     switch (command) {
       case 'close': return close(true);
-      case 'tool':
-        if (!supportedTools.has(value)) return false;
-        chooseTool(value);
+      case 'zoom': changeZoom(x); break;
+      case 'scroll':
+        body.scrollBy(x / nativePageZoom, y / nativePageZoom);
+        publishViewport();
         break;
-      case 'settings':
-        if (settings.disabled) return false;
-        togglePopover(options);
-        break;
-      case 'dismissSettings': showPopover(); break;
-      case 'undo': restore(previous, next); break;
-      case 'redo': restore(next, previous); break;
-      case 'zoomIn': changeZoom(zoom * 1.25); break;
-      case 'zoomOut': changeZoom(zoom / 1.25); break;
-      case 'remove': removeSelected(); break;
-      case 'image':
-        if (active !== 'image') return false;
-        fileInput.click();
-        break;
-      case 'color':
-        if (typeof value !== 'string' || !/^#[0-9a-f]{6}$/i.test(value)) return false;
-        color = colorInput.value = value;
-        break;
-      case 'lineWidth':
-      case 'textSize':
-      case 'eraserSize': {
-        const input = { lineWidth: widthInput, textSize: textSizeInput, eraserSize: eraserSizeInput }[command];
-        if (!Number.isFinite(value) || value < Number(input.min) || value > Number(input.max)) return false;
-        input.value = String(Math.round(value));
-        input.dispatchEvent(new Event('input'));
-        break;
-      }
-      case 'shape': {
-        const choice = [...shapes.children].find(node => node.dataset.pdfShape === value);
-        if (!choice) return false;
-        choice.click();
-        break;
-      }
-      case 'fill':
-        if (typeof value !== 'boolean') return false;
-        fillInput.checked = fill = value;
+      case 'extent':
+        nativeWidth = x; nativeHeight = y;
+        layout();
         break;
       default: return false;
     }
-    publishToolbarState();
     return true;
   }
   function changeZoom(value, focus) {
-    const nextZoom = Math.min(4, Math.max(1, value));
+    const nextZoom = Math.min(useNativeEditor ? 10 : 4, Math.max(useNativeEditor ? 0.1 : 1, value));
     if (nextZoom === zoom) return;
     const frame = body.getBoundingClientRect();
     const x = focus ? Math.max(0, focus[0] - frame.left) : body.clientWidth / 2;
@@ -477,6 +437,7 @@
     layout();
     body.scrollLeft = left * zoom - x;
     body.scrollTop = top * zoom - y;
+    publishViewport();
     updateTools();
   }
   function box(object) {
@@ -504,8 +465,8 @@
     // Measure the document extent independently of the annotation canvas.
     layer.setAttribute('width', 0);
     layer.setAttribute('height', 0);
-    let maxX = Math.max(body.clientWidth, body.scrollWidth) / zoom;
-    let maxY = Math.max(body.clientHeight, body.scrollHeight) / zoom;
+    let maxX = Math.max(nativeWidth, Math.max(body.clientWidth, body.scrollWidth) / zoom);
+    let maxY = Math.max(nativeHeight, Math.max(body.clientHeight, body.scrollHeight) / zoom);
     for (const object of objects) {
       const rect = box(object);
       if (rect.x + rect.w > maxX) maxX = rect.x + rect.w + 16;
@@ -516,22 +477,18 @@
     layer.setAttribute('viewBox', [0, 0, maxX, maxY].join(' '));
     body.scrollLeft = left;
     body.scrollTop = top;
-    const height = nativePageZoom ? nativeToolbarHeight / nativePageZoom : toolbar.offsetHeight;
+    if (useNativeEditor) {
+      publishViewport();
+      return;
+    }
+    const height = toolbar.offsetHeight;
     const header = detail ? panel.querySelector('[data-linked-document-header]') : body.querySelector(':scope > .portal-titlebar');
     const headerHeight = (header?.offsetHeight || 0) * (detail ? 1 : zoom);
-    if (nativePageZoom) {
-      toolbarTop = Math.max(0, (panel.getBoundingClientRect().top + headerHeight) * nativePageZoom + 6);
-      publishToolbarState();
-    }
     panel.style.setProperty('--nf-apple-pdf-popover-top', headerHeight + height + 11 + 'px');
     toolbar.style.top = headerHeight + 6 + 'px';
-    if (detail) {
-      const reserve = (nativePageZoom ? (nativeToolbarHeight + 12) / nativePageZoom : height + 12) + 'px';
-      if (panel.style.getPropertyValue('--nf-apple-pdf-toolbar-height') !== reserve) {
-        panel.style.setProperty('--nf-apple-pdf-toolbar-height', reserve);
-      }
-    }
+    if (detail) panel.style.setProperty('--nf-apple-pdf-toolbar-height', height + 12 + 'px');
   }
+  if (useNativeEditor) listen(body, 'scroll', publishViewport, { passive: true });
   listen(window, 'nfPortalMacZoomState', event => {
     const scale = event.detail?.percent / 100;
     if (nativePageZoom && scale >= .25 && scale <= 5) {
@@ -623,7 +580,7 @@
       while (needsSave) {
         needsSave = false;
         try {
-          await bridge.postMessage({ token, annotations: JSON.stringify({ annotations: objects, layout: documentLayout }) });
+          await bridge.postMessage({ token, annotations: JSON.stringify({ annotations: useNativeEditor ? legacyObjects : objects, layout: documentLayout }) });
           setStatus('');
         } catch (error) {
           needsSave = true;
@@ -860,10 +817,8 @@
     listen(pop, 'close', () => {
       pop.remove();
       if (dialog === pop) dialog = null;
-      publishToolbarState();
-    });
+      });
     pop.showModal();
-    publishToolbarState();
     input?.focus();
     return pop;
   }
@@ -1088,11 +1043,7 @@
   }, { capture: true });
   listen(document, 'keydown', event => {
     if (event.defaultPrevented || event.isComposing || dialog?.open) return;
-    if (event.key === 'Escape' && nativePageZoom && !options.hidden) {
-      event.preventDefault();
-      showPopover();
-      return;
-    }
+    if (useNativeEditor) return;
     if (event.key === 'Escape' && (!toolMenu.hidden || !options.hidden)) {
       event.preventDefault();
       const toggle = toolMenu.hidden ? settings : menuToggle;
@@ -1154,6 +1105,7 @@
     if (closing) return false;
     closing = true;
     try {
+      if (useNativeEditor && !await bridge.postMessage({ token, prepareNativeClose: true })) return false;
       if (confirmSource) {
         document.activeElement?.blur();
         await window.__nfDisplayPrepare?.();
@@ -1194,9 +1146,10 @@
       return false;
     } finally { closing = false; }
   }
-  window.__nfAppleLiveDetailPDF = { close, perform: performToolbarCommand };
+  window.__nfAppleLiveDetailPDF = { close, nativeCommand };
   refresh();
   body.scrollLeft = scrollAtEntry.left;
   body.scrollTop = scrollAtEntry.top;
+  publishViewport();
   return true;
 })

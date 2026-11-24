@@ -170,7 +170,7 @@ final class MacPortalBrowserModel: ObservableObject {
     @Published var themeBackground = Color(nsColor: .windowBackgroundColor)
     @Published var themeForeground = Color(nsColor: .labelColor)
     @Published private(set) var localPDFDocumentCount = 0
-    let liveDetailPDFToolbar = MacLiveDetailPDFToolbarModel()
+    let livePDFSurface = MacPDFLiveSurface()
 
     weak var webView: WKWebView?
     var onGoogleLogin: (() -> Void)?

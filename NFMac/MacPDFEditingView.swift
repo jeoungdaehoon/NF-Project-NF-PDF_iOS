@@ -7,10 +7,16 @@ struct MacPDFCanvas: NSViewRepresentable {
     var isContainerResizing = false
     var onExitPaneExpansion: (() -> Void)?
     var freeNotes: PDFNoteWorkspaceState?
+    var liveSurface: MacPDFLiveSurface?
     func makeNSView(context: Context) -> MacPDFEditingView {
         let view = MacPDFEditingView(); view.editor = state; state.canvas = view
+        view.liveSurface = liveSurface
         view.onExitPaneExpansion = onExitPaneExpansion
-        view.document = state.document; view.minScaleFactor = 0.1; view.maxScaleFactor = 10
+        if liveSurface == nil {
+            view.document = state.document; view.minScaleFactor = 0.1; view.maxScaleFactor = 10
+        } else {
+            view.backgroundColor = .clear
+        }
         freeNotes?.attach(view)
         view.freeNotes = freeNotes
         freeNotes?.selectedArea = { [weak state] in
@@ -18,14 +24,17 @@ struct MacPDFCanvas: NSViewRepresentable {
             return PDFNoteWorkspaceState.Target(page: page, bounds: object.bounds, objectID: object.id.uuidString)
         }
         freeNotes?.changeDocument = { [weak state] _, edit in state?.change(structure: true, edit) }
-        view.displayMode = .singlePageContinuous; view.displaysPageBreaks = true; view.autoScales = true
+        if liveSurface == nil {
+            view.displayMode = .singlePageContinuous; view.displaysPageBreaks = true; view.autoScales = true
+        }
         view.installObservers(); view.refreshAnnotations(); return view
     }
     func updateNSView(_ view: MacPDFEditingView, context: Context) {
         view.onExitPaneExpansion = onExitPaneExpansion
         if view.document !== state.document { view.finishTextEditing(); view.document = state.document; view.refreshAnnotations() }
         if isContainerResizing { view.autoScales = false }
-        state.configureView(); view.updateInteractionOverlay()
+        if liveSurface == nil { state.configureView() }
+        view.updateInteractionOverlay()
     }
     static func dismantleNSView(_ view: MacPDFEditingView, coordinator: ()) { view.onExitPaneExpansion = nil; view.finishTextEditing(); view.removeObservers() }
 }
@@ -34,6 +43,7 @@ struct MacPDFCanvas: NSViewRepresentable {
 /// surface keeps PDFKit's native text selection, links, menus and drag behavior.
 final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     weak var editor: MacPDFEditorState?
+    weak var liveSurface: MacPDFLiveSurface?
     weak var freeNotes: PDFNoteWorkspaceState?
     private var placingDocument = false
     var onExitPaneExpansion: (() -> Void)?
@@ -94,10 +104,55 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     var activeTextView: NSTextView? { textView }
     var editingObjectID: UUID? { editingTextID }
     var drawingDraft: MacPDFObject? { draft }
+    override var document: PDFDocument? {
+        get { liveSurface == nil ? super.document : editor?.document }
+        set { if liveSurface == nil { super.document = newValue } }
+    }
+    override var currentPage: PDFPage? { liveSurface == nil ? super.currentPage : editor?.document.page(at: 0) }
+    override var visiblePages: [PDFPage] { liveSurface == nil ? super.visiblePages : currentPage.map { [$0] } ?? [] }
+    override var scaleFactor: CGFloat {
+        get { liveSurface?.viewport.map { CGFloat($0.scale) } ?? super.scaleFactor }
+        set {
+            if let liveSurface, let viewport = liveSurface.viewport { liveSurface.zoom(to: newValue / viewport.pageZoom) }
+            else { super.scaleFactor = newValue }
+        }
+    }
+    override var isOpaque: Bool { liveSurface == nil && super.isOpaque }
+    override func draw(_ dirtyRect: NSRect) {
+        if liveSurface == nil { super.draw(dirtyRect) }
+    }
+    override func page(for point: CGPoint, nearest: Bool) -> PDFPage? {
+        guard liveSurface != nil else { return super.page(for: point, nearest: nearest) }
+        return nearest || bounds.contains(point) ? currentPage : nil
+    }
+    override func convert(_ point: CGPoint, to page: PDFPage) -> CGPoint {
+        liveSurface?.pagePoint(point, in: bounds, flipped: isFlipped) ?? super.convert(point, to: page)
+    }
+    override func convert(_ point: CGPoint, from page: PDFPage) -> CGPoint {
+        liveSurface?.localPoint(point, in: bounds, flipped: isFlipped) ?? super.convert(point, from: page)
+    }
+    override func convert(_ rect: CGRect, to page: PDFPage) -> CGRect {
+        guard liveSurface != nil else { return super.convert(rect, to: page) }
+        return Self.convertedRect(rect) { convert($0, to: page) }
+    }
+    override func convert(_ rect: CGRect, from page: PDFPage) -> CGRect {
+        guard liveSurface != nil else { return super.convert(rect, from: page) }
+        return Self.convertedRect(rect) { convert($0, from: page) }
+    }
+    override func go(to rect: CGRect, on page: PDFPage) {
+        guard let liveSurface else { super.go(to: rect, on: page); return }
+        let target = convert(rect, from: page)
+        liveSurface.scroll(x: target.midX - bounds.midX, y: isFlipped ? target.midY - bounds.midY : bounds.midY - target.midY)
+    }
+    private static func convertedRect(_ rect: CGRect, point: (CGPoint) -> CGPoint) -> CGRect {
+        let a = point(CGPoint(x: rect.minX, y: rect.minY)), b = point(CGPoint(x: rect.maxX, y: rect.maxY))
+        return CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y).standardized
+    }
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden, bounds.contains(convert(point, from: superview)) else { return nil }
+        if liveSurface?.editsSource == true, editor?.tool == .view, freeNotes?.documentTool != true { return nil }
         if !commandHeld, let textView {
             let local = textView.convert(point, from: superview)
             if textView.bounds.contains(local) { return textView }
@@ -110,7 +165,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         return self
     }
     func routesNativePDFInteraction(at point: CGPoint) -> Bool {
-        guard editor?.tool == .select, !commandHeld, commandStart == nil,
+        guard liveSurface == nil, editor?.tool == .select, !commandHeld, commandStart == nil,
               start == nil, routeDrag == nil, connectionDrag == nil, panStart == nil,
               let editor else { return false }
         if let handle = connectorRouteHandle, hypot(handle.x - point.x, handle.y - point.y) <= 12 { return false }
@@ -163,6 +218,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         super.flagsChanged(with: event)
     }
     override func layout() {
+        if liveSurface != nil { updateInteractionOverlay(); return }
         super.layout(); updateInteractionOverlay()
         guard initialFitPending, bounds.width > 20, bounds.height > 20, document != nil else { return }
         initialFitPending = false
@@ -212,7 +268,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         findLayer.fillColor = NSColor.systemYellow.withAlphaComponent(0.16).cgColor
         findLayer.strokeColor = NSColor.systemOrange.cgColor; findLayer.lineWidth = 2
         findLayer.zPosition = 9999; layer?.addSublayer(findLayer)
-        for name in [Notification.Name.PDFViewPageChanged, .PDFViewScaleChanged, NSView.boundsDidChangeNotification] {
+        let viewportEvents: [Notification.Name] = liveSurface == nil
+            ? [.PDFViewPageChanged, .PDFViewScaleChanged, NSView.boundsDidChangeNotification] : []
+        for name in viewportEvents {
             let observed: Any? = name == NSView.boundsDidChangeNotification ? documentView?.enclosingScrollView?.contentView : self
             documentView?.enclosingScrollView?.contentView.postsBoundsChangedNotifications = true
             observers.append(NotificationCenter.default.addObserver(forName: name, object: observed, queue: .main) { [weak self] notification in
@@ -518,6 +576,12 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         }
         if routeDrag != nil { updateRouteDrag(event); return }
         if connectionDrag != nil { updateConnectionDrag(event); return }
+        if let liveSurface, let initial = panStart {
+            let p = convert(event.locationInWindow, from: nil)
+            liveSurface.scroll(x: initial.x - p.x, y: isFlipped ? initial.y - p.y : p.y - initial.y)
+            panStart = p
+            return
+        }
         if let origin = panOrigin, let initial = panStart, let scroll = documentView?.enclosingScrollView {
             let p = convert(event.locationInWindow, from: nil)
             let proposed = CGPoint(x: origin.x - (p.x - initial.x), y: origin.y - (p.y - initial.y) * (scroll.contentView.isFlipped == isFlipped ? 1 : -1))
@@ -529,9 +593,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         if moving { transformSelection(to: point, from: start); refreshAnnotations(pageOnly: true); return }
         if activeTool == .neon, activeNeonType != .line {
             samples = [samples.first ?? MacPDFPoint(start), MacPDFPoint(point, pressure: pressure(event))]
-        } else if [.pen, .highlighter, .neon].contains(activeTool), let previous = samples.last {
-            let steps = max(1, min(2048, Int(ceil(hypot(point.x - previous.x, point.y - previous.y) / 3))))
-            for step in 1...steps { let t = Double(step) / Double(steps); samples.append(MacPDFPoint(CGPoint(x: previous.x + (point.x - previous.x) * t, y: previous.y + (point.y - previous.y) * t), pressure: previous.pressure + (pressure(event) - previous.pressure) * t)) }
+        } else if [.pen, .highlighter, .neon].contains(activeTool) {
+            MacPDFPoint.appendInterpolated(MacPDFPoint(point, pressure: pressure(event)), to: &samples)
         } else { samples.append(MacPDFPoint(point, pressure: pressure(event))) }
         switch activeTool {
         case .pen, .highlighter, .neon: updateInkDraft(editor, page: editor.currentPage)
@@ -779,7 +842,15 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         var style = editor.style; style.stroke = .init(.systemBlue); style.underline = true
         editor.setStyle(style, field: "stroke"); editor.setStyle(style, field: "underline")
     }
-    override func scrollWheel(with event: NSEvent) { documentView?.enclosingScrollView?.scrollWheel(with: event); updateInteractionOverlay() }
+    override func scrollWheel(with event: NSEvent) {
+        if let liveSurface {
+            let multiplier = event.hasPreciseScrollingDeltas ? 1.0 : 16.0
+            liveSurface.scroll(x: -event.scrollingDeltaX * multiplier, y: -event.scrollingDeltaY * multiplier)
+        } else {
+            documentView?.enclosingScrollView?.scrollWheel(with: event)
+        }
+        updateInteractionOverlay()
+    }
     override func magnify(with event: NSEvent) { finishTextEditing(); autoScales = false; scaleFactor = min(10, max(0.1, scaleFactor * (1 + event.magnification))); updateInteractionOverlay() }
     private func historyShortcut(_ event: NSEvent) -> Bool? {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

@@ -810,7 +810,7 @@ private struct MacPortalPane: View {
             // can cover them without resizing either the breadcrumb or document.
             portalWebView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay { MacLiveDetailPDFToolbar(model: model.liveDetailPDFToolbar) }
+                .overlay(alignment: .topLeading) { MacPDFLiveEditor(surface: model.livePDFSurface) }
         }
         .background(model.themeBackground)
         .overlay(alignment: .topTrailing) {

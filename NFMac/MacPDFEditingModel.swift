@@ -76,6 +76,16 @@ struct MacPDFPoint: Codable, Equatable {
     var x: Double, y: Double, pressure: Double
     init(_ point: CGPoint, pressure: Double = 1) { x = point.x; y = point.y; self.pressure = pressure }
     var cgPoint: CGPoint { CGPoint(x: x, y: y) }
+
+    static func appendInterpolated(_ point: Self, to samples: inout [Self]) {
+        guard let start = samples.last else { samples.append(point); return }
+        let steps = max(1, min(2048, Int(ceil(hypot(point.x - start.x, point.y - start.y) / 3))))
+        for step in 1...steps {
+            let t = Double(step) / Double(steps)
+            let location = CGPoint(x: start.x + (point.x - start.x) * t, y: start.y + (point.y - start.y) * t)
+            samples.append(Self(location, pressure: start.pressure + (point.pressure - start.pressure) * t))
+        }
+    }
 }
 
 struct MacPDFStyle: Codable, Equatable {
@@ -233,15 +243,18 @@ final class MacPDFEditorState: ObservableObject {
     private var toolOptions: [String: MacPDFStyle] = [:]
     private var archiveReadFailed = false
     private var baseFileName = "base.pdf"
+    private var guardedArchiveRevision: String?
+    private let guardsArchiveRevision: Bool
     private var detailSourceDigest: String?
     private(set) var keepsPreviousDetailPDF = false
     func markImportedAnnotationsChanged() { baseChanged = true; pendingDocumentSave = true }
     private struct Snapshot { var objects: [MacPDFObject]; var favorites: Set<Int>; var base: Data? }
     private struct Change { var before: Snapshot; var after: Snapshot }
 
-    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, directory: URL? = nil, detailWorkspace: DetailPDFWorkspace? = nil) {
+    init(document: PDFDocument, identifier: String, fileName: String, sourceURL: URL? = nil, cookieHeader: String? = nil, sourceData: Data? = nil, directory: URL? = nil, detailWorkspace: DetailPDFWorkspace? = nil, guardsArchiveRevision: Bool = false) {
         self.document = document; self.identifier = identifier; self.fileName = fileName
         self.sourceURL = sourceURL; self.cookieHeader = cookieHeader
+        self.guardsArchiveRevision = guardsArchiveRevision
         let digest = SHA256.hash(data: Data(identifier.utf8)).map { String(format: "%02x", $0) }.joined()
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("NF/PDFEdits/mac-\(digest)", isDirectory: true)
@@ -676,6 +689,14 @@ final class MacPDFEditorState: ObservableObject {
         guard !archiveReadFailed else { error = "기존 편집 파일을 읽을 수 없어 덮어쓰지 않습니다. 현재 화면은 PDF 다운로드로 보관해 주세요."; return false }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let manifest = directory.appendingPathComponent("edits.plist")
+            if guardsArchiveRevision {
+                let revision = FileManager.default.fileExists(atPath: manifest.path) ? Self.hash(try Data(contentsOf: manifest)) : nil
+                guard revision == guardedArchiveRevision else {
+                    error = "다른 창에서 이 상세페이지 주석을 수정했습니다."
+                    return false
+                }
+            }
             let previousBase = directory.appendingPathComponent(baseFileName)
             var nextBaseFileName = baseFileName
             if baseChanged || !FileManager.default.fileExists(atPath: previousBase.path) {
@@ -685,7 +706,9 @@ final class MacPDFEditorState: ObservableObject {
             }
             let encoder = PropertyListEncoder(); encoder.outputFormat = .binary
             let archive = MacPDFEditArchive(objects: objects.filter { !$0.isTransient }, favorites: favorites, sourceHashes: sourceHashes, baseFileName: nextBaseFileName, detailSourceDigest: detailSourceDigest)
-            try encoder.encode(archive).write(to: directory.appendingPathComponent("edits.plist"), options: .atomic)
+            let data = try encoder.encode(archive)
+            try data.write(to: manifest, options: .atomic)
+            if guardsArchiveRevision { guardedArchiveRevision = Self.hash(data) }
             // The atomic manifest is the commit point for base + edit objects.
             // Never overwrite the base referenced by the previous manifest.
             baseFileName = nextBaseFileName; baseChanged = false
@@ -697,7 +720,8 @@ final class MacPDFEditorState: ObservableObject {
         let archiveURL = directory.appendingPathComponent("edits.plist")
         guard FileManager.default.fileExists(atPath: archiveURL.path) else { return }
         do {
-            let archive = try PropertyListDecoder().decode(MacPDFEditArchive.self, from: Data(contentsOf: archiveURL))
+            let data = try Data(contentsOf: archiveURL)
+            let archive = try PropertyListDecoder().decode(MacPDFEditArchive.self, from: data)
             guard archive.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
             if sourceURL != nil, let previous = archive.sourceHashes, !sourceHashes.isEmpty, previous.isDisjoint(with: sourceHashes) {
                 // Never replace a newer server PDF with an older cached base.
@@ -710,6 +734,7 @@ final class MacPDFEditorState: ObservableObject {
             let name = archive.baseFileName ?? "base.pdf"
             guard name == (name as NSString).lastPathComponent, name.hasSuffix(".pdf"), let base = PDFDocument(url: directory.appendingPathComponent(name)) else { throw CocoaError(.fileReadCorruptFile) }
             document = base; baseFileName = name; detailSourceDigest = archive.detailSourceDigest
+            if guardsArchiveRevision { guardedArchiveRevision = Self.hash(data) }
             objects = archive.objects.filter { $0.page >= 0 && $0.page < document.pageCount }; favorites = archive.favorites.filter { $0 >= 0 && $0 < document.pageCount }
         } catch { archiveReadFailed = true; self.error = "저장된 편집 데이터를 복원하지 못했습니다. 원본과 기존 편집 파일은 유지됩니다: \(error.localizedDescription)" }
     }
