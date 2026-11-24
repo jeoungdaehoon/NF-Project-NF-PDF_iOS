@@ -1,4 +1,3 @@
-import Combine
 import Foundation
 import SwiftUI
 import WebKit
@@ -86,56 +85,11 @@ enum MacNumbersChartExportFormat: String, CaseIterable {
     var title: String { rawValue.uppercased() }
 }
 
-@MainActor
-final class MacNumbersChartWebSession: ObservableObject {
-    weak var webView: WKWebView?
-
-    func export(_ format: MacNumbersChartExportFormat, from url: URL) async throws -> (name: String, data: Data) {
-        guard let webView, webView.url == url else {
-            throw MacNumbersChartFile.failure("차트가 열린 뒤 다시 시도해 주세요.")
-        }
-        let response = try await webView.callAsyncJavaScript(
-            """
-            if (typeof window.__nfChartExport !== 'function') {
-                return {error: '차트가 열린 뒤 다시 시도해 주세요.'};
-            }
-            return await window.__nfChartExport(format);
-            """,
-            arguments: ["format": format.rawValue], in: nil, contentWorld: .page
-        )
-        try Task.checkCancellation()
-        guard webView.url == url, let result = response as? [String: String] else {
-            throw MacNumbersChartFile.failure("차트 내보내기 응답을 읽지 못했습니다.")
-        }
-        if let error = result["error"] { throw MacNumbersChartFile.failure(error) }
-        guard let name = result["filename"], (name as NSString).pathExtension.lowercased() == format.rawValue,
-              let base64 = result["base64"], let data = Data(base64Encoded: base64), !data.isEmpty else {
-            throw MacNumbersChartFile.failure("내보낼 파일을 생성하지 못했습니다.")
-        }
-        return (name, data)
-    }
-
-    func save() async -> Bool {
-        guard let webView else { return true }
-        return (try? await webView.callAsyncJavaScript(
-            "return typeof window.__nfChartSave !== 'function' || await window.__nfChartSave();",
-            arguments: [:], in: nil, contentWorld: .page
-        ) as? Bool) == true
-    }
-}
-
 struct MacNumbersChartWebView: NSViewRepresentable {
     let url: URL
-    let session: MacNumbersChartWebSession
+    let session: PortalChartWebSession
 
-    func makeNSView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        let webView = WKWebView(frame: .zero, configuration: configuration)
-        session.webView = webView
-        webView.load(URLRequest(url: url))
-        return webView
-    }
+    func makeNSView(context: Context) -> WKWebView { session.view(for: url) }
 
     func updateNSView(_ webView: WKWebView, context: Context) {}
 }

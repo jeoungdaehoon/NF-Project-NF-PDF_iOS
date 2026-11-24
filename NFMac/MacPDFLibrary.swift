@@ -643,7 +643,7 @@ struct MacRemotePDFPreviewView: View {
     @State private var quickLookFile: MacAttachmentQuickLookFile?
     @State private var numbersWorkbook: MacNumbersWorkbook?
     @State private var chartURL: URL?
-    @StateObject private var chartSession = MacNumbersChartWebSession()
+    @StateObject private var chartSession = PortalChartWebSession()
     @State private var chartOriginal: MacAttachmentQuickLookFile?
     @State private var chartFileAction: Task<Void, Never>?
     @State private var chartFileStatus: String?
@@ -989,12 +989,12 @@ struct MacRemotePDFPreviewView: View {
         else if isFullscreen { onToggleFullscreen?() }
         else if isPaneExpanded { onTogglePaneExpanded?() }
         else if isDetailPDF { returnToDetailPage() }
-        else if chartURL != nil {
+        else if let chartURL {
             guard !isReturningToDetail else { return }
             isReturningToDetail = true
             Task {
                 defer { isReturningToDetail = false }
-                if await chartSession.save() { onClose() }
+                if await chartSession.save(from: chartURL) { onClose() }
                 else { chartSaveError = true }
             }
         }
@@ -1163,7 +1163,7 @@ struct MacRemotePDFPreviewView: View {
     private func exportChart(_ format: MacNumbersChartExportFormat) {
         guard let chartURL else { return }
         runChartFileAction("\(format.title) 파일을 만드는 중…") {
-            let file = try await chartSession.export(format, from: chartURL)
+            let file = try await chartSession.export(format.rawValue, from: chartURL)
             let panel = NSSavePanel()
             panel.title = "\(format.title) 내보내기"
             panel.prompt = "저장"

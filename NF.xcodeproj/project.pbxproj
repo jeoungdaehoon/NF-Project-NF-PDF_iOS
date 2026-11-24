@@ -42,6 +42,7 @@
 		5B0000000000000000000043 /* DetailPDFWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000032; };
 		5B0000000000000000000048 /* LiveDetailPDF.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000038; };
 		5B0000000000000000000049 /* apple-live-detail-pdf.js in Resources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000039; };
+		5B0000000000000000000050 /* PortalChartWebSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000051; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -62,6 +63,7 @@
 		5B0000000000000000000032 /* DetailPDFWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/DetailPDFWorkspace.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000038 /* LiveDetailPDF.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/LiveDetailPDF.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000039 /* apple-live-detail-pdf.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = NF/Web/PDF/apple-live-detail-pdf.js; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000051 /* PortalChartWebSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PortalChartWebSession.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -376,6 +378,7 @@
 				5B0000000000000000000042 /* PDFNoteDragGlyph.swift in Sources */,
 				5B0000000000000000000043 /* DetailPDFWorkspace.swift in Sources */,
 				5B0000000000000000000048 /* LiveDetailPDF.swift in Sources */,
+				5B0000000000000000000050 /* PortalChartWebSession.swift in Sources */,
 				5B0000000000000000000041 /* PDFPageLinkPicker.swift in Sources */,
 				5B0000000000000000000040 /* PDFDocumentToolOptions.swift in Sources */,
 				5B0000000000000000000011 /* PortalMeetingLiveCapture.swift in Sources */,

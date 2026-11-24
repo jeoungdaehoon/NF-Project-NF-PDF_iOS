@@ -1,4 +1,3 @@
-import Combine
 import QuickLook
 import SwiftUI
 import WebKit
@@ -114,54 +113,11 @@ private enum PortalNumbersExportFormat: String, CaseIterable {
     var title: String { rawValue.uppercased() }
 }
 
-@MainActor
-private final class PortalNumbersWebSession: ObservableObject {
-    weak var webView: WKWebView?
-
-    func save(_ chart: PortalNumbersChartLink) async -> Bool {
-        guard let webView, webView.url == chart.url else { return true }
-        return (try? await webView.callAsyncJavaScript(
-            "return typeof window.__nfChartSave !== 'function' || await window.__nfChartSave();",
-            arguments: [:], in: nil, contentWorld: .page
-        ) as? Bool) == true
-    }
-
-    func export(_ format: PortalNumbersExportFormat, chart: PortalNumbersChartLink) async throws -> PortalNumbersTemporaryFile {
-        guard let webView, webView.url == chart.url else {
-            throw PortalNumbersAttachment.failure("차트가 열린 뒤 다시 시도해 주세요.")
-        }
-        let payload = try await webView.callAsyncJavaScript(
-            """
-            if (typeof window.__nfChartExport !== 'function') return {error: '차트가 열린 뒤 다시 시도해 주세요.'};
-            return await window.__nfChartExport(format);
-            """,
-            arguments: ["format": format.rawValue], in: nil, contentWorld: .page
-        )
-        try Task.checkCancellation()
-        guard webView.url == chart.url, let result = payload as? [String: String] else {
-            throw PortalNumbersAttachment.failure("차트 내보내기 응답을 읽지 못했습니다.")
-        }
-        if let error = result["error"] { throw PortalNumbersAttachment.failure(error) }
-        guard let name = result["filename"], (name as NSString).pathExtension.lowercased() == format.rawValue,
-              let base64 = result["base64"], let data = Data(base64Encoded: base64), !data.isEmpty else {
-            throw PortalNumbersAttachment.failure("내보낼 파일을 생성하지 못했습니다.")
-        }
-        return try PortalNumbersTemporaryFile(name: name, extension: format.rawValue) { try data.write(to: $0, options: .atomic) }
-    }
-}
-
 private struct PortalNumbersChartWebView: UIViewRepresentable {
     let url: URL
-    let session: PortalNumbersWebSession
+    let session: PortalChartWebSession
 
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        session.webView = view
-        view.load(URLRequest(url: url))
-        return view
-    }
+    func makeUIView(context: Context) -> WKWebView { session.view(for: url) }
 
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
@@ -170,7 +126,7 @@ struct PortalNumbersAttachmentView: View {
     let item: PortalAttachmentPreviewItem
     let onClose: () -> Void
     @Environment(\.portalAppTheme) private var theme
-    @StateObject private var session = PortalNumbersWebSession()
+    @StateObject private var session = PortalChartWebSession()
     @State private var chart: PortalNumbersChartLink?
     @State private var original: PortalNumbersTemporaryFile?
     @State private var exported: PortalNumbersTemporaryFile?
@@ -205,7 +161,12 @@ struct PortalNumbersAttachmentView: View {
                         Button("Numbers 원본 파일 보기", systemImage: "doc.richtext") { showOriginal() }
                         ForEach(PortalNumbersExportFormat.allCases, id: \.self) { format in
                             Button("\(format.title) 내보내기", systemImage: "square.and.arrow.down") {
-                                run("\(format.title) 파일을 만드는 중…") { exported = try await session.export(format, chart: chart) }
+                                run("\(format.title) 파일을 만드는 중…") {
+                                    let file = try await session.export(format.rawValue, from: chart.url)
+                                    exported = try PortalNumbersTemporaryFile(name: file.name, extension: format.rawValue) {
+                                        try file.data.write(to: $0, options: .atomic)
+                                    }
+                                }
                             }
                         }
                     } else if chart != nil {
@@ -270,7 +231,7 @@ struct PortalNumbersAttachmentView: View {
             isShowingOriginal = false
         } else if let chart {
             run("차트를 저장하는 중…") {
-                guard await session.save(chart) else {
+                guard await session.save(from: chart.url) else {
                     throw PortalNumbersAttachment.failure("차트 변경사항을 저장하지 못했습니다.")
                 }
                 onClose()
