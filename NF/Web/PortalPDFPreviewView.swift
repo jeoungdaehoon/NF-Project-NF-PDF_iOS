@@ -448,6 +448,8 @@ struct PortalPDFPreviewView: View {
             }
         case .markdown(let content):
             PortalMarkdownAttachmentView(markdown: content, title: item.title, onClose: closePDFPreview)
+        case .numbers(let chart):
+            PortalNumbersAttachmentView(item: activeItem, chart: chart, onClose: closePDFPreview)
         case .failed(let message):
             failedView(message: message)
         }
@@ -473,7 +475,7 @@ struct PortalPDFPreviewView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(portalTheme.surfaceColor)
-                } else if !isPDFPresentationModeEnabled, !isMarkdownPreview {
+                } else if !isPDFPresentationModeEnabled, !isMarkdownPreview, !isNumbersPreview {
                     pdfDocumentHistoryTabBar
                 }
                 previewStateContent
@@ -590,11 +592,16 @@ struct PortalPDFPreviewView: View {
 
     var showsPDFNavigationControls: Bool {
         !usesFullscreenTitleBar &&
-            (!isPDFPresentationModeEnabled || arePDFPresentationControlsVisible) && !isMarkdownPreview
+            (!isPDFPresentationModeEnabled || arePDFPresentationControlsVisible) && !isMarkdownPreview && !isNumbersPreview
     }
 
     var isMarkdownPreview: Bool {
         if case .markdown = state { return true }
+        return false
+    }
+
+    private var isNumbersPreview: Bool {
+        if case .numbers = state { return true }
         return false
     }
 
@@ -2370,27 +2377,44 @@ struct PortalPDFPreviewView: View {
             state = .loaded(localDocument)
             return
         }
-        let opensMarkdown = await isMarkdownAttachment(item)
+        let metadata = await attachmentMetadata(item)
         guard !Task.isCancelled, documentOpeningToken == token, item.id == openingItemID else { return }
-        if opensMarkdown {
+        if let id = PortalNumbersAttachment.sourceID(item.url), let metadata {
+            if let path = metadata.value(forHTTPHeaderField: "X-NF-Chart-Path"),
+               let chart = PortalNumbersAttachment.chart(path: path, name: metadata.suggestedFilename, sourceID: id) {
+                state = .numbers(chart)
+                return
+            }
+            if PortalNumbersAttachment.isNumbers(metadata) {
+                if let name = metadata.suggestedFilename { activeItem.title = name }
+                state = .numbers(nil)
+                return
+            }
+        }
+        if PortalMarkdownAttachment.isMarkdownFileName(item.title)
+            || PortalMarkdownAttachment.isMarkdownFileName(item.url.lastPathComponent)
+            || metadata.map(PortalMarkdownAttachment.isMarkdown) == true {
             await downloadAndOpenMarkdown()
             return
         }
         initialOpenPrompt = isPDFLocalStorageEnabled ? .localStorageEnabled : .localStorageDisabled
     }
 
-    private func isMarkdownAttachment(_ item: PortalAttachmentPreviewItem) async -> Bool {
+    private func attachmentMetadata(_ item: PortalAttachmentPreviewItem) async -> HTTPURLResponse? {
         if PortalMarkdownAttachment.isMarkdownFileName(item.title)
-            || PortalMarkdownAttachment.isMarkdownFileName(item.url.lastPathComponent) { return true }
+            || PortalMarkdownAttachment.isMarkdownFileName(item.url.lastPathComponent) { return nil }
         var request = URLRequest(url: item.url)
         request.httpMethod = "HEAD"
+        if PortalNumbersAttachment.sourceID(item.url) != nil {
+            request.setValue("native", forHTTPHeaderField: "X-NF-Attachment-Viewer")
+        }
         if let cookieHeader = item.cookieHeader {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
         guard let (_, response) = try? await URLSession.shared.data(for: request),
               let response = response as? HTTPURLResponse,
-              (200..<300).contains(response.statusCode) else { return false }
-        return PortalMarkdownAttachment.isMarkdown(response)
+              (200..<300).contains(response.statusCode) else { return nil }
+        return response
     }
 
     @MainActor

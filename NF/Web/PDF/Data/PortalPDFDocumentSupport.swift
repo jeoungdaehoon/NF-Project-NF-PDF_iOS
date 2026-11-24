@@ -174,6 +174,7 @@ enum PortalPDFPreviewLoadState {
     case loaded(PDFDocument)
     /// Markdown 첨부 파일을 문서로 표시할 준비가 된 상태입니다.
     case markdown(String)
+    case numbers(PortalNumbersChartLink?)
     /// PDF로 열 수 없거나 다운로드에 실패한 상태입니다.
     case failed(String)
 }
