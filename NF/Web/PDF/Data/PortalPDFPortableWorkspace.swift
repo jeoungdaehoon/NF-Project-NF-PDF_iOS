@@ -47,7 +47,10 @@ enum PortalPDFPortableWorkspace {
                 guard let copied = PDFDocument(data: blank)?.page(at: 0) else { return nil }
                 page = copied
             }
-            page.annotations.filter { $0.contents?.hasPrefix(marker) == true || $0.contents == sourceMarker || $0.contents?.hasPrefix(pageMarker) == true }.forEach(page.removeAnnotation)
+            page.annotations.filter {
+                $0.contents?.hasPrefix(marker) == true || $0.contents == sourceMarker ||
+                    $0.contents?.hasPrefix(pageMarker) == true || PDFDocumentMarkerAppearance.isDocumentMarker($0)
+            }.forEach(page.removeAnnotation)
             let tag = PDFAnnotation(bounds: .zero, forType: .text, withProperties: nil)
             tag.contents = pageMarker + String(saved["sourcePage"] as? Int ?? -1)
             tag.setValue(saved["id"] as? String ?? UUID().uuidString, forAnnotationKey: .name)
@@ -66,6 +69,13 @@ enum PortalPDFPortableWorkspace {
                 guard !frame.isEmpty, !page.annotations.contains(where: { $0.url == url && $0.bounds == frame }) else { continue }
                 let annotation = PDFAnnotation(bounds: frame, forType: .link, withProperties: nil)
                 annotation.url = url
+                if entry["noteMarker"] as? Bool == true {
+                    annotation.contents = "nf-note-marker"
+                    annotation.url = PDFDocumentMarkerAppearance.linkURL(for: annotation)
+                }
+                let border = PDFBorder()
+                border.lineWidth = 0
+                annotation.border = border
                 page.addAnnotation(annotation)
             }
             edits.pages.append(.init(pageIndex: index, objects: converted))
@@ -107,8 +117,7 @@ enum PortalPDFPortableWorkspace {
             } ?? []
             let toScreen = screenToPDF(page).inverted()
             for annotation in page.annotations {
-                guard let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
-                      url.scheme == "https", url.path == "/pdf-free-note",
+                guard let url = PDFDocumentMarkerAppearance.linkURL(for: annotation),
                       !objects.contains(where: { $0["link"] as? String == url.absoluteString &&
                           ($0["id"] as? String)?.lowercased() == url.fragment?.lowercased() })
                 else { continue }
@@ -118,7 +127,8 @@ enum PortalPDFPortableWorkspace {
                 if !seenObjects.insert(linkId).inserted { linkId = UUID().uuidString; seenObjects.insert(linkId) }
                 objects.append(["id": linkId, "kind": "shape", "shape": "rectangle", "bounds":
                     ["x": frame.minX, "y": frame.minY, "width": frame.width, "height": frame.height],
-                    "color": 0, "fillColor": 0, "lineWidth": 0.1, "fontSize": 16, "rotation": 0, "link": url.absoluteString])
+                    "color": 0, "fillColor": 0, "lineWidth": 0.1, "fontSize": 16, "rotation": 0,
+                    "noteMarker": PDFDocumentMarkerAppearance.isDocumentMarker(annotation), "link": url.absoluteString])
             }
             return ["id": id, "sourcePage": tagged.map { $0 >= 0 ? $0 as Any : NSNull() } ?? (stored == nil ? index as Any : NSNull()), "width": rotated ? bounds.height : bounds.width, "height": rotated ? bounds.width : bounds.height, "favorite": oldPages.first { $0["id"] as? String == id }?["favorite"] as? Bool ?? false, "objects": objects]
         }
@@ -130,7 +140,7 @@ enum PortalPDFPortableWorkspace {
         metadata.contents = marker + String(decoding: json, as: UTF8.self)
         metadata.setValue(source.base64EncodedString(), forAnnotationKey: sourceKey)
         metadata.shouldDisplay = false; metadata.shouldPrint = false; first.addAnnotation(metadata)
-        return flat.dataRepresentation()
+        return flat.dataRepresentation().flatMap { PDFDocumentMarkerAppearance.embed(in: $0) }
     }
 
     /// A document-level reference keeps the immutable source alive when its first page is deleted.

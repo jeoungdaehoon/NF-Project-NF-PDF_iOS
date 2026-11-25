@@ -537,6 +537,11 @@ final class PortalPDFPageEditRepository {
     /// 두 데이터를 합성한 일반 PDF를 전달합니다.
     func flattenedPDFData(basePDFData: Data, identifier: String) -> Data? {
         guard let document = PDFDocument(data: basePDFData) else { return nil }
+        for index in 0..<document.pageCount {
+            if let page = document.page(at: index) {
+                PDFDocumentMarkerAppearance.removeStoredAppearance(on: page)
+            }
+        }
         if let pageEdits = load(identifier: identifier) {
             pageEdits.installInteractionProxies(in: document)
         }

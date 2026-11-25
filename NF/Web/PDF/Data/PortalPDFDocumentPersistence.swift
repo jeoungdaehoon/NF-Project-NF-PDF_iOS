@@ -294,8 +294,7 @@ extension PDFDocument {
             context.scaleBy(x: 1, y: -1)
             page.draw(with: .mediaBox, to: context)
             for annotation in page.annotations {
-                if let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
-                   url.scheme == "https", url.path == "/pdf-free-note" {
+                if let url = PDFDocumentMarkerAppearance.linkURL(for: annotation) {
                     context.setURL(url as CFURL, for: annotation.bounds)
                 }
             }

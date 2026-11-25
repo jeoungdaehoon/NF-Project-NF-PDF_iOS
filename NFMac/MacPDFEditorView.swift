@@ -183,10 +183,17 @@ struct MacPDFEditorView: View {
                     Picker("페이지 이동 버튼 위치", selection: $state.pageControlPosition) { Text("아래").tag("bottom"); Text("왼쪽").tag("left"); Text("오른쪽").tag("right") }
                     .pickerStyle(.menu)
                 }
-                Button("저장") { Task { await state.save() } }.disabled(state.isSaving)
-                    .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
-                MacPDFActionButton(title: "PDF 다운로드", identifier: "pdf.download") { sharing.download(state) }.frame(width: 90, height: 22)
-                Button { sharing.share(state) } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
+                Button("저장") {
+                    Task { if await freeNotes.flush() { await state.save() } }
+                }
+                .disabled(state.isSaving)
+                .help(state.sourceURL == nil ? "이 Mac의 문서와 편집 정보를 저장합니다. 서버 첨부 파일은 변경하지 않습니다." : "편집 내용을 포함한 PDF로 기존 서버 첨부 파일을 교체하고 저장 결과를 확인합니다.")
+                MacPDFActionButton(title: "PDF 다운로드", identifier: "pdf.download") {
+                    Task { if await freeNotes.flush() { sharing.download(state) } }
+                }.frame(width: 90, height: 22)
+                Button {
+                    Task { if await freeNotes.flush() { sharing.share(state) } }
+                } label: { Image(systemName: "square.and.arrow.up") }.help("편집 PDF 외부 공유")
                 Menu("더보기") {
                     Button(isFullscreen ? "전체화면 종료" : "전체화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") { toggleFullscreen() }
                     Button("문서 연결 보드", systemImage: "point.3.connected.trianglepath.dotted") { modal = .board }

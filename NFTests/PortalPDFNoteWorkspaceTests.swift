@@ -98,4 +98,57 @@ final class PortalPDFNoteWorkspaceTests: XCTestCase {
         XCTAssertGreaterThan(PDFNotePlacement.zoomedFrame(frame, by: CGSize(width: 40, height: -40)).width, frame.width)
         XCTAssertLessThan(PDFNotePlacement.zoomedFrame(frame, by: CGSize(width: -40, height: 40)).width, frame.width)
     }
+
+    func testEditingMarkerReopensItsDetailAndTakesPriorityOverPlacement() async throws {
+        let state = PDFNoteWorkspaceState(origin: URL(string: "https://example.test")!)
+        let page = PDFPage()
+        page.setBounds(CGRect(x: 0, y: 0, width: 400, height: 500), for: .mediaBox)
+        let document = PDFDocument()
+        document.insert(page, at: 0)
+        let view = PDFView(frame: CGRect(x: 0, y: 0, width: 400, height: 500))
+        view.document = document
+        #if os(macOS)
+        view.layoutSubtreeIfNeeded()
+        #else
+        view.layoutIfNeeded()
+        #endif
+        state.attach(view)
+        state.activate(document, source: nil, localID: nil, note: nil)
+        state.changeDocument = { _, edit in edit() }
+        state.documentTool = true
+
+        let location = view.convert(CGPoint(x: 200, y: 250), from: page)
+        XCTAssertTrue(state.placeDocument(at: location))
+        let detail = URL(string: "https://example.test/linked-document/example?tab=workspace&source=chart")!
+        state.selectPortalPage(detail)
+        let marker = try XCTUnwrap(state.anchors(on: page).first)
+        XCTAssertEqual(state.sessions.first?.target, detail)
+        await state.close(marker.id, animated: false)
+
+        state.editingMarkerID = marker.id
+        state.openMarker(marker)
+        XCTAssertNil(state.editingMarkerID)
+        XCTAssertEqual(state.sessions.first?.target, detail)
+        await state.close(marker.id, animated: false)
+
+        state.editingMarkerID = marker.id
+        XCTAssertTrue(state.placeDocument(at: location))
+        XCTAssertNil(state.destination)
+        XCTAssertNil(state.editingMarkerID)
+        XCTAssertEqual(state.sessions.first?.target, detail)
+        XCTAssertEqual(page.annotations.count, 1)
+
+        await state.close(marker.id, animated: false)
+        XCTAssertTrue(state.canEditMarker(marker.id))
+        state.editingMarkerID = marker.id
+        state.documentTool = false
+
+        XCTAssertNil(state.editingMarkerID)
+        XCTAssertEqual(state.canEditMarker(marker.id), false)
+        XCTAssertEqual(state.placeDocument(at: location), false)
+        XCTAssertTrue(state.openDocumentMarker(at: location))
+        XCTAssertEqual(state.sessions.first?.target, detail)
+        XCTAssertNil(state.destination)
+        XCTAssertEqual(page.annotations.count, 1)
+    }
 }

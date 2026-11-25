@@ -103,7 +103,7 @@ struct MacPortalWebView: NSViewRepresentable {
         controller.addUserScript(WKUserScript(source: Self.hideEditingAssistantBarScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         configuration.websiteDataStore = .default()
         configuration.userContentController = controller
-        configuration.applicationNameForUserAgent = "NFPortalMac/\(MacAppVersion.number) \(DetailPDFWorkspace.userAgentToken)"
+        configuration.applicationNameForUserAgent = "\(MacAppVersion.userAgentToken) \(DetailPDFWorkspace.userAgentToken)"
         configuration.defaultWebpagePreferences.preferredContentMode = .desktop
         configuration.preferences.isElementFullscreenEnabled = true
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")

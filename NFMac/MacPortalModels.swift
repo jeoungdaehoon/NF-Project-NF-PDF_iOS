@@ -61,6 +61,7 @@ enum MacAppVersion {
     }
 
     static var displayText: String { "v\(number) Build \(build)" }
+    static var userAgentToken: String { "NFPortalMac/\(number)+\(build)" }
 }
 
 enum MacPortalAppearance: String, CaseIterable, Identifiable {

@@ -3,6 +3,7 @@ import AppKit
 #else
 import UIKit
 #endif
+import PDFKit
 import SwiftUI
 
 struct PDFDocumentIcon: Identifiable {
@@ -195,6 +196,89 @@ struct PDFDocumentMarkerView: View {
             .frame(width: size, height: size)
             .background(style.background, in: RoundedRectangle(cornerRadius: size * 0.23))
             .accessibilityHidden(true)
+    }
+}
+
+/// The editor draws an interactive SwiftUI marker. A standard PDF reader needs
+/// the same marker as the appearance of the link annotation.
+enum PDFDocumentMarkerAppearance {
+    private static let markerContents = "nf-note-marker"
+
+    static func linkURL(for annotation: PDFAnnotation) -> URL? {
+        guard let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
+              url.scheme == "https", url.path == "/pdf-free-note" else { return nil }
+        guard annotation.contents == markerContents,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var query = parts.queryItems ?? []
+        if !query.contains(where: { $0.name == "marker" && $0.value == "1" }) {
+            query.removeAll { $0.name == "marker" }
+            query.append(.init(name: "marker", value: "1"))
+            parts.queryItems = query
+        }
+        return parts.url ?? url
+    }
+
+    static func isDocumentMarker(_ annotation: PDFAnnotation) -> Bool {
+        linkURL(for: annotation).flatMap(markerStyle(for:)) != nil
+    }
+
+    private static func markerStyle(for url: URL) -> PDFDocumentMarkerStyle? {
+        guard let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              query.contains(where: { $0.name == "marker" && $0.value == "1" }) else { return nil }
+        return PDFDocumentMarkerStyle(query: query)
+    }
+
+    @MainActor
+    static func embed(in data: Data) -> Data? {
+        guard let document = PDFDocument(data: data) else { return nil }
+        var changed = false
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for link in page.annotations {
+                guard let url = linkURL(for: link), let style = markerStyle(for: url) else { continue }
+                let renderer = ImageRenderer(content: PDFDocumentMarkerView(style: style, size: 64))
+                renderer.scale = 2
+                guard let image = renderer.cgImage else { return nil }
+                let marker = AppearanceLink(bounds: link.bounds, forType: .link, withProperties: nil)
+                marker.image = image
+                configure(marker, url: url)
+                page.removeAnnotation(link)
+                page.addAnnotation(marker)
+                changed = true
+            }
+        }
+        return changed ? document.dataRepresentation() : data
+    }
+
+    /// Keep the link, bounds and style editable when an exported PDF is opened
+    /// again in NF. The editor supplies the appearance at its own display scale.
+    static func removeStoredAppearance(on page: PDFPage) {
+        for annotation in page.annotations where annotation.hasAppearanceStream {
+            guard let url = linkURL(for: annotation), markerStyle(for: url) != nil else { continue }
+            let link = PDFAnnotation(bounds: annotation.bounds, forType: .link, withProperties: nil)
+            configure(link, url: url)
+            page.removeAnnotation(annotation)
+            page.addAnnotation(link)
+        }
+    }
+
+    private static func configure(_ annotation: PDFAnnotation, url: URL) {
+        let border = PDFBorder()
+        border.lineWidth = 0
+        annotation.border = border
+        annotation.contents = markerContents
+        annotation.action = PDFActionURL(url: url)
+    }
+
+    private final class AppearanceLink: PDFAnnotation {
+        var image: CGImage?
+
+        override func draw(with box: PDFDisplayBox, in context: CGContext) {
+            guard let image else { return }
+            let size = min(bounds.width, bounds.height)
+            context.draw(image, in: CGRect(x: bounds.midX - size / 2, y: bounds.midY - size / 2,
+                                           width: size, height: size))
+        }
     }
 }
 

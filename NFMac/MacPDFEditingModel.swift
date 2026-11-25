@@ -273,6 +273,11 @@ final class MacPDFEditorState: ObservableObject {
                 detailSourceDigest = detailWorkspace.digest
             }
         }
+        for index in 0..<self.document.pageCount {
+            if let page = self.document.page(at: index) {
+                PDFDocumentMarkerAppearance.removeStoredAppearance(on: page)
+            }
+        }
         if !archiveReadFailed { importEditableAnnotations() }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.style"), let saved = try? JSONDecoder().decode(MacPDFStyle.self, from: data) { style = saved }
         if let data = UserDefaults.standard.data(forKey: "nf.mac.pdf.palette"), let saved = try? JSONDecoder().decode([MacPDFRGBA].self, from: data), !saved.isEmpty { palette = saved }
@@ -672,8 +677,7 @@ final class MacPDFEditorState: ObservableObject {
             context.beginPDFPage([kCGPDFContextMediaBox as String: boxData] as CFDictionary)
             page.draw(with: .mediaBox, to: context)
             for annotation in page.annotations {
-                if let url = annotation.url ?? (annotation.action as? PDFActionURL)?.url,
-                   url.scheme == "https", url.path == "/pdf-free-note" {
+                if let url = PDFDocumentMarkerAppearance.linkURL(for: annotation) {
                     context.setURL(url as CFURL, for: annotation.bounds)
                 }
             }
@@ -683,7 +687,8 @@ final class MacPDFEditorState: ObservableObject {
             }
             context.endPDFPage()
         }
-        context.closePDF(); return data as Data
+        context.closePDF()
+        return PDFDocumentMarkerAppearance.embed(in: data as Data)
     }
     @discardableResult func persist() -> Bool {
         guard !archiveReadFailed else { error = "기존 편집 파일을 읽을 수 없어 덮어쓰지 않습니다. 현재 화면은 PDF 다운로드로 보관해 주세요."; return false }

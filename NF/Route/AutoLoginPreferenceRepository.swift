@@ -180,6 +180,7 @@ final class PortalPDFLocalStorageRepository {
         var isFavorite: Bool
         var deletedAt: Date?
         var folderID: String?
+        var remotePDFDigest: String? = nil
     }
 
     private struct FolderMetadata: Codable {
@@ -207,11 +208,29 @@ final class PortalPDFLocalStorageRepository {
         return try? Data(contentsOf: fileURL, options: [.mappedIfSafe])
     }
 
+    func cachedPDF(matching remoteData: Data, for item: PortalAttachmentPreviewItem) -> Data? {
+        guard metadata(for: cacheIdentifier(for: item))?.remotePDFDigest == Self.pdfDigest(remoteData) else { return nil }
+        return data(for: item)
+    }
+
+    func saveDownloadedPDF(_ remoteData: Data, for item: PortalAttachmentPreviewItem) throws {
+        let identifier = cacheIdentifier(for: item)
+        // A cache without a confirmed server revision may hold a failed upload or a legacy working copy.
+        if fileManager.fileExists(atPath: cacheFileURL(for: item).path),
+           metadata(for: identifier)?.remotePDFDigest == nil { return }
+        try save(remoteData, for: item, remoteData: remoteData)
+    }
+
+    private static func pdfDigest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
     /** PDF 데이터를 로컬 캐시에 원자적으로 저장합니다. */
     func save(
         _ data: Data,
         for item: PortalAttachmentPreviewItem,
-        notifyObservers: Bool = true
+        notifyObservers: Bool = true,
+        remoteData: Data? = nil
     ) throws {
         try fileManager.createDirectory(at: cacheDirectoryURL, withIntermediateDirectories: true)
         let identifier = item.localDocumentID ?? cacheIdentifier(for: item)
@@ -232,7 +251,8 @@ final class PortalPDFLocalStorageRepository {
             modifiedAt: now,
             isFavorite: existingMetadata?.isFavorite ?? false,
             deletedAt: nil,
-            folderID: existingMetadata?.folderID
+            folderID: existingMetadata?.folderID,
+            remotePDFDigest: remoteData.map(Self.pdfDigest)
         )
         try save(metadata)
         if notifyObservers {

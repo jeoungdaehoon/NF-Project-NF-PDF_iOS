@@ -44,7 +44,10 @@ final class PDFNoteWorkspaceState: ObservableObject {
     @Published var selectingArea = false
     @Published var documentTool = false {
         didSet {
-            if !documentTool { showsDocumentOptions = false }
+            if !documentTool {
+                showsDocumentOptions = false
+                editingMarkerID = nil
+            }
         }
     }
     @Published var destination: URL?
@@ -137,7 +140,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
               let note = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "note" })?.value else { return false }
         let nearby = view.visiblePages.flatMap(anchors(on:))
         let anchor = nearby.first { $0.id == url.fragment } ?? nearby.first { $0.note == note }
-        if let anchor { open(id: anchor.id, note: anchor.note) }
+        if let anchor { openMarker(anchor) }
         else { reopen(note) }
         return true
     }
@@ -193,6 +196,9 @@ final class PDFNoteWorkspaceState: ObservableObject {
     func placeDocument(at point: CGPoint) -> Bool {
         guard documentTool, destination == nil, let canvas,
               let page = canvas.page(for: point, nearest: false) else { return false }
+        // Canvas events can reach PDFKit while the document tool is active.
+        // An existing marker at the click location takes priority over placement.
+        if openDocumentMarker(at: point) { return true }
         let rect = CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20)
         let bounds = canvas.convert(rect, to: page).standardized
         guard !bounds.isEmpty, !bounds.isNull else { return false }
@@ -201,6 +207,27 @@ final class PDFNoteWorkspaceState: ObservableObject {
         showsDocumentOptions = false
         chooseNote(target)
         return true
+    }
+
+    func documentMarker(at point: CGPoint) -> Anchor? {
+        guard let canvas, let page = canvas.page(for: point, nearest: false) else { return nil }
+        return anchors(on: page).reversed().first { anchor in
+            guard anchor.isDocumentMarker else { return false }
+            let frame = canvas.convert(anchor.bounds, from: page).standardized
+            let radius = max(24, min(frame.width, frame.height)) / 2
+            return abs(point.x - frame.midX) <= radius && abs(point.y - frame.midY) <= radius
+        }
+    }
+
+    @discardableResult
+    func openDocumentMarker(at point: CGPoint) -> Bool {
+        guard let marker = documentMarker(at: point) else { return false }
+        openMarker(marker)
+        return true
+    }
+
+    func canEditMarker(_ id: String) -> Bool {
+        documentTool && !sessions.contains { $0.id == id && !$0.collapsed }
     }
 
     func capture(_ frame: CGRect) {
@@ -460,6 +487,13 @@ final class PDFNoteWorkspaceState: ObservableObject {
         }
     }
 
+    func openMarker(_ anchor: Anchor) {
+        let dockedMode = sessions.last { $0.mode.showsLinkedMarker }?.mode
+        if destination != nil { cancelPicker() }
+        open(id: anchor.id, note: anchor.note)
+        if let dockedMode { mode(dockedMode, for: anchor.id) }
+    }
+
     func collapse(_ id: String) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
         sessions[index].mode = .popup
@@ -591,12 +625,14 @@ private final class PDFNoteLinkDelegate: NSObject, @preconcurrency PDFViewDelega
 #if os(iOS)
 extension PDFNoteLinkDelegate: @preconcurrency UIGestureRecognizerDelegate {
     @objc func placeDocument(_ gesture: UITapGestureRecognizer) {
-        guard gesture.state == .ended, let view = gesture.view else { return }
-        workspace?.placeDocument(at: gesture.location(in: view))
+        guard gesture.state == .ended, let view = gesture.view, let workspace else { return }
+        let point = gesture.location(in: view)
+        if !workspace.openDocumentMarker(at: point) { workspace.placeDocument(at: point) }
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        workspace?.documentTool == true && workspace?.destination == nil
+        guard let workspace, let view = gestureRecognizer.view, workspace.destination == nil else { return false }
+        return workspace.documentTool || workspace.documentMarker(at: gestureRecognizer.location(in: view)) != nil
     }
 }
 #endif
@@ -844,10 +880,9 @@ struct PDFNoteWorkspace<Editor: View>: View {
                         if anchor.isDocumentMarker {
                             PDFDocumentMarkerControl(state: state, anchor: anchor, frame: frame,
                                 active: active,
-                                canEdit: !state.sessions.contains { $0.id == anchor.id && !$0.collapsed },
-                                onOpen: { openMarker(anchor, using: docked?.mode) })
+                                canEdit: state.canEditMarker(anchor.id))
                         } else {
-                            standardMarkerButton(anchor, frame: frame, dockedMode: docked?.mode, active: active)
+                            standardMarkerButton(anchor, frame: frame, active: active)
                                 .position(markerCenter(frame, documentMarker: false, pdfWidth: visiblePDFWidth, height: size.height))
                         }
                     }
@@ -914,14 +949,8 @@ struct PDFNoteWorkspace<Editor: View>: View {
                 y: min(height - 16, max(16, frame.midY)))
     }
 
-    private func openMarker(_ anchor: PDFNoteWorkspaceState.Anchor, using dockedMode: PDFNoteWorkspaceState.Mode?) {
-        state.open(id: anchor.id, note: anchor.note)
-        if let dockedMode { state.mode(dockedMode, for: anchor.id) }
-    }
-
-    private func standardMarkerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect,
-                                      dockedMode: PDFNoteWorkspaceState.Mode?, active: Bool) -> some View {
-        Button { openMarker(anchor, using: dockedMode) } label: {
+    private func standardMarkerButton(_ anchor: PDFNoteWorkspaceState.Anchor, frame: CGRect, active: Bool) -> some View {
+        Button { state.openMarker(anchor) } label: {
             Image(systemName: "doc.text")
                 .font(.system(size: anchor.isDocumentMarker ? max(8, frame.height * 0.7) : 12, weight: .semibold))
                 .frame(width: anchor.isDocumentMarker ? max(14, frame.width) : 25,
@@ -954,13 +983,12 @@ private struct PDFDocumentMarkerControl: View {
     let frame: CGRect
     let active: Bool
     let canEdit: Bool
-    let onOpen: () -> Void
     @State private var preview: CGRect?
     @State private var startingFrame: CGRect?
     @State private var movingAfterHold = false
     @State private var directMove = false
 
-    private var editing: Bool { state.editingMarkerID == anchor.id }
+    private var editing: Bool { canEdit && state.editingMarkerID == anchor.id }
     private let corners: [UnitPoint] = [.topLeading, .topTrailing, .bottomLeading, .bottomTrailing]
     private let cornerNames = ["왼쪽 위", "오른쪽 위", "왼쪽 아래", "오른쪽 아래"]
 
@@ -968,11 +996,36 @@ private struct PDFDocumentMarkerControl: View {
         let displayed = preview ?? frame
         let iconSize = max(1, min(displayed.width, displayed.height))
         ZStack(alignment: .topLeading) {
-            PDFDocumentMarkerView(style: anchor.markerStyle, size: iconSize)
-                .pdfActiveDocumentMarker(active)
-                .frame(width: max(24, iconSize), height: max(24, iconSize))
-                .contentShape(Rectangle())
-                .gesture(holdToMove.exclusively(before: TapGesture().onEnded { _ in activate() }))
+            markerControl(iconSize: iconSize)
+                .accessibilityLabel("연결된 문서 열기")
+                .accessibilityAddTraits(active ? .isSelected : [])
+                .position(x: displayed.midX, y: displayed.midY)
+            if editing {
+                resizeHandles(displayed)
+            }
+        }
+        .onChange(of: editing) { _, isEditing in
+            if !isEditing {
+                preview = nil
+                startingFrame = nil
+                movingAfterHold = false
+                directMove = false
+            }
+        }
+    }
+
+    private func markerFace(_ iconSize: CGFloat) -> some View {
+        PDFDocumentMarkerView(style: anchor.markerStyle, size: iconSize)
+            .pdfActiveDocumentMarker(active)
+            .frame(width: max(24, iconSize), height: max(24, iconSize))
+            .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private func markerControl(iconSize: CGFloat) -> some View {
+        if canEdit {
+            markerFace(iconSize)
+                .gesture(holdToMove.exclusively(before: TapGesture().onEnded { state.openMarker(anchor) }))
                 .simultaneousGesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
                     .onChanged { value in
                         guard editing, canEdit, !movingAfterHold else { return }
@@ -984,44 +1037,39 @@ private struct PDFDocumentMarkerControl: View {
                         finish()
                     })
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("연결된 문서 열기")
                 .accessibilityAddTraits(.isButton)
-                .accessibilityAddTraits(active ? .isSelected : [])
-                .accessibilityAction { activate() }
+                .accessibilityAction { state.openMarker(anchor) }
                 .accessibilityAction(named: Text("문서 아이콘 편집")) {
-                    if canEdit { state.editingMarkerID = anchor.id }
+                    state.editingMarkerID = anchor.id
                 }
-                .position(x: displayed.midX, y: displayed.midY)
-            if editing {
-                Rectangle().strokeBorder(.tint, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                    .frame(width: displayed.width, height: displayed.height)
-                    .position(x: displayed.midX, y: displayed.midY)
-                    .allowsHitTesting(false)
-                ForEach(corners.indices, id: \.self) { index in
-                    let corner = corners[index]
-                    let outwardX = corner.x == 0 ? -5.0 : 5.0
-                    let outwardY = corner.y == 0 ? -5.0 : 5.0
-                    Circle().fill(.background).overlay { Circle().strokeBorder(.tint) }
-                        .frame(width: 7, height: 7)
-                        .offset(x: -outwardX, y: -outwardY)
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
-                        .position(x: displayed.minX + displayed.width * corner.x + outwardX,
-                                  y: displayed.minY + displayed.height * corner.y + outwardY)
-                        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
-                            .onChanged { update($0.translation, corner: corner) }
-                            .onEnded { _ in finish() })
-                        .accessibilityLabel("문서 아이콘 크기 조절 \(cornerNames[index])")
-                }
-            }
+        } else {
+            Button { state.openMarker(anchor) } label: { markerFace(iconSize) }
+                .buttonStyle(.plain)
         }
-        .onChange(of: editing) { _, isEditing in
-            if !isEditing {
-                preview = nil
-                startingFrame = nil
-                movingAfterHold = false
-                directMove = false
-            }
+    }
+
+    @ViewBuilder
+    private func resizeHandles(_ displayed: CGRect) -> some View {
+        Rectangle().strokeBorder(.tint, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .frame(width: displayed.width, height: displayed.height)
+            .position(x: displayed.midX, y: displayed.midY)
+            .allowsHitTesting(false)
+        ForEach(corners.indices, id: \.self) { index in
+            let corner = corners[index]
+            let handleSize: CGFloat = 22
+            let outwardX = (corner.x == 0 ? -1 : 1) * (handleSize / 2 - min(6, displayed.width / 4))
+            let outwardY = (corner.y == 0 ? -1 : 1) * (handleSize / 2 - min(6, displayed.height / 4))
+            Circle().fill(.background).overlay { Circle().strokeBorder(.tint) }
+                .frame(width: 7, height: 7)
+                .offset(x: -outwardX, y: -outwardY)
+                .frame(width: handleSize, height: handleSize)
+                .contentShape(Rectangle())
+                .position(x: displayed.minX + displayed.width * corner.x + outwardX,
+                          y: displayed.minY + displayed.height * corner.y + outwardY)
+                .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("PDFNoteWorkspace"))
+                    .onChanged { update($0.translation, corner: corner) }
+                    .onEnded { _ in finish() })
+                .accessibilityLabel("문서 아이콘 크기 조절 \(cornerNames[index])")
         }
     }
 
@@ -1046,11 +1094,6 @@ private struct PDFDocumentMarkerControl: View {
                 movingAfterHold = false
                 finish()
             }
-    }
-
-    private func activate() {
-        if state.editingMarkerID == nil { onOpen() }
-        else if !editing { state.editingMarkerID = nil }
     }
 
     private func update(_ delta: CGSize, corner: UnitPoint? = nil) {

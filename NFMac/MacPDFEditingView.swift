@@ -504,7 +504,10 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             commandStart = (event.locationInWindow.x, scaleFactor); editingCursor.set()
             return
         }
-        if freeNotes?.placeDocument(at: convert(event.locationInWindow, from: nil)) == true {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        if freeNotes?.placeDocument(at: viewPoint) == true
+            || ([MacPDFTool.view, .select].contains(editor.tool)
+                && freeNotes?.openDocumentMarker(at: viewPoint) == true) {
             placingDocument = true
             return
         }
@@ -517,7 +520,6 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         clearSelection()
         finishTextEditing(); window?.makeFirstResponder(self); activeTool = editor.tool; editor.menuVisible = false
         activeNeonType = editor.neonType
-        let viewPoint = convert(event.locationInWindow, from: nil)
         if editor.tool == .view || event.modifierFlags.contains(.option) {
             // Let the hand tool drag the document even when it starts over an annotation.
             panStart = viewPoint

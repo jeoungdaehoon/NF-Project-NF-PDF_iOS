@@ -552,12 +552,14 @@
     for (const object of [...objects, ...transient]) {
       const node = renderObject(object);
       node.setAttribute('data-pdf-rendered', object.id);
-      if (['select', 'connector'].includes(active) || (active === 'view' && ['document', 'link'].includes(object.kind))) {
+      const documentMarker = object.kind === 'document';
+      if (documentMarker) node.setAttribute('data-pdf-document-marker', '');
+      if (documentMarker || ['select', 'connector'].includes(active) || (active === 'view' && object.kind === 'link')) {
         node.setAttribute('data-pdf-object', object.id);
         if (active !== 'view') node.setAttribute('pointer-events', 'bounding-box');
       }
       nodes.push(node);
-      if (object.id === selected || object.id === connectorSource) {
+      if (!documentMarker && (object.id === selected || object.id === connectorSource)) {
         const rect = box(object);
         nodes.push(svg('rect', { x: rect.x - 4, y: rect.y - 4, width: rect.w + 8, height: rect.h + 8,
           fill: 'none', stroke: 'var(--theme-accent, #2563eb)', 'stroke-dasharray': '4 3', 'pointer-events': 'none' }));
@@ -689,6 +691,7 @@
 
   listen(layer, 'pointerdown', event => {
     if (closed || closing || active === 'view' || active === 'image' || !event.isPrimary || event.button !== 0) return;
+    if (event.target.closest('[data-pdf-document-marker]')) return;
     if (active === 'hand' && event.pointerType === 'touch') return;
     event.preventDefault();
     event.stopPropagation();
@@ -993,7 +996,7 @@
   listen(drawing, 'click', event => {
     const id = event.target.closest('[data-pdf-object]')?.getAttribute('data-pdf-object');
     const object = objects.find(item => item.id === id);
-    if (active !== 'view' || !object) return;
+    if (!object || (object.kind !== 'document' && active !== 'view')) return;
     event.preventDefault();
     event.stopPropagation();
     if (object.kind === 'document') showDocument(object);
