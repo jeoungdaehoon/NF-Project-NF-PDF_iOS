@@ -23,6 +23,7 @@ struct MacNumbersGrid: NSViewRepresentable {
     let onCancelEdit: () -> Void
     let onFind: () -> Void
     let onFindNext: (Bool) -> Void
+    var accessibilityID = "numbers.grid"
 
     func makeCoordinator() -> Coordinator { Coordinator(grid: self) }
 
@@ -39,7 +40,7 @@ struct MacNumbersGrid: NSViewRepresentable {
         view.selectionHighlightStyle = .none
         view.intercellSpacing = .zero
         view.rowHeight = 26
-        view.setAccessibilityIdentifier("numbers.grid")
+        view.setAccessibilityIdentifier(accessibilityID)
         view.target = context.coordinator
         view.doubleAction = #selector(Coordinator.editClickedCell(_:))
         view.coordinator = context.coordinator

@@ -967,6 +967,15 @@ struct MacPortalToolbar: View {
     let onSearch: () -> Void
     var onSelectSlideDestination: (MacPortalSlideDestination) -> Void = { _ in }
 
+    private var slideDestinationSymbol: String {
+        guard isSplit else { return "rectangle.split.2x1" }
+        switch preferences.slideDestination {
+        case .current: return "rectangle.split.2x1.fill"
+        case .right: return "rectangle.righthalf.filled"
+        case .left: return "rectangle.lefthalf.filled"
+        }
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             if showsSidebarButton {
@@ -1054,27 +1063,31 @@ struct MacPortalToolbar: View {
             if showsTrailingControls {
                 Menu {
                     Text("슬라이드 팝업 표시 위치")
-                    ForEach(MacPortalSlideDestination.allCases) { destination in
-                        Button {
-                            onSelectSlideDestination(destination)
-                        } label: {
-                            if preferences.slideDestination == destination {
-                                Label(destination.title, systemImage: "checkmark")
-                            } else { Text(destination.title) }
+                    Picker("슬라이드 팝업 표시 위치", selection: Binding(
+                        get: { preferences.slideDestination },
+                        set: onSelectSlideDestination
+                    )) {
+                        ForEach(MacPortalSlideDestination.allCases) { destination in
+                            Text(destination.title)
+                                .tag(destination)
+                                .accessibilityIdentifier("portal.slideDestination.\(destination.rawValue)")
                         }
-                        .accessibilityIdentifier("portal.slideDestination.\(destination.rawValue)")
                     }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
                     Divider()
                     Button(isSplit ? "좌우 분할 닫기" : "좌우 분할 열기") { onToggleSplit() }
                     Text("고정 위치를 선택하면 반대쪽에서 연 문서도 해당 영역에 표시됩니다.")
                 } label: {
-                    Image(systemName: isSplit ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                    Image(systemName: slideDestinationSymbol)
                         .frame(width: 20, height: 20, alignment: .center)
                         .offset(y: -2)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("슬라이드 표시 위치 및 좌우 분할 설정")
+                .help("슬라이드 표시 위치 · \(preferences.slideDestination.title)")
+                .accessibilityLabel("슬라이드 표시 위치 및 좌우 분할 설정")
+                .accessibilityValue(preferences.slideDestination.title)
                 .accessibilityIdentifier("portal.slideDestination")
                 Rectangle()
                     .fill(separatorColor)

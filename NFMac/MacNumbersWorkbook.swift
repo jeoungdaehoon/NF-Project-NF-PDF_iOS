@@ -3,7 +3,7 @@ import Carbon
 import CryptoKit
 import UniformTypeIdentifiers
 
-struct MacNumbersCell: Hashable {
+nonisolated struct MacNumbersCell: Hashable, Sendable {
     let sheet: Int
     let table: Int
     let row: Int
@@ -12,7 +12,7 @@ struct MacNumbersCell: Hashable {
     var address: String { MacCSVDocument.columnTitle(column) + String(row + 1) }
 }
 
-struct MacNumbersTable {
+nonisolated struct MacNumbersTable: Sendable {
     let name: String
     let rowCount: Int
     let columnCount: Int
@@ -25,12 +25,12 @@ struct MacNumbersTable {
     }
 }
 
-struct MacNumbersSheet {
+nonisolated struct MacNumbersSheet: Sendable {
     let name: String
     let tables: [MacNumbersTable]
 }
 
-struct MacNumbersContents {
+nonisolated struct MacNumbersContents: Sendable {
     let sheets: [MacNumbersSheet]
 
     func matches(_ query: String) -> [MacNumbersCell] {

@@ -650,6 +650,7 @@ struct MacRemotePDFPreviewView: View {
     @State private var chartFileError: String?
     @State private var chartSaveError = false
     @State private var numbersFindRequest = 0
+    @State private var excelFindRequest = 0
     @State private var csvDocument: MacCSVDocument?
     @State private var isParsingCSV = false
     @StateObject private var markdownPreviewController = MacMarkdownPreviewController()
@@ -845,6 +846,20 @@ struct MacRemotePDFPreviewView: View {
                         .lineLimit(1)
                         .help(attachmentPreviewDescription)
                     Spacer()
+                    if quickLookFile?.kind == .excel {
+                        Button {
+                            excelFindRequest &+= 1
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                                .frame(width: 28, height: 24)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut("f", modifiers: .command)
+                        .help("Excel 셀 검색 ⌘F")
+                        .accessibilityLabel("Excel 셀 검색")
+                        .accessibilityIdentifier("excel.find")
+                    }
                     if let onTogglePaneExpanded, !isFullscreen {
                         MacPDFActionButton(title: "", symbol: "rectangle.split.2x1",
                                            identifier: "attachment.viewer.quickLook.expandPane",
@@ -890,7 +905,12 @@ struct MacRemotePDFPreviewView: View {
                                       chartSource: request.url, cookieHeader: request.cookieHeader,
                                       onChartCreated: showChart)
                 } else if let quickLookFile {
-                    MacAttachmentQuickLookView(file: quickLookFile)
+                    if quickLookFile.kind == .excel {
+                        MacExcelSearchPreview(file: quickLookFile, findRequest: excelFindRequest)
+                            .id(quickLookFile.url)
+                    } else {
+                        MacAttachmentQuickLookView(file: quickLookFile)
+                    }
                 } else if let csvDocument {
                     if csvDocument.rows.isEmpty {
                         ContentUnavailableView("빈 CSV 문서입니다", systemImage: "tablecells", description: Text("원본 파일에 표시할 행이 없습니다."))
