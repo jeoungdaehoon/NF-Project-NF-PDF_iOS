@@ -102,13 +102,14 @@ struct PDFPageLinkPicker: View {
     @State private var createTask: Task<Void, Never>?
     @State private var unconfirmedTitle: String?
 
-    private var canCreate: Bool { !term.isEmpty && term.utf16.count <= 40 && unconfirmedTitle != term }
+    private var canCreate: Bool { !enteredTitle.isEmpty && enteredTitle.utf16.count <= 40 && unconfirmedTitle != enteredTitle }
 
-    private var term: String {
+    private var enteredTitle: String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return String((trimmed.hasPrefix("#") ? trimmed.dropFirst() : trimmed[...])
-            .trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        return (trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed).trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private var term: String { PDFPageSearch.normalizedQuery(enteredTitle) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -167,14 +168,14 @@ struct PDFPageLinkPicker: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             Button(action: create) {
-                row(creating ? "문서 생성 중…" : "새 문서 생성", detail: term.isEmpty ? nil : term,
+                row(creating ? "문서 생성 중…" : "새 문서 생성", detail: enteredTitle.isEmpty ? nil : enteredTitle,
                     icon: "plus", selected: selection == results.count && !searching && !term.isEmpty)
             }
             .buttonStyle(.plain).disabled(!canCreate)
             .padding(6)
             if let createError {
                 Text(createError).font(.caption).foregroundStyle(.red).padding(.horizontal, 12).padding(.bottom, 6)
-            } else if term.utf16.count > 40 {
+            } else if enteredTitle.utf16.count > 40 {
                 Text("새 문서 제목은 40자 이내로 입력해 주세요.").font(.caption).foregroundStyle(.secondary)
                     .padding(.bottom, 6)
             }
@@ -225,7 +226,7 @@ struct PDFPageLinkPicker: View {
         let query = term, scope = scope.rawValue
         results = []; selection = 0; searching = true; searchError = nil; createError = nil
         do {
-            try await Task.sleep(for: .milliseconds(120))
+            if !query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
             let results = try await PDFPageSearch.search(query, scope: scope, origin: origin)
             try Task.checkCancellation()
             self.results = results
@@ -237,7 +238,7 @@ struct PDFPageLinkPicker: View {
     }
 
     private func create() {
-        let title = term
+        let title = enteredTitle
         guard canCreate, !creating else { return }
         creating = true; createError = nil
         createTask = Task {
@@ -269,12 +270,48 @@ enum PDFPageSearch {
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
+        configuration.timeoutIntervalForResource = 10
         return URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     }()
 
+    static func normalizedQuery(_ value: String) -> String {
+        let normalized = value.precomposedStringWithCompatibilityMapping.lowercased()
+            .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var query = ""
+        var length = 0
+        for character in normalized {
+            let count = String(character).utf16.count
+            guard length + count <= 80 else { break }
+            query.append(character)
+            length += count
+        }
+        return query
+    }
+
     static func cookieHeader(for url: URL) async -> String? {
-        let cookies: [HTTPCookie] = await withCheckedContinuation { continuation in
-            WKWebsiteDataStore.default().httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
+        try? await readCookieHeader(for: url)
+    }
+
+    private static func readCookieHeader(for url: URL) async throws -> String? {
+        let (stream, continuation) = AsyncStream<[HTTPCookie]>.makeStream()
+        let deadline = Task {
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            continuation.finish()
+        }
+        let read = Task { @MainActor in
+            let cookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+            continuation.yield(cookies)
+            continuation.finish()
+        }
+        defer {
+            deadline.cancel()
+            read.cancel()
+            continuation.finish()
+        }
+        var iterator = stream.makeAsyncIterator()
+        guard let cookies = await iterator.next() else {
+            try Task.checkCancellation()
+            throw PDFPageLinkError.timeout
         }
         let host = url.host?.lowercased() ?? ""
         let matching = cookies.filter {
@@ -286,7 +323,7 @@ enum PDFPageSearch {
 
     static func search(_ query: String, scope: String, origin: URL) async throws -> [PDFPageResult] {
         let endpoint = origin.appendingPathComponent("api/project-data")
-        guard let cookie = await cookieHeader(for: endpoint) else { throw PDFPageLinkError.login }
+        guard let cookie = try await readCookieHeader(for: endpoint) else { throw PDFPageLinkError.login }
         var request = URLRequest(url: endpoint, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue(cookie, forHTTPHeaderField: "Cookie")
@@ -296,7 +333,8 @@ enum PDFPageSearch {
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request) }
-        catch { throw PDFPageLinkError.search }
+        catch let error as URLError where error.code == .timedOut { throw PDFPageLinkError.timeout }
+        catch { try Task.checkCancellation(); throw PDFPageLinkError.search }
         if let status = (response as? HTTPURLResponse)?.statusCode,
            [302, 303, 307, 308, 401, 403].contains(status) { throw PDFPageLinkError.login }
         guard (response as? HTTPURLResponse)?.statusCode == 200,
@@ -306,12 +344,13 @@ enum PDFPageSearch {
 }
 
 private enum PDFPageLinkError: LocalizedError {
-    case login, search, create, createUnconfirmed
+    case login, search, timeout, create, createUnconfirmed
 
     var errorDescription: String? {
         switch self {
         case .login: "포털 로그인 또는 문서 접근 권한을 확인해 주세요."
         case .search: "페이지 검색 결과를 불러오지 못했습니다."
+        case .timeout: "페이지 검색 응답이 지연되었습니다. 다시 검색해 주세요."
         case .create: "새 문서 생성 화면을 열 수 없습니다. 내 작업공간과 생성 권한을 확인해 주세요."
         case .createUnconfirmed: "생성 결과를 확인하지 못했습니다. 제목을 검색해 문서가 생성되었는지 확인해 주세요."
         }

@@ -18,6 +18,33 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
     private var pending: Task<Void, Never>?
     private var session: Session?
     private weak var nativeWebView: WKWebView?
+    private var nativeZoom = NativeZoomQueue()
+
+    var requestedNativeZoom: Double? { nativeZoom.requested }
+
+    struct NativeZoomQueue {
+        private var inFlight: Double?
+        private var waiting: Double?
+
+        var requested: Double? { waiting ?? inFlight }
+
+        mutating func enqueue(_ factor: Double) -> Double? {
+            guard factor.isFinite else { return nil }
+            let bounded = min(10, max(0.1, factor))
+            if let inFlight {
+                waiting = bounded == inFlight ? nil : bounded
+                return nil
+            }
+            inFlight = bounded
+            return bounded
+        }
+
+        mutating func complete() -> Double? {
+            inFlight = waiting
+            waiting = nil
+            return inFlight
+        }
+    }
 
     struct NativeViewport: Decodable, Equatable {
         let x, y, width, height: Double
@@ -33,11 +60,27 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
 
     func nativeCommand(_ command: String, x: Double = 0, y: Double = 0) {
         guard let session, let webView = nativeWebView else { return }
+        if command == "zoom" {
+            if let factor = nativeZoom.enqueue(x) { sendNativeZoom(factor, session: session.token, webView: webView) }
+            return
+        }
         webView.callAsyncJavaScript(
             "return await window.__nfAppleLiveDetailPDF?.nativeCommand(token, command, x, y);",
             arguments: ["token": session.token, "command": command, "x": x, "y": y],
             in: nil, in: .page, completionHandler: nil
         )
+    }
+
+    private func sendNativeZoom(_ factor: Double, session token: String, webView: WKWebView) {
+        webView.callAsyncJavaScript(
+            "return await window.__nfAppleLiveDetailPDF?.nativeCommand(token, 'zoom', factor, 0);",
+            arguments: ["token": token, "factor": factor], in: nil, in: .page
+        ) { [weak self, weak webView] _ in
+            guard let self, let webView, self.session?.token == token else { return }
+            if let next = self.nativeZoom.complete() {
+                self.sendNativeZoom(next, session: token, webView: webView)
+            }
+        }
     }
 
     @discardableResult
@@ -86,6 +129,7 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         pending = nil
         session = nil
         nativeWebView = nil
+        nativeZoom = NativeZoomQueue()
         closeNativeEditor?()
     }
 
@@ -108,6 +152,7 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         let token = UUID().uuidString
         let revision = Self.digest(saved)
         session = Session(token: token, origin: origin, file: file, revision: revision)
+        nativeZoom = NativeZoomQueue()
         nativeWebView = openNativeEditor == nil ? nil : webView
         do {
             let script = try String(contentsOf: resource, encoding: .utf8)
@@ -124,6 +169,7 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
             if session?.token == token {
                 session = nil
                 nativeWebView = nil
+                nativeZoom = NativeZoomQueue()
                 closeNativeEditor?()
             }
             throw error
@@ -142,6 +188,7 @@ final class LiveDetailPDF: NSObject, WKScriptMessageHandlerWithReply {
         if body["closed"] as? Bool == true {
             session = nil
             nativeWebView = nil
+            nativeZoom = NativeZoomQueue()
             closeNativeEditor?()
             replyHandler(true, nil)
             return

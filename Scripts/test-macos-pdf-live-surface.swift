@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import PDFKit
 import SwiftUI
 #if canImport(NF_macOS)
@@ -8,6 +9,7 @@ import SwiftUI
 /// Check the production canvas over an isolated stand-in for the portal body.
 @main struct LiveDetailPDFSurfaceRegression {
     @MainActor static func main() throws {
+        try testZoomQueue()
         NSApplication.shared.setActivationPolicy(.prohibited)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("nf-live-pdf-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -40,6 +42,16 @@ import SwiftUI
                 throw failure("The live PDF canvas obscures the portal body.")
             }
         }
+        var layoutUpdates = 0
+        let observation = surface.$frame.dropFirst().sink { _ in layoutUpdates += 1 }
+        guard let fixedFrame = surface.viewport else { throw failure("Live viewport missing.") }
+        surface.update(.init(x: fixedFrame.x, y: fixedFrame.y, width: fixedFrame.width, height: fixedFrame.height,
+                             scrollX: 42, scrollY: 96, scale: 1.5, zoom: 1.5, pageZoom: 1, contentWidth: 900, contentHeight: 750))
+        guard layoutUpdates == 0, surface.zoomPercent.value == 150,
+              surface.pagePoint(CGPoint(x: 108, y: 54), in: .zero, flipped: true) == CGPoint(x: 100, y: -100) else {
+            throw failure("Zoom must update the overlay coordinates and percentage without re-laying out the editor.")
+        }
+        observation.cancel()
         let attachment = MacPDFEditingView(frame: CGRect(x: 0, y: 0, width: 500, height: 340))
         let attachmentPDF = PDFDocument()
         attachmentPDF.insert(PDFPage(), at: 0)
@@ -49,6 +61,23 @@ import SwiftUI
             throw failure("The attachment PDF canvas lost its scroll view.")
         }
         print("PASS: live PDF canvas shows the portal body after resize and attachment PDFs retain PDFKit scrolling")
+    }
+
+    static func testZoomQueue() throws {
+        var queue = LiveDetailPDF.NativeZoomQueue()
+        guard queue.enqueue(1.1) == 1.1 else { throw failure("The initial zoom must submit immediately.") }
+        for step in 120...190 {
+            guard queue.enqueue(Double(step) / 100) == nil else {
+                throw failure("A zoom request bypassed the in-flight request.")
+            }
+        }
+        guard queue.requested == 1.9, queue.complete() == 1.9, queue.complete() == nil, queue.requested == nil else {
+            throw failure("Only the latest queued scale should be sent.")
+        }
+        guard queue.enqueue(0) == 0.1, queue.enqueue(2) == nil, queue.enqueue(0.1) == nil,
+              queue.complete() == nil, queue.enqueue(.infinity) == nil else {
+            throw failure("Returning to the in-flight scale should discard the outdated target.")
+        }
     }
 
     static func failure(_ message: String) -> NSError {

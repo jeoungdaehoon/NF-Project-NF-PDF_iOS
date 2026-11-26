@@ -39,7 +39,7 @@ import SwiftUI
         try check(borders.contains { ($0.fillColor?.alpha ?? 0) > 0.9 && $0.lineWidth == 0.75 }, "small handles have their own solid background")
         try check(canvas.connectionHandles.count == 4, "four directional connector grips remain available")
         let menu = MacPDFMenuLayout.frame(object: CGRect(x: 20, y: 200, width: 200, height: 100), viewport: CGSize(width: 600, height: 500), preferredWidth: 390)
-        try check(menu.height == 54, "object popup hugs its controls without the old lower gap")
+        try check(menu.height == 38, "object popup fits compact icons and labels in 38 points")
         let before = state.objects, undo = state.undoCount
         var publications = 0
         let observation = state.$objects.dropFirst().sink { _ in publications += 1 }
@@ -83,6 +83,23 @@ import SwiftUI
         try check(routePublications == 1 && state.undoCount == routeUndo + 1, "connector route commits once on mouse-up")
         routeObservation.cancel(); state.undo()
         try check(state.objects == routeBefore, "connector route undo restores its original route")
+        state.connectorEnabled = false
+        state.selectObjects([target.id], showMenu: false); pump()
+        let textBounds = canvas.selectionBounds()!
+        let rotate = CGPoint(x: textBounds.maxX, y: textBounds.maxY + 24 / canvas.scaleFactor)
+        let oldRotation = state.objects.first { $0.id == target.id }!.rotation
+        let rotateEnd = CGPoint(x: rotate.x - 25, y: rotate.y + 25)
+        mouse(.leftMouseDown, at: rotate)
+        mouse(.leftMouseDragged, at: rotateEnd)
+        mouse(.leftMouseUp, at: rotateEnd)
+        try check(state.objects.first { $0.id == target.id }!.rotation != oldRotation, "right-end rotation handle rotates the selected text")
+        state.undo()
+        state.selectObjects([target.id], showMenu: false); pump()
+        let delete = CGPoint(x: textBounds.minX - 18 / canvas.scaleFactor, y: textBounds.maxY + 18 / canvas.scaleFactor)
+        mouse(.leftMouseDown, at: delete)
+        mouse(.leftMouseUp, at: delete)
+        try check(!state.objects.contains { $0.id == target.id }, "left trash handle deletes the selected text")
+        state.undo()
         let menuState = MacPDFEditorState(document: document, identifier: "menu-proof", fileName: "fixture.pdf", directory: directory.appendingPathComponent("menu"))
         menuState.objects = [source]; menuState.selection = [source.id]; menuState.menuVisible = true
         menuState.selectionViewRect = CGRect(x: 200, y: 160, width: 160, height: 110)

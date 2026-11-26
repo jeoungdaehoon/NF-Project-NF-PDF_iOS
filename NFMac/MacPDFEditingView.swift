@@ -175,9 +175,9 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         if hit(p, page: document.index(for: page)) != nil { return false }
         if editor.selected?.page == document.index(for: page), let rect = selectionBounds() {
             let scale = max(scaleFactor, 0.1)
-            let remove = CGPoint(x: rect.minX - 18 / scale, y: rect.maxY + 18 / scale)
-            let rotate = CGPoint(x: rect.midX, y: rect.maxY + 24 / scale)
-            if hypot(remove.x - p.x, remove.y - p.y) < 10 / scale || hypot(rotate.x - p.x, rotate.y - p.y) < 10 / scale { return false }
+            let actions = selectionActionCenters(for: rect)
+            if hypot(actions.delete.x - p.x, actions.delete.y - p.y) < 10 / scale ||
+                hypot(actions.rotate.x - p.x, actions.rotate.y - p.y) < 10 / scale { return false }
             if Self.handles(rect).contains(where: { hypot($0.x - p.x, $0.y - p.y) < 10 / scale }) { return false }
             if editor.selection.count > 1 && rect.contains(p) { return false }
         }
@@ -341,6 +341,39 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             return MacPDFObjectRenderer.corners(object).reduce(rect) { $0.union(CGRect(origin: $1, size: CGSize(width: 0.01, height: 0.01))) }
         }
     }
+    private func selectionActionCenters(for rect: CGRect) -> (rotate: CGPoint, delete: CGPoint) {
+        let scale = max(scaleFactor, 0.1)
+        return (
+            CGPoint(x: rect.maxX, y: rect.maxY + 24 / scale),
+            CGPoint(x: rect.minX - 18 / scale, y: rect.maxY + 18 / scale)
+        )
+    }
+
+    private func addSelectionActionIcons(to path: CGMutablePath, rotate: CGPoint, delete: CGPoint) {
+        let rotation = CGMutablePath()
+        rotation.addEllipse(in: CGRect(x: -6, y: -6, width: 12, height: 12))
+        let arcEnd = CGFloat.pi * 5 / 3
+        let arrowTip = CGPoint(x: 3.25 * cos(arcEnd), y: 3.25 * sin(arcEnd))
+        rotation.move(to: CGPoint(x: 3.25 * cos(.pi / 6), y: 3.25 * sin(.pi / 6)))
+        rotation.addArc(center: .zero, radius: 3.25, startAngle: .pi / 6, endAngle: arcEnd, clockwise: false)
+        rotation.move(to: CGPoint(x: arrowTip.x - 2.4, y: arrowTip.y + 0.1))
+        rotation.addLine(to: arrowTip)
+        rotation.addLine(to: CGPoint(x: arrowTip.x - 0.9, y: arrowTip.y - 2.2))
+
+        let trash = CGMutablePath()
+        trash.addEllipse(in: CGRect(x: -7, y: -7, width: 14, height: 14))
+        trash.move(to: CGPoint(x: -3.6, y: 2))
+        trash.addLine(to: CGPoint(x: 3.6, y: 2))
+        trash.addLines(between: [CGPoint(x: -1.3, y: 2), CGPoint(x: -1.3, y: 3.4),
+                                 CGPoint(x: 1.3, y: 3.4), CGPoint(x: 1.3, y: 2)])
+        trash.addLines(between: [CGPoint(x: -2.7, y: 2), CGPoint(x: -2.2, y: -3.4),
+                                 CGPoint(x: 2.2, y: -3.4), CGPoint(x: 2.7, y: 2)])
+
+        let verticalDirection: CGFloat = isFlipped ? -1 : 1
+        path.addPath(rotation, transform: CGAffineTransform(a: 1, b: 0, c: 0, d: verticalDirection, tx: rotate.x, ty: rotate.y))
+        path.addPath(trash, transform: CGAffineTransform(a: 1, b: 0, c: 0, d: verticalDirection, tx: delete.x, ty: delete.y))
+    }
+
     func updateInteractionOverlay() {
         guard let editor else { return }
         drawingOverlay.frame = bounds; drawingOverlay.needsDisplay = true
@@ -356,12 +389,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         if !editor.isTextEditing, let rect = selectionBounds(), let page = document?.page(at: editor.selected?.page ?? editor.currentPage) {
             selectionPath.addRect(convert(rect, from: page).standardized.insetBy(dx: -3, dy: -3))
             for handle in Self.handles(rect) { let p = convert(handle, from: page); handlesPath.addRect(CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)) }
-            let rotate = convert(CGPoint(x: rect.midX, y: rect.maxY + 24 / max(scaleFactor, 0.1)), from: page)
-            path.addEllipse(in: CGRect(x: rotate.x - 6, y: rotate.y - 6, width: 12, height: 12))
-            let remove = convert(CGPoint(x: rect.minX - 18 / max(scaleFactor, 0.1), y: rect.maxY + 18 / max(scaleFactor, 0.1)), from: page)
-            path.addEllipse(in: CGRect(x: remove.x - 7, y: remove.y - 7, width: 14, height: 14))
-            path.move(to: CGPoint(x: remove.x - 3, y: remove.y - 3)); path.addLine(to: CGPoint(x: remove.x + 3, y: remove.y + 3))
-            path.move(to: CGPoint(x: remove.x - 3, y: remove.y + 3)); path.addLine(to: CGPoint(x: remove.x + 3, y: remove.y - 3))
+            let actions = selectionActionCenters(for: rect)
+            addSelectionActionIcons(to: path, rotate: convert(actions.rotate, from: page), delete: convert(actions.delete, from: page))
         }
         CATransaction.begin(); CATransaction.setDisableActions(true); interactionLayer.frame = bounds; interactionLayer.path = path; CATransaction.commit()
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -514,7 +543,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         updateCommandModifier(event.modifierFlags)
         if commandHeld {
             finishTextEditing(); window?.makeFirstResponder(self); cancelGesture()
-            commandStart = (event.locationInWindow.x, scaleFactor); editingCursor.set()
+            let scale = liveSurface.map { CGFloat($0.requestedZoom * ($0.viewport?.pageZoom ?? 1)) } ?? scaleFactor
+            commandStart = (event.locationInWindow.x, scale); editingCursor.set()
             return
         }
         let viewPoint = convert(event.locationInWindow, from: nil)
@@ -557,9 +587,10 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         editor.currentPage = document.index(for: page); start = point; dragPage = page; beforeDrag = editor.objects
         resizeHandle = nil; rotating = false; moving = false; samples = [MacPDFPoint(point, pressure: pressure(event))]
         if editor.connectorEnabled || [.select, .text, .image, .shape, .lasso].contains(activeTool), let rect = selectionBounds(), editor.selected?.page == editor.currentPage {
-            let scale = max(scaleFactor, 0.1), remove = CGPoint(x: rect.minX - 18 / max(scaleFactor, 0.1), y: rect.maxY + 18 / max(scaleFactor, 0.1))
-            if hypot(remove.x - point.x, remove.y - point.y) < 10 / scale { editor.deleteSelected(); start = nil; return }
-            rotating = hypot(rect.midX - point.x, rect.maxY + 24 / scale - point.y) < 10 / scale
+            let scale = max(scaleFactor, 0.1)
+            let actions = selectionActionCenters(for: rect)
+            if hypot(actions.delete.x - point.x, actions.delete.y - point.y) < 10 / scale { editor.deleteSelected(); start = nil; return }
+            rotating = hypot(actions.rotate.x - point.x, actions.rotate.y - point.y) < 10 / scale
             resizeHandle = Self.handles(rect).firstIndex { hypot($0.x - point.x, $0.y - point.y) < 10 / scale }
             if rotating || resizeHandle != nil || (editor.selection.count > 1 && rect.contains(point)) { moving = true; return }
         }
@@ -585,7 +616,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             // Keep ownership until mouse-up, even if Command is released, so
             // a zoom gesture can never fall through into ink/shape editing.
             guard commandHeld else { editingCursor.set(); return }
-            autoScales = false
+            if liveSurface == nil { autoScales = false }
             scaleFactor = min(10, max(0.1, scale * CGFloat(pow(2, Double((event.locationInWindow.x - x) / 240)))))
             editingCursor.set(); return
         }
@@ -861,12 +892,21 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         if let liveSurface {
             let multiplier = event.hasPreciseScrollingDeltas ? 1.0 : 16.0
             liveSurface.scroll(x: -event.scrollingDeltaX * multiplier, y: -event.scrollingDeltaY * multiplier)
-        } else {
-            documentView?.enclosingScrollView?.scrollWheel(with: event)
+            return
         }
+        documentView?.enclosingScrollView?.scrollWheel(with: event)
         updateInteractionOverlay()
     }
-    override func magnify(with event: NSEvent) { finishTextEditing(); autoScales = false; scaleFactor = min(10, max(0.1, scaleFactor * (1 + event.magnification))); updateInteractionOverlay() }
+    override func magnify(with event: NSEvent) {
+        finishTextEditing()
+        if let liveSurface {
+            liveSurface.zoom(by: 1 + event.magnification)
+            return
+        }
+        autoScales = false
+        scaleFactor = min(10, max(0.1, scaleFactor * (1 + event.magnification)))
+        updateInteractionOverlay()
+    }
     private func historyShortcut(_ event: NSEvent) -> Bool? {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command), !flags.contains(.control), !flags.contains(.option) else { return nil }

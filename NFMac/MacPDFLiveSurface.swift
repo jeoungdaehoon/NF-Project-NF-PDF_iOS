@@ -7,8 +7,10 @@ import SwiftUI
 /// coordinate space and owns the same objects, gestures and settings as a PDF file.
 @MainActor
 final class MacPDFLiveSurface: ObservableObject {
-    @Published private(set) var viewport: LiveDetailPDF.NativeViewport?
+    private(set) var viewport: LiveDetailPDF.NativeViewport?
+    @Published private(set) var frame: CGRect?
     @Published private(set) var editor: MacPDFEditorState?
+    let zoomPercent = CurrentValueSubject<Int, Never>(100)
     @Published var editsSource = false
     weak var bridge: LiveDetailPDF?
     var flushEditor: (() async -> Bool)?
@@ -33,21 +35,25 @@ final class MacPDFLiveSurface: ObservableObject {
     }
 
     func update(_ viewport: LiveDetailPDF.NativeViewport) {
-        guard self.viewport != viewport, let editor, let page = editor.document.page(at: 0) else { return }
+        let previous = self.viewport
+        guard previous != viewport, let editor, let page = editor.document.page(at: 0) else { return }
+        if previous?.scale != viewport.scale { editor.canvas?.finishTextEditing() }
         self.viewport = viewport
+
+        // Scroll and scale update the AppKit coordinate space. SwiftUI only
+        // needs to re-lay out the editor when the viewport frame changes.
+        let frame = CGRect(x: viewport.x, y: viewport.y, width: viewport.width, height: viewport.height)
+        if self.frame != frame { self.frame = frame }
         let bounds = CGRect(x: 0, y: -viewport.contentHeight, width: viewport.contentWidth, height: viewport.contentHeight)
         if page.bounds(for: .mediaBox) != bounds {
             page.setBounds(bounds, for: .mediaBox)
             page.setBounds(bounds, for: .cropBox)
         }
-        let zoom = Int((viewport.zoom * 100).rounded())
-        if editor.zoom != zoom {
-            editor.canvas?.finishTextEditing()
-            editor.zoom = zoom
-        }
-        editor.canvas?.refreshAnnotations()
+        let percent = Int((viewport.zoom * 100).rounded())
+        if zoomPercent.value != percent { zoomPercent.send(percent) }
+        editor.canvas?.updateInteractionOverlay()
         editor.canvas?.freeNotes?.viewportChanged()
-        scheduleExtentUpdate()
+        if previous == nil { scheduleExtentUpdate() }
     }
 
     private func scheduleExtentUpdate() {
@@ -76,6 +82,8 @@ final class MacPDFLiveSurface: ObservableObject {
 
     func reset() {
         viewport = nil
+        frame = nil
+        zoomPercent.send(100)
         edits?.cancel()
         edits = nil
         editor = nil
@@ -84,7 +92,10 @@ final class MacPDFLiveSurface: ObservableObject {
         editsSource = false
     }
 
+    var requestedZoom: Double { bridge?.requestedNativeZoom ?? viewport?.zoom ?? 1 }
+
     func zoom(to factor: Double) { bridge?.nativeCommand("zoom", x: factor) }
+    func zoom(by multiplier: Double) { zoom(to: requestedZoom * multiplier) }
     func scroll(x: Double, y: Double) { bridge?.nativeCommand("scroll", x: x, y: y) }
     func close() { bridge?.nativeCommand("close") }
 
@@ -106,12 +117,12 @@ struct MacPDFLiveEditor: View {
     @ObservedObject var surface: MacPDFLiveSurface
 
     var body: some View {
-        if let viewport = surface.viewport, let editor = surface.editor {
+        if let frame = surface.frame, let editor = surface.editor {
             MacPDFEditorView(state: editor, registerDetailExit: { surface.flushEditor = $0 }, liveSurface: surface)
                 .id(editor.identifier)
-                .frame(width: viewport.width, height: viewport.height)
+                .frame(width: frame.width, height: frame.height)
                 .clipped()
-                .offset(x: viewport.x, y: viewport.y)
+                .offset(x: frame.minX, y: frame.minY)
         }
     }
 }
@@ -219,9 +230,9 @@ struct MacPDFLiveControls: View {
             Divider().frame(height: 16)
             control("실행 취소", symbol: "arrow.uturn.backward", id: "pdf.live.undo", action: state.undo).disabled(!state.canUndo)
             control("다시 실행", symbol: "arrow.uturn.forward", id: "pdf.live.redo", action: state.redo).disabled(!state.canRedo)
-            control("축소", symbol: "minus.magnifyingglass", id: "pdf.live.zoomOut") { surface.zoom(to: Double(state.zoom) / 125) }
-            control("확대", symbol: "plus.magnifyingglass", id: "pdf.live.zoomIn") { surface.zoom(to: Double(state.zoom) / 80) }
-            Text("\(state.zoom)%").font(.caption).monospacedDigit()
+            control("축소", symbol: "minus.magnifyingglass", id: "pdf.live.zoomOut") { surface.zoom(by: 0.8) }
+            control("확대", symbol: "plus.magnifyingglass", id: "pdf.live.zoomIn") { surface.zoom(by: 1.25) }
+            MacPDFLiveZoomLabel(percent: surface.zoomPercent)
         }
         .buttonStyle(.borderless)
         .padding(8)
@@ -231,5 +242,17 @@ struct MacPDFLiveControls: View {
     private func control(_ title: String, symbol: String, id: String, action: @escaping () -> Void) -> some View {
         MacPDFActionButton(title: "", symbol: symbol, identifier: id, accessibilityTitle: title, action: action)
             .frame(width: 22, height: 22)
+    }
+}
+
+private struct MacPDFLiveZoomLabel: View {
+    let percent: CurrentValueSubject<Int, Never>
+    @State private var displayedPercent = 100
+
+    var body: some View {
+        Text("\(displayedPercent)%")
+            .font(.caption)
+            .monospacedDigit()
+            .onReceive(percent) { displayedPercent = $0 }
     }
 }

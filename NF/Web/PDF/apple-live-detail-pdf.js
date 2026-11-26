@@ -407,7 +407,16 @@
     if (!useNativeEditor || sessionToken !== token || closed || closing) return false;
     switch (command) {
       case 'close': return close(true);
-      case 'zoom': changeZoom(x); break;
+      case 'zoom':
+        // Acknowledge only after this frame has applied the scale and its
+        // scroll anchor. The native bridge can then submit its newest input.
+        return new Promise((resolve, reject) => requestAnimationFrame(() => {
+          if (closed || closing || !body.isConnected) return resolve(false);
+          try {
+            changeZoom(x);
+            resolve(true);
+          } catch (error) { reject(error); }
+        }));
       case 'scroll':
         body.scrollBy(x / nativePageZoom, y / nativePageZoom);
         publishViewport();
@@ -422,8 +431,8 @@
   }
   function changeZoom(value, focus) {
     const nextZoom = Math.min(useNativeEditor ? 10 : 4, Math.max(useNativeEditor ? 0.1 : 1, value));
-    if (nextZoom === zoom) return;
-    const frame = body.getBoundingClientRect();
+    if (!Number.isFinite(nextZoom) || nextZoom === zoom) return;
+    const frame = focus ? body.getBoundingClientRect() : null;
     const x = focus ? Math.max(0, focus[0] - frame.left) : body.clientWidth / 2;
     const y = focus ? Math.max(0, focus[1] - frame.top) : body.clientHeight / 2;
     const left = (body.scrollLeft + x) / zoom, top = (body.scrollTop + y) / zoom;
@@ -434,11 +443,12 @@
     zoom = nextZoom;
     body.style.setProperty('--nf-apple-pdf-zoom', String(zoom));
     body.toggleAttribute('data-apple-pdf-zoom', zoom !== 1);
-    layout();
-    body.scrollLeft = left * zoom - x;
-    body.scrollTop = top * zoom - y;
-    publishViewport();
-    updateTools();
+    if (pendingLayout) {
+      cancelAnimationFrame(pendingLayout);
+      pendingLayout = 0;
+    }
+    layout({ left: left * zoom - x, top: top * zoom - y });
+    if (!useNativeEditor) updateTools();
   }
   function box(object) {
     if (object.points?.length) {
@@ -449,7 +459,7 @@
     }
     return { x: object.x, y: object.y, w: object.w, h: object.h };
   }
-  function layout() {
+  function layout(scrollTarget) {
     if (closed || !body.isConnected) return;
     const width = body.clientWidth;
     if (zoom === 1 && width > (documentLayout?.width || 0) && width <= 16384) {
@@ -461,7 +471,7 @@
     }
     body.style.setProperty('--nf-apple-pdf-content-width', (documentLayout?.content || width) + 'px');
     body.toggleAttribute('data-apple-pdf-fixed-width', zoom !== 1 || width < (documentLayout?.width || 0) - 1);
-    const left = body.scrollLeft, top = body.scrollTop;
+    const left = scrollTarget?.left ?? body.scrollLeft, top = scrollTarget?.top ?? body.scrollTop;
     // Measure the document extent independently of the annotation canvas.
     layer.setAttribute('width', 0);
     layer.setAttribute('height', 0);
@@ -475,8 +485,7 @@
     layer.setAttribute('width', maxX * zoom);
     layer.setAttribute('height', maxY * zoom);
     layer.setAttribute('viewBox', [0, 0, maxX, maxY].join(' '));
-    body.scrollLeft = left;
-    body.scrollTop = top;
+    body.scrollTo({ left, top, behavior: 'instant' });
     if (useNativeEditor) {
       publishViewport();
       return;
@@ -844,7 +853,8 @@
     if (typeof href !== 'string' || !href) return null;
     let url;
     try { url = new URL(href, location.origin); } catch { return null; }
-    if (url.origin !== location.origin || !/^\/(custom|linked-document)\/[a-zA-Z0-9_-]{1,120}$/.test(url.pathname)) return null;
+    if (url.origin !== location.origin || url.username || url.password ||
+        (url.pathname !== '/projects' && !/^\/(custom|linked-document)\/[a-zA-Z0-9_-]{1,120}$/.test(url.pathname))) return null;
     return url.pathname + url.search + url.hash;
   }
   function openLinkEditor([x, y]) {
@@ -868,12 +878,15 @@
       create.disabled = true;
       const list = element('div', { 'data-popup-menu-list': '', 'aria-label': '연결할 페이지' });
       const message = element('span', { role: 'status' });
-      form.append(input, filters, message, list, create);
+      const retry = element('button', { type: 'button', hidden: '' });
+      retry.textContent = '다시 검색';
+      form.append(input, filters, message, retry, list, create);
       let search = null;
       let timer = null;
       let scope = 'all';
       let creating = false;
-      const term = () => input.value.replace(/^\s*#/, '').trim();
+      const title = () => input.value.replace(/^\s*#/, '').trim();
+      const term = () => title().normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').slice(0, 80);
       function select(href, title) {
         change([...objects, { ...newObject('document', { x, y, w: 26, h: 26 }), href, title }]);
         dialog?.close();
@@ -885,22 +898,23 @@
         listen(control, 'click', () => {
           scope = key;
           for (const sibling of filters.children) sibling.setAttribute('aria-pressed', String(sibling === control));
+          clearTimeout(timer);
           void lookup();
         });
         filters.append(control);
       }
       listen(create, 'click', async () => {
-        const title = term();
-        if (creating || !title || title.length > 40) return;
+        const name = title();
+        if (creating || !name || name.length > 40) return;
         creating = true;
         search?.abort();
         input.disabled = true;
         create.disabled = true;
         message.textContent = '문서를 만드는 중…';
         try {
-          const href = supportedDocument(await bridge.postMessage({ token, createNote: title }));
+          const href = supportedDocument(await bridge.postMessage({ token, createNote: name }));
           if (!href) throw Error();
-          if (form.isConnected && !closed) select(href, title);
+          if (form.isConnected && !closed) select(href, name);
         } catch {
           message.textContent = '문서 생성 결과를 확인하지 못했습니다. 제목을 검색해 주세요.';
         } finally {
@@ -915,7 +929,14 @@
         const request = new AbortController();
         search = request;
         message.textContent = '검색 중…';
+        retry.hidden = true;
         list.replaceChildren();
+        const deadline = setTimeout(() => {
+          if (request.signal.aborted || !form.isConnected) return;
+          message.textContent = '페이지 검색 응답이 지연되었습니다.';
+          retry.hidden = false;
+          request.abort();
+        }, 10_000);
         try {
           const response = await fetch('/api/project-data', { method: 'POST', signal: request.signal, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ kind: 'pageMention', scope, query: term() }) });
@@ -928,7 +949,7 @@
             if (!href) continue;
             const entry = element('button', { type: 'button', 'data-popup-menu-row': '' });
             const icon = svg('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'aria-hidden': 'true' });
-            icon.append(svg('path', { d: icons.document }));
+            icon.append(svg('path', { d: row.id?.startsWith('calendar:') ? 'M4 5h16v16H4zM8 3v4m8-4v4M4 10h16' : icons.document }));
             const title = element('span');
             title.textContent = row.title;
             entry.append(icon, title);
@@ -936,15 +957,28 @@
             list.append(entry);
           }
           message.textContent = list.children.length ? '' : '검색된 문서가 없습니다.';
-        } catch { if (!request.signal.aborted) message.textContent = '페이지를 검색하지 못했습니다.'; }
+        } catch {
+          if (!request.signal.aborted && form.isConnected) {
+            message.textContent = '페이지를 검색하지 못했습니다.';
+            retry.hidden = false;
+          }
+        } finally {
+          clearTimeout(deadline);
+        }
       }
+      listen(retry, 'click', () => { void lookup(); });
       listen(input, 'input', () => {
-        create.disabled = !term() || term().length > 40;
+        create.disabled = !title() || title().length > 40;
         search?.abort();
         clearTimeout(timer);
         timer = setTimeout(lookup, 160);
       });
-      queueMicrotask(() => { void lookup(); });
+      queueMicrotask(() => {
+        const popup = form.closest('dialog');
+        if (!popup?.open) return;
+        listen(popup, 'close', () => { clearTimeout(timer); search?.abort(); });
+        void lookup();
+      });
       return input;
     });
   }

@@ -12,7 +12,7 @@ enum MacPDFImageAction: String, CaseIterable {
 }
 
 enum MacPDFMenuLayout {
-    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 54) -> CGRect {
+    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 38) -> CGRect {
         let width = max(1, min(preferredWidth, viewport.width - 16)), h = max(1, min(height, viewport.height - 16))
         let above = object.minY - h - 16, proposedY = above >= 8 ? above : object.maxY + 16
         return CGRect(x: min(max(8, object.midX - width / 2), max(8, viewport.width - width - 8)), y: min(max(8, proposedY), max(8, viewport.height - h - 8)), width: width, height: h)
@@ -97,12 +97,12 @@ struct MacPDFObjectMenu: View {
 
     private func bubble(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
         MacPDFActionButton(title: "", identifier: "pdf.object.\(id)", accessibilityTitle: title, action: action)
-            .frame(width: 48, height: 46)
+            .frame(width: 48, height: 34)
             .overlay {
-                VStack(spacing: 4) {
+                VStack(spacing: 2) {
                     Image(systemName: symbol)
-                        .font(.system(size: 16))
-                        .frame(width: 20, height: 20)
+                        .font(.system(size: 12))
+                        .frame(width: 15, height: 15)
                     Text(title)
                         .font(.system(size: 10))
                         .lineLimit(1)
