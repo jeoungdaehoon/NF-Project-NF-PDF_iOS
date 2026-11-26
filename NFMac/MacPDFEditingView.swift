@@ -217,8 +217,20 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         updateCommandModifier(event.modifierFlags); updateHoveredCursor()
         super.flagsChanged(with: event)
     }
+    private func hideLivePDFScrollView() {
+        // In live mode WebKit draws the source and owns scrolling. PDFKit's
+        // internal scroll view can still have an opaque backing layer even
+        // when PDFView.backgroundColor is clear.
+        for case let scrollView as NSScrollView in subviews where !scrollView.isHidden {
+            scrollView.isHidden = true
+        }
+    }
     override func layout() {
-        if liveSurface != nil { updateInteractionOverlay(); return }
+        if liveSurface != nil {
+            hideLivePDFScrollView()
+            updateInteractionOverlay()
+            return
+        }
         super.layout(); updateInteractionOverlay()
         guard initialFitPending, bounds.width > 20, bounds.height > 20, document != nil else { return }
         initialFitPending = false
@@ -233,6 +245,7 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         [.init(x: r.minX, y: r.minY), .init(x: r.midX, y: r.minY), .init(x: r.maxX, y: r.minY), .init(x: r.maxX, y: r.midY), .init(x: r.maxX, y: r.maxY), .init(x: r.midX, y: r.maxY), .init(x: r.minX, y: r.maxY), .init(x: r.minX, y: r.midY)]
     }
     func installObservers() {
+        if liveSurface != nil { hideLivePDFScrollView() }
         if historyKeyMonitor == nil {
             // App menus/WKWebView can consume key equivalents before PDFView
             // receives them. Intercept only while this canvas owns focus;

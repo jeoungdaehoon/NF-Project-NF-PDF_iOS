@@ -12,24 +12,20 @@ private final class MacPortalCommandWebView: WKWebView {
         let key = event.charactersIgnoringModifiers?.lowercased()
         let hasUnsupportedModifier = modifiers.contains(.control) || modifiers.contains(.option)
 
-        let settingsDetail = url.map {
-            $0.scheme == "https" && MacPortalConfig.isPortalURL($0) && $0.path.hasPrefix("/settings/")
-        } ?? false
-        let settingsFind = settingsDetail && !modifiers.contains(.shift)
-            && (key == "f" || (key?.unicodeScalars.contains { !$0.isASCII } == true && event.keyCode == 3))
-
-        if modifiers.contains(.command), !hasUnsupportedModifier, key == "f" || settingsFind {
-            if settingsFind {
-                // Let the visible settings detail own Find before falling back to the pane search.
+        let findKey = key == "f" || (key?.unicodeScalars.contains { !$0.isASCII } == true && event.keyCode == 3)
+        if modifiers.contains(.command), !hasUnsupportedModifier, findKey {
+            if modifiers.contains(.shift) {
+                onFindCommand?()
+            } else {
+                // The web editor can handle Find in a chart or detail panel.
+                // Pages without a local Find action still use the native bar.
                 evaluateJavaScript("""
-                !window.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'f', code: 'KeyF', metaKey: true, cancelable: true
+                !(document.activeElement ?? document.body ?? window).dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'f', code: 'KeyF', metaKey: true, bubbles: true, cancelable: true
                 }))
                 """) { [weak self] result, _ in
                     if result as? Bool != true { self?.onFindCommand?() }
                 }
-            } else {
-                onFindCommand?()
             }
             return true
         }
