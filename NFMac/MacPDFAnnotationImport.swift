@@ -59,7 +59,10 @@ enum MacPDFAnnotationImport {
         let isBold: Bool, isItalic: Bool, isUnderlined: Bool, isStruckThrough: Bool
         let alignmentRawValue: Int, linkURL: String?, attributedTextRTF: Data?
     }
-    private struct Image: Decodable { let imageData: Data, bounds: CGRect, rotationAngle: Double, isHorizontallyFlipped: Bool }
+    private struct Image: Decodable {
+        let imageData: Data, bounds: CGRect, rotationAngle: Double, isHorizontallyFlipped: Bool
+        let imageAppearance: PDFImageAppearance?
+    }
     private struct Shape: Decodable { let shapeType: String, bounds: CGRect, lineWidth: Double, lineColorRGBA: [Double], fillColorRGBA: [Double], rotationAngle: Double }
     private struct Stroke: Decodable { let points: [[Double]], pressures: [Double] }
     private struct Ink: Decodable { let points: [[Double]], pressures: [Double], baseLineWidth: Double, colorRGBA: [Double]? }
@@ -79,7 +82,9 @@ enum MacPDFAnnotationImport {
             return [object]
         }
         if prefix == prefixes[1], let m = try? decoder.decode(Image.self, from: data), valid(m.bounds), NSImage(data: m.imageData) != nil {
-            return [MacPDFObject(page: page, kind: .image, bounds: m.bounds, imageData: m.imageData, originalImageData: m.imageData, rotation: m.rotationAngle, flipped: m.isHorizontallyFlipped)]
+            return [MacPDFObject(page: page, kind: .image, bounds: m.bounds, imageData: m.imageData,
+                                 originalImageData: m.imageData, rotation: m.rotationAngle,
+                                 flipped: m.isHorizontallyFlipped, imageAppearance: m.imageAppearance)]
         }
         if prefix == prefixes[2], let m = try? decoder.decode(Shape.self, from: data), valid(m.bounds), let shape = MacPDFShape(rawValue: m.shapeType) {
             var style = MacPDFStyle(); style.width = m.lineWidth; style.stroke = color(m.lineColorRGBA, fallback: fallbackColor); style.fill = color(m.fillColorRGBA, fallback: .clear)

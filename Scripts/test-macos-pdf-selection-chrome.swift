@@ -38,8 +38,23 @@ import SwiftUI
         try check(borders.contains { $0.lineDashPattern == [3, 3] && $0.lineWidth == 0.75 }, "selection border is thin and dashed at view scale")
         try check(borders.contains { ($0.fillColor?.alpha ?? 0) > 0.9 && $0.lineWidth == 0.75 }, "small handles have their own solid background")
         try check(canvas.connectionHandles.count == 4, "four directional connector grips remain available")
-        let menu = MacPDFMenuLayout.frame(object: CGRect(x: 20, y: 200, width: 200, height: 100), viewport: CGSize(width: 600, height: 500), preferredWidth: 390)
-        try check(menu.height == 38, "object popup fits compact icons and labels in 38 points")
+        let objectRect = CGRect(x: 20, y: 200, width: 200, height: 100)
+        let viewport = CGSize(width: 600, height: 500)
+        let menu = MacPDFMenuLayout.frame(object: objectRect, viewport: viewport, preferredWidth: 240)
+        let actions = MacPDFMenuLayout.cornerControls(object: objectRect, viewport: viewport)!
+        try check(menu.height == 34, "object popup fits smaller icons and labels in 34 points")
+        try check(actions.delete.midX < objectRect.minX && actions.rotate.midX > objectRect.maxX
+                  && actions.delete.midY == actions.rotate.midY, "delete and rotate align at the upper corners")
+        try check(menu.maxY + 6 < actions.delete.minY, "popup and its pointer clear both corner controls")
+        let topEdge = CGRect(x: 590, y: 2, width: 100, height: 60)
+        let edgeActions = MacPDFMenuLayout.cornerControls(object: topEdge, viewport: viewport)!
+        let edgeMenu = MacPDFMenuLayout.frame(object: topEdge, viewport: viewport, preferredWidth: 240)
+        try check(CGRect(origin: .zero, size: viewport).contains(edgeActions.rotate) && !edgeActions.delete.intersects(edgeActions.rotate)
+                  && edgeMenu.minY > edgeActions.rotate.maxY, "controls stay visible and the popup moves below near viewport edges")
+        let overlay = canvas.subviews.compactMap { $0 as? MacPDFDrawingOverlay }.first!
+        let cornerIcons = overlay.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden }
+        try check(cornerIcons.count == 2 && cornerIcons.allSatisfy { $0.image != nil && $0.contentTintColor == .secondaryLabelColor },
+                  "both corner controls display neutral system symbols")
         let before = state.objects, undo = state.undoCount
         var publications = 0
         let observation = state.$objects.dropFirst().sink { _ in publications += 1 }
@@ -85,8 +100,8 @@ import SwiftUI
         try check(state.objects == routeBefore, "connector route undo restores its original route")
         state.connectorEnabled = false
         state.selectObjects([target.id], showMenu: false); pump()
-        let textBounds = canvas.selectionBounds()!
-        let rotate = CGPoint(x: textBounds.maxX, y: textBounds.maxY + 24 / canvas.scaleFactor)
+        let rotateFrame = canvas.selectionActionFrames!.rotate
+        let rotate = canvas.convert(CGPoint(x: rotateFrame.midX, y: rotateFrame.midY), to: page)
         let oldRotation = state.objects.first { $0.id == target.id }!.rotation
         let rotateEnd = CGPoint(x: rotate.x - 25, y: rotate.y + 25)
         mouse(.leftMouseDown, at: rotate)
@@ -95,11 +110,75 @@ import SwiftUI
         try check(state.objects.first { $0.id == target.id }!.rotation != oldRotation, "right-end rotation handle rotates the selected text")
         state.undo()
         state.selectObjects([target.id], showMenu: false); pump()
-        let delete = CGPoint(x: textBounds.minX - 18 / canvas.scaleFactor, y: textBounds.maxY + 18 / canvas.scaleFactor)
+        let deleteFrame = canvas.selectionActionFrames!.delete
+        let delete = canvas.convert(CGPoint(x: deleteFrame.midX, y: deleteFrame.midY), to: page)
         mouse(.leftMouseDown, at: delete)
         mouse(.leftMouseUp, at: delete)
         try check(!state.objects.contains { $0.id == target.id }, "left trash handle deletes the selected text")
         state.undo()
+        let imageData = NSImage(size: CGSize(width: 160, height: 80), flipped: false) { rect in
+            NSColor.systemGray.setFill()
+            rect.fill()
+            return true
+        }.tiffRepresentation!
+        let image = MacPDFObject(page: 0, kind: .image, bounds: CGRect(x: 315, y: 190, width: 160, height: 80), imageData: imageData)
+        state.add(image)
+        state.selectObjects([image.id], showMenu: false); pump()
+        let imageIndex = state.objects.firstIndex { $0.id == image.id }!
+        func imageAnchor(_ object: MacPDFObject, _ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            MacPDFObjectRenderer.anchor(object, MacPDFPoint(CGPoint(x: x, y: y)))
+        }
+        func resizeImage(_ x: CGFloat, _ y: CGFloat, by translation: CGPoint) -> MacPDFObject {
+            let object = state.objects[imageIndex]
+            let start = imageAnchor(object, x, y)
+            let delta = translation.applying(CGAffineTransform(rotationAngle: object.rotation))
+            let end = CGPoint(x: start.x + delta.x, y: start.y + delta.y)
+            mouse(.leftMouseDown, at: start)
+            mouse(.leftMouseDragged, at: end)
+            mouse(.leftMouseUp, at: end)
+            return state.objects[imageIndex]
+        }
+        func close(_ a: CGPoint, _ b: CGPoint) -> Bool { hypot(a.x - b.x, a.y - b.y) < 0.02 }
+        let stretched = resizeImage(1, 0.5, by: CGPoint(x: 40, y: 20))
+        try check(abs(stretched.bounds.width - 200) < 0.02 && abs(stretched.bounds.height - 80) < 0.02,
+                  "image side changes width only")
+        let cornerScaled = resizeImage(1, 1, by: CGPoint(x: 60, y: 12))
+        try check(cornerScaled.bounds.width > stretched.bounds.width
+                  && abs(cornerScaled.bounds.width / cornerScaled.bounds.height - 2.5) < 0.001
+                  && close(imageAnchor(cornerScaled, 0, 0), imageAnchor(stretched, 0, 0)),
+                  "image corner preserves its current stretched ratio and fixes the opposite corner")
+        state.objects[imageIndex].rotation = .pi / 6
+        canvas.refreshAnnotations(); pump()
+        let tilted = state.objects[imageIndex]
+        let taller = resizeImage(0.5, 1, by: CGPoint(x: 15, y: 30))
+        try check(abs(taller.bounds.width - tilted.bounds.width) < 0.02
+                  && abs(taller.bounds.height - tilted.bounds.height - 30) < 0.02
+                  && close(imageAnchor(taller, 0.5, 0), imageAnchor(tilted, 0.5, 0)),
+                  "rotated image side follows its own axis and fixes the opposite edge")
+        let tiltedCorner = resizeImage(1, 1, by: CGPoint(x: 40, y: -10))
+        try check(tiltedCorner.bounds.width > taller.bounds.width
+                  && abs(tiltedCorner.bounds.width / tiltedCorner.bounds.height - taller.bounds.width / taller.bounds.height) < 0.001
+                  && close(imageAnchor(tiltedCorner, 0, 0), imageAnchor(taller, 0, 0)),
+                  "rotated image corner preserves its ratio")
+        for (initial, requested, expected) in [(12.0, 2.0, 0.0), (65, 88, 90), (160, 177, 180), (345, 358, 360), (70, 79, 79), (248, 268, 268)] {
+            state.objects[imageIndex].rotation = initial * .pi / 180
+            canvas.refreshAnnotations(); pump()
+            let original = state.objects[imageIndex]
+            let pivot = CGPoint(x: original.bounds.midX, y: original.bounds.midY)
+            let frame = canvas.selectionActionFrames!.rotate
+            let start = canvas.convert(CGPoint(x: frame.midX, y: frame.midY), to: page)
+            let vector = CGPoint(x: start.x - pivot.x, y: start.y - pivot.y)
+                .applying(CGAffineTransform(rotationAngle: (requested - initial) * .pi / 180))
+            let end = CGPoint(x: pivot.x + vector.x, y: pivot.y + vector.y)
+            mouse(.leftMouseDown, at: start)
+            mouse(.leftMouseDragged, at: end)
+            let previewAngle = canvas.renderingObjects[imageIndex].rotation * 180 / .pi
+            try check(abs(previewAngle - expected) < 0.2 && state.objects[imageIndex] == original,
+                      "rotation previews \(expected) degrees for a pointer angle of \(requested)")
+            mouse(.leftMouseUp, at: end)
+            try check(abs(state.objects[imageIndex].rotation * 180 / .pi - expected) < 0.2,
+                      "rotation commits the previewed angle")
+        }
         let menuState = MacPDFEditorState(document: document, identifier: "menu-proof", fileName: "fixture.pdf", directory: directory.appendingPathComponent("menu"))
         menuState.objects = [source]; menuState.selection = [source.id]; menuState.menuVisible = true
         menuState.selectionViewRect = CGRect(x: 200, y: 160, width: 160, height: 110)

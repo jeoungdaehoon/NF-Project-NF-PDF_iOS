@@ -24,6 +24,10 @@ done
 for source in PortalMeeting PortalMeetingLiveCapture PortalMeetingRecordingSettings PortalMeetingAudioQuality; do
     sources+=("$project_dir/NF/Web/$source.swift")
 done
+sources+=("$project_dir/NF/Web/PortalChartWebSession.swift")
+for source in DetailPDFWorkspace LiveDetailPDF PortalPDFNoteWorkspace PDFNoteDragGlyph PDFPageLinkPicker PDFDocumentToolOptions PDFExternalLink PDFScreenShare PDFImageAppearance PDFImageAppearanceEditor PDFImageBackgroundRemoval; do
+    sources+=("$project_dir/NF/Web/PDF/$source.swift")
+done
 xcrun swiftc -O -whole-module-optimization -parse-as-library -swift-version 5 -default-isolation MainActor -module-name ToolPopoverQA \
     "${sources[@]}" "$project_dir/Scripts/test-macos-pdf-tool-popover.swift" \
     -o "$app_dir/Contents/MacOS/ToolPopoverQA"

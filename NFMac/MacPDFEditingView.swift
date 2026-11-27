@@ -96,6 +96,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     private let selectionHandlesLayer = CAShapeLayer()
     private let findLayer = CAShapeLayer()
     private let drawingOverlay = MacPDFDrawingOverlay()
+    private lazy var deleteSelectionIcon = makeSelectionIcon(.delete)
+    private lazy var rotateSelectionIcon = makeSelectionIcon(.rotate)
     private var lastMousePoint: CGPoint?
     var activeTextView: NSTextView? { textView }
     var editingObjectID: UUID? { editingTextID }
@@ -166,15 +168,13 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
               let editor else { return false }
         if let handle = connectorRouteHandle, hypot(handle.x - point.x, handle.y - point.y) <= 12 { return false }
         if connectionHandles.contains(where: { hypot($0.center.x - point.x, $0.center.y - point.y) <= 13 }) { return false }
+        if let actions = selectionActionFrames, actions.delete.contains(point) || actions.rotate.contains(point) { return false }
         guard let page = page(for: point, nearest: false), let document else { return true }
         let p = convert(point, to: page)
         if hit(p, page: document.index(for: page)) != nil { return false }
         if editor.selected?.page == document.index(for: page), let rect = selectionBounds() {
             let scale = max(scaleFactor, 0.1)
-            let actions = selectionActionCenters(for: rect)
-            if hypot(actions.delete.x - p.x, actions.delete.y - p.y) < 10 / scale ||
-                hypot(actions.rotate.x - p.x, actions.rotate.y - p.y) < 10 / scale { return false }
-            if Self.handles(rect).contains(where: { hypot($0.x - p.x, $0.y - p.y) < 10 / scale }) { return false }
+            if Self.resizeHandles(for: rect, image: selectedResizeImage).contains(where: { hypot($0.x - p.x, $0.y - p.y) < 10 / scale }) { return false }
             if editor.selection.count > 1 && rect.contains(p) { return false }
         }
         return true
@@ -240,6 +240,18 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     static func handles(_ r: CGRect) -> [CGPoint] {
         [.init(x: r.minX, y: r.minY), .init(x: r.midX, y: r.minY), .init(x: r.maxX, y: r.minY), .init(x: r.maxX, y: r.midY), .init(x: r.maxX, y: r.maxY), .init(x: r.midX, y: r.maxY), .init(x: r.minX, y: r.maxY), .init(x: r.minX, y: r.midY)]
     }
+    private var selectedResizeImage: MacPDFObject? {
+        guard let editor, editor.selection.count == 1, let id = editor.selection.first else { return nil }
+        return renderingObjects.first { $0.id == id && $0.kind == .image }
+    }
+
+    private static func resizeHandles(for rect: CGRect, image: MacPDFObject?) -> [CGPoint] {
+        guard let image else { return handles(rect) }
+        return Self.handles(CGRect(x: 0, y: 0, width: 1, height: 1)).map {
+            MacPDFObjectRenderer.anchor(image, MacPDFPoint($0))
+        }
+    }
+
     func installObservers() {
         if liveSurface != nil { hideLivePDFScrollView() }
         if historyKeyMonitor == nil {
@@ -337,37 +349,31 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             return MacPDFObjectRenderer.corners(object).reduce(rect) { $0.union(CGRect(origin: $1, size: CGSize(width: 0.01, height: 0.01))) }
         }
     }
-    private func selectionActionCenters(for rect: CGRect) -> (rotate: CGPoint, delete: CGPoint) {
-        let scale = max(scaleFactor, 0.1)
-        return (
-            CGPoint(x: rect.maxX, y: rect.maxY + 24 / scale),
-            CGPoint(x: rect.minX - 18 / scale, y: rect.maxY + 18 / scale)
-        )
+    private func makeSelectionIcon(_ action: MacPDFSelectionAction) -> NSImageView {
+        let view = NSImageView()
+        view.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        view.contentTintColor = .secondaryLabelColor
+        view.imageScaling = .scaleNone
+        view.isHidden = true
+        drawingOverlay.addSubview(view)
+        return view
     }
 
-    private func addSelectionActionIcons(to path: CGMutablePath, rotate: CGPoint, delete: CGPoint) {
-        let rotation = CGMutablePath()
-        rotation.addEllipse(in: CGRect(x: -6, y: -6, width: 12, height: 12))
-        let arcEnd = CGFloat.pi * 5 / 3
-        let arrowTip = CGPoint(x: 3.25 * cos(arcEnd), y: 3.25 * sin(arcEnd))
-        rotation.move(to: CGPoint(x: 3.25 * cos(.pi / 6), y: 3.25 * sin(.pi / 6)))
-        rotation.addArc(center: .zero, radius: 3.25, startAngle: .pi / 6, endAngle: arcEnd, clockwise: false)
-        rotation.move(to: CGPoint(x: arrowTip.x - 2.4, y: arrowTip.y + 0.1))
-        rotation.addLine(to: arrowTip)
-        rotation.addLine(to: CGPoint(x: arrowTip.x - 0.9, y: arrowTip.y - 2.2))
+    var selectionActionFrames: (delete: CGRect, rotate: CGRect, page: PDFPage)? {
+        guard let editor, !editor.isTextEditing, !editor.presentation, !commandHeld,
+              editor.connectorEnabled || [.select, .text, .image, .shape, .lasso].contains(editor.tool),
+              let rect = selectionBounds(), let page = document?.page(at: editor.selected?.page ?? editor.currentPage) else { return nil }
+        let viewRect = convert(rect, from: page).standardized.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+        let object = isFlipped ? viewRect
+            : CGRect(x: viewRect.minX, y: bounds.height - viewRect.maxY, width: viewRect.width, height: viewRect.height)
+        guard let actions = MacPDFMenuLayout.cornerControls(object: object, viewport: bounds.size) else { return nil }
 
-        let trash = CGMutablePath()
-        trash.addEllipse(in: CGRect(x: -7, y: -7, width: 14, height: 14))
-        trash.move(to: CGPoint(x: -3.6, y: 2))
-        trash.addLine(to: CGPoint(x: 3.6, y: 2))
-        trash.addLines(between: [CGPoint(x: -1.3, y: 2), CGPoint(x: -1.3, y: 3.4),
-                                 CGPoint(x: 1.3, y: 3.4), CGPoint(x: 1.3, y: 2)])
-        trash.addLines(between: [CGPoint(x: -2.7, y: 2), CGPoint(x: -2.2, y: -3.4),
-                                 CGPoint(x: 2.2, y: -3.4), CGPoint(x: 2.7, y: 2)])
-
-        let verticalDirection: CGFloat = isFlipped ? -1 : 1
-        path.addPath(rotation, transform: CGAffineTransform(a: 1, b: 0, c: 0, d: verticalDirection, tx: rotate.x, ty: rotate.y))
-        path.addPath(trash, transform: CGAffineTransform(a: 1, b: 0, c: 0, d: verticalDirection, tx: delete.x, ty: delete.y))
+        func canvasFrame(_ frame: CGRect) -> CGRect {
+            CGRect(x: bounds.minX + frame.minX, y: bounds.minY + (isFlipped ? frame.minY : bounds.height - frame.maxY),
+                   width: frame.width, height: frame.height)
+        }
+        return (canvasFrame(actions.delete), canvasFrame(actions.rotate), page)
     }
 
     func updateInteractionOverlay() {
@@ -383,10 +389,24 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             path.move(to: convert(first.cgPoint, from: page)); samples.dropFirst().forEach { path.addLine(to: convert($0.cgPoint, from: page)) }
         }
         if !editor.isTextEditing, let rect = selectionBounds(), let page = document?.page(at: editor.selected?.page ?? editor.currentPage) {
-            selectionPath.addRect(convert(rect, from: page).standardized.insetBy(dx: -3, dy: -3))
-            for handle in Self.handles(rect) { let p = convert(handle, from: page); handlesPath.addRect(CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)) }
-            let actions = selectionActionCenters(for: rect)
-            addSelectionActionIcons(to: path, rotate: convert(actions.rotate, from: page), delete: convert(actions.delete, from: page))
+            let image = selectedResizeImage
+            let handles = Self.resizeHandles(for: rect, image: image)
+            if var outline = image {
+                let padding = 3 / max(scaleFactor, 0.1)
+                outline.bounds = outline.bounds.insetBy(dx: -padding, dy: -padding)
+                selectionPath.addLines(between: MacPDFObjectRenderer.corners(outline).map { convert($0, from: page) })
+                selectionPath.closeSubpath()
+            } else {
+                selectionPath.addRect(convert(rect, from: page).standardized.insetBy(dx: -3, dy: -3))
+            }
+            for handle in handles { let p = convert(handle, from: page); handlesPath.addRect(CGRect(x: p.x - 2, y: p.y - 2, width: 4, height: 4)) }
+        }
+        let actions = selectionActionFrames
+        deleteSelectionIcon.isHidden = actions == nil
+        rotateSelectionIcon.isHidden = actions == nil
+        if let actions {
+            deleteSelectionIcon.frame = drawingOverlay.convert(actions.delete, from: self)
+            rotateSelectionIcon.frame = drawingOverlay.convert(actions.rotate, from: self)
         }
         CATransaction.begin(); CATransaction.setDisableActions(true); interactionLayer.frame = bounds; interactionLayer.path = path; CATransaction.commit()
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -577,6 +597,22 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
             connectionDrag = ConnectionDrag(source: source.id, page: source.page, anchor: handle.anchor, style: editor.connectionStyle, end: MacPDFObjectRenderer.anchor(source, handle.anchor))
             updateConnectionOverlay(); return
         }
+        if let actions = selectionActionFrames {
+            if actions.delete.contains(viewPoint) {
+                start = nil
+                editor.deleteSelected()
+                return
+            }
+            if actions.rotate.contains(viewPoint) {
+                start = convert(viewPoint, to: actions.page)
+                dragPage = actions.page
+                beforeDrag = editor.objects
+                resizeHandle = nil
+                rotating = true
+                moving = true
+                return
+            }
+        }
         let pickedLocation = location(event)
         let connectionPick = editor.connectorEnabled && pickedLocation.map { page, point in hit(point, page: document?.index(for: page) ?? -1) != nil } == true
         guard let (page, point) = pickedLocation, let document else { editor.selection = []; return }
@@ -584,11 +620,8 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
         resizeHandle = nil; rotating = false; moving = false; samples = [MacPDFPoint(point, pressure: pressure(event))]
         if editor.connectorEnabled || [.select, .text, .image, .shape, .lasso].contains(activeTool), let rect = selectionBounds(), editor.selected?.page == editor.currentPage {
             let scale = max(scaleFactor, 0.1)
-            let actions = selectionActionCenters(for: rect)
-            if hypot(actions.delete.x - point.x, actions.delete.y - point.y) < 10 / scale { editor.deleteSelected(); start = nil; return }
-            rotating = hypot(actions.rotate.x - point.x, actions.rotate.y - point.y) < 10 / scale
-            resizeHandle = Self.handles(rect).firstIndex { hypot($0.x - point.x, $0.y - point.y) < 10 / scale }
-            if rotating || resizeHandle != nil || (editor.selection.count > 1 && rect.contains(point)) { moving = true; return }
+            resizeHandle = Self.resizeHandles(for: rect, image: selectedResizeImage).firstIndex { hypot($0.x - point.x, $0.y - point.y) < 10 / scale }
+            if resizeHandle != nil || (editor.selection.count > 1 && rect.contains(point)) { moving = true; return }
         }
         if activeTool == .lasso && !connectionPick { editor.selection = []; updateInteractionOverlay(); return }
         if connectionPick || [.select, .text, .image, .shape].contains(activeTool) {
@@ -648,14 +681,35 @@ final class MacPDFEditingView: PDFView, NSTextViewDelegate {
     }
     private func transformSelection(to point: CGPoint, from start: CGPoint) {
         guard let editor, let rect = selectionBounds(in: beforeDrag) else { return }
-        let center = CGPoint(x: rect.midX, y: rect.midY)
+        guard point != start else { transformPreview = nil; return }
+        let originals = beforeDrag.filter { editor.selection.contains($0.id) }
+        let single = originals.count == 1 ? originals.first : nil
+        let image = single?.kind == .image ? single : nil
+        let transformBounds = image?.bounds ?? (rotating ? single?.bounds : nil) ?? rect
+        let center = CGPoint(x: transformBounds.midX, y: transformBounds.midY)
         var sx = 1.0, sy = 1.0, angle = 0.0, delta = CGPoint(x: point.x - start.x, y: point.y - start.y)
-        if rotating { angle = atan2(point.y - center.y, point.x - center.x) - atan2(start.y - center.y, start.x - center.x); delta = .zero }
-        else if let handle = resizeHandle {
-            let fixed = Self.handles(rect)[(handle + 4) % 8], initial = Self.handles(rect)[handle]
-            sx = [1, 5].contains(handle) ? 1 : max(0.08, (point.x - fixed.x) / (initial.x - fixed.x))
-            sy = [3, 7].contains(handle) ? 1 : max(0.08, (point.y - fixed.y) / (initial.y - fixed.y))
-            delta = CGPoint(x: fixed.x + (center.x - fixed.x) * sx - center.x, y: fixed.y + (center.y - fixed.y) * sy - center.y)
+        if rotating {
+            let originalAngle = single?.rotation ?? 0
+            let dragAngle = atan2(point.y - center.y, point.x - center.x) - atan2(start.y - center.y, start.x - center.x)
+            angle = PDFImageAppearance.snappedRotation(originalAngle + dragAngle) - originalAngle
+            delta = .zero
+        } else if let handle = resizeHandle {
+            let handles = Self.handles(transformBounds)
+            let fixed = handles[(handle + 4) % 8], initial = handles[handle]
+            let rotation = image?.rotation ?? 0
+            let localDrag = delta.applying(CGAffineTransform(rotationAngle: -rotation))
+            let width = initial.x - fixed.x, height = initial.y - fixed.y
+            if handle.isMultiple(of: 2), originals.contains(where: { $0.kind == .image }) {
+                // Project the pointer onto the original diagonal, keeping the opposite corner fixed.
+                let scale = 1 + (localDrag.x * width + localDrag.y * height) / (width * width + height * height)
+                sx = max(0.08, scale)
+                sy = sx
+            } else {
+                sx = width == 0 ? 1 : max(0.08, 1 + localDrag.x / width)
+                sy = height == 0 ? 1 : max(0.08, 1 + localDrag.y / height)
+            }
+            delta = CGPoint(x: (center.x - fixed.x) * (sx - 1), y: (center.y - fixed.y) * (sy - 1))
+                .applying(CGAffineTransform(rotationAngle: rotation))
         }
         func transformed(_ p: CGPoint) -> CGPoint {
             let x = (p.x - center.x) * sx, y = (p.y - center.y) * sy

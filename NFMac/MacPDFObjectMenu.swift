@@ -1,35 +1,64 @@
 import AppKit
 import SwiftUI
 
+enum MacPDFSelectionAction {
+    case delete, rotate
+
+    var symbol: String {
+        switch self { case .delete: "trash"; case .rotate: "rotate.right" }
+    }
+}
+
 enum MacPDFImageAction: String, CaseIterable {
     case replace, resetSize, rotate, flip, crop, edit, systemEdit, front, back
     var title: String {
         switch self { case .replace: "변경"; case .resetSize: "원본 크기"; case .rotate: "회전"; case .flip: "좌우 반전"; case .crop: "자르기"; case .edit: "이미지 편집"; case .systemEdit: "시스템 편집"; case .front: "최상단"; case .back: "최하단" }
     }
     var symbol: String {
-        switch self { case .replace: "photo.on.rectangle"; case .resetSize: "arrow.counterclockwise"; case .rotate: "rotate.right"; case .flip: "arrow.left.and.right"; case .crop: "crop"; case .edit: "pencil.and.outline"; case .systemEdit: "macwindow"; case .front: "square.3.layers.3d.top.filled"; case .back: "square.3.layers.3d.bottom.filled" }
+        switch self { case .replace: "photo.on.rectangle"; case .resetSize: "arrow.counterclockwise"; case .rotate: MacPDFSelectionAction.rotate.symbol; case .flip: "arrow.left.and.right"; case .crop: "crop"; case .edit: "pencil.and.outline"; case .systemEdit: "macwindow"; case .front: "square.3.layers.3d.top.filled"; case .back: "square.3.layers.3d.bottom.filled" }
     }
 }
 
 enum MacPDFMenuLayout {
-    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 38) -> CGRect {
+    private static let cornerSize: CGFloat = 22
+    private static let cornerOffset: CGFloat = 19
+
+    static func cornerControls(object: CGRect, viewport: CGSize) -> (delete: CGRect, rotate: CGRect)? {
+        let radius = cornerSize / 2
+        guard viewport.width >= 2 * cornerSize, viewport.height >= cornerSize,
+              CGRect(origin: .zero, size: viewport).intersects(object) else { return nil }
+        let y = max(0, object.minY - cornerOffset - radius)
+        let left = min(max(0, object.minX - cornerOffset - radius), viewport.width - 2 * cornerSize)
+        let right = min(max(left + cornerSize, object.maxX + cornerOffset - radius), viewport.width - cornerSize)
+        return (CGRect(x: left, y: y, width: cornerSize, height: cornerSize),
+                CGRect(x: right, y: y, width: cornerSize, height: cornerSize))
+    }
+
+    static func frame(object: CGRect, viewport: CGSize, preferredWidth: CGFloat, height: CGFloat = 34, connectorHandles: Bool = false) -> CGRect {
         let width = max(1, min(preferredWidth, viewport.width - 16)), h = max(1, min(height, viewport.height - 16))
-        let above = object.minY - h - 16, proposedY = above >= 8 ? above : object.maxY + 16
+        let clearance = connectorHandles ? 58 : cornerOffset + cornerSize / 2 + 12
+        let above = object.minY - h - clearance
+        let below = max(object.maxY + (connectorHandles ? 54 : 16), cornerSize + 12)
+        let proposedY = above >= 8 ? above : below
         return CGRect(x: min(max(8, object.midX - width / 2), max(8, viewport.width - width - 8)), y: min(max(8, proposedY), max(8, viewport.height - h - 8)), width: width, height: h)
     }
 }
 
 struct MacPDFObjectMenu: View {
+    private enum AppearancePage { case style, background }
+
     @ObservedObject var state: MacPDFEditorState
     let canvasSize: CGSize
     let onImageAction: (MacPDFImageAction) -> Void
     @State private var showsMore = false
+    @State private var appearancePage: AppearancePage?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let image = state.selection.count == 1 && state.selected?.kind == .image
-        let anchor = state.connectorEnabled ? state.selectionViewRect.insetBy(dx: -44, dy: -44) : state.selectionViewRect
-        let rect = MacPDFMenuLayout.frame(object: anchor, viewport: canvasSize, preferredWidth: 260)
+        let anchor = state.selectionViewRect
+        let rect = MacPDFMenuLayout.frame(object: anchor, viewport: canvasSize, preferredWidth: 240,
+                                          connectorHandles: state.connectorEnabled && state.selection.count == 1)
         let below = rect.minY >= anchor.maxY
         let above = rect.maxY <= anchor.minY
         let pointerX = min(max(state.selectionViewRect.midX - rect.minX, 12), max(rect.width - 12, 12))
@@ -50,24 +79,23 @@ struct MacPDFObjectMenu: View {
                         if !image {
                             bubble("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected(); state.menuVisible = true }
                         }
-                        bubble("삭제", "trash", id: "delete") { state.deleteSelected() }
-                        bubble("더보기", "ellipsis", id: "more") { showsMore.toggle() }
+                        bubble("삭제", MacPDFSelectionAction.delete.symbol, id: "delete") { state.deleteSelected() }
+                        bubble("더보기", "ellipsis", id: "more") {
+                            appearancePage = nil
+                            showsMore.toggle()
+                        }
                             .popover(isPresented: $showsMore) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    if image {
-                                        imageActions("이미지", [.rotate, .flip, .resetSize])
-                                        imageActions("편집", [.edit, .systemEdit])
-                                        item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected() }
+                                if let appearancePage, image, let object = state.selected {
+                                    PDFImageAppearanceEditor(imageData: object.imageData, bounds: object.bounds, flipped: object.flipped,
+                                                             appearance: object.imageAppearance, startsAtBackground: appearancePage == .background,
+                                                                onBack: { self.appearancePage = nil }) { appearance in
+                                        state.applyImageAppearance(appearance, to: object.id)
+                                        showsMore = false
                                     }
-                                    section("쌓는 순서")
-                                    item("최상단", "square.3.layers.3d.top.filled", id: "front") { state.reorderSelected(front: true) }
-                                    item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
-                                    Divider()
-                                    item("닫기", "xmark", id: "close") { state.menuVisible = false }
+                                    .id(object.id)
+                                } else {
+                                    moreActions(image: image)
                                 }
-                                .padding(8)
-                                .frame(width: 186)
-                                .background(MacPDFPanelSurface(radius: 9))
                             }
                     }
                     .padding(.horizontal, 5)
@@ -95,14 +123,34 @@ struct MacPDFObjectMenu: View {
         .onChange(of: state.selection) { _, _ in showsMore = false }
     }
 
+    private func moreActions(image: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if image {
+                item("이미지 스타일", "slider.horizontal.3", id: "image-appearance", closesMenu: false) { appearancePage = .style }
+                item("배경 투명화", "checkerboard.rectangle", id: "remove-background", closesMenu: false) { appearancePage = .background }
+                imageActions("이미지", [.rotate, .flip, .resetSize])
+                imageActions("편집", [.edit, .systemEdit])
+                item("복제", "plus.square.on.square", id: "duplicate") { state.duplicateSelected() }
+            }
+            section("쌓는 순서")
+            item("최상단", "square.3.layers.3d.top.filled", id: "front") { state.reorderSelected(front: true) }
+            item("최하단", "square.3.layers.3d.bottom.filled", id: "back") { state.reorderSelected(front: false) }
+            Divider()
+            item("닫기", "xmark", id: "close") { state.menuVisible = false }
+        }
+        .padding(8)
+        .frame(width: 186)
+        .background(MacPDFPanelSurface(radius: 9))
+    }
+
     private func bubble(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
         MacPDFActionButton(title: "", identifier: "pdf.object.\(id)", accessibilityTitle: title, action: action)
-            .frame(width: 48, height: 34)
+            .frame(width: 44, height: 30)
             .overlay {
                 VStack(spacing: 2) {
                     Image(systemName: symbol)
-                        .font(.system(size: 12))
-                        .frame(width: 15, height: 15)
+                        .font(.system(size: 11))
+                        .frame(width: 13, height: 13)
                     Text(title)
                         .font(.system(size: 10))
                         .lineLimit(1)
@@ -130,9 +178,9 @@ struct MacPDFObjectMenu: View {
         }
     }
 
-    private func item(_ title: String, _ symbol: String, id: String, action: @escaping () -> Void) -> some View {
+    private func item(_ title: String, _ symbol: String, id: String, closesMenu: Bool = true, action: @escaping () -> Void) -> some View {
         MacPDFActionButton(title: title, symbol: symbol, identifier: "pdf.object.\(id)", inline: true) {
-            showsMore = false
+            if closesMenu { showsMore = false }
             action()
         }
             .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)

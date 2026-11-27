@@ -36,6 +36,11 @@
         6C0000000000000000000001 = {isa = PBXBuildFile; fileRef = 6C0000000000000000000002; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
         6C0000000000000000000003 = {isa = PBXBuildFile; fileRef = 6C0000000000000000000004; };
 		5B0000000000000000000014 /* PortalPDFNoteWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000024; };
+		5B0000000000000000000052 /* PDFExternalLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000053 /* PDFExternalLink.swift */; };
+		5B0000000000000000000054 /* PDFScreenShare.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000055 /* PDFScreenShare.swift */; };
+		5B000000000000000000005A /* PDFImageBackgroundRemoval.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B000000000000000000005B /* PDFImageBackgroundRemoval.swift */; };
+		5B0000000000000000000058 /* PDFImageAppearanceEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000059 /* PDFImageAppearanceEditor.swift */; };
+		5B0000000000000000000056 /* PDFImageAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000057 /* PDFImageAppearance.swift */; };
 		5B0000000000000000000040 /* PDFDocumentToolOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000029; };
 		5B0000000000000000000041 /* PDFPageLinkPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000030; };
 		5B0000000000000000000042 /* PDFNoteDragGlyph.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B0000000000000000000031; };
@@ -57,6 +62,11 @@
         6C0000000000000000000002 = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NFShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
         6C0000000000000000000004 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Documents/IncomingDocuments.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000024 /* PortalPDFNoteWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PortalPDFNoteWorkspace.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000053 /* PDFExternalLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFExternalLink.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000055 /* PDFScreenShare.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFScreenShare.swift; sourceTree = SOURCE_ROOT; };
+		5B000000000000000000005B /* PDFImageBackgroundRemoval.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFImageBackgroundRemoval.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000059 /* PDFImageAppearanceEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFImageAppearanceEditor.swift; sourceTree = SOURCE_ROOT; };
+		5B0000000000000000000057 /* PDFImageAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFImageAppearance.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000029 /* PDFDocumentToolOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFDocumentToolOptions.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000030 /* PDFPageLinkPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFPageLinkPicker.swift; sourceTree = SOURCE_ROOT; };
 		5B0000000000000000000031 /* PDFNoteDragGlyph.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NF/Web/PDF/PDFNoteDragGlyph.swift; sourceTree = SOURCE_ROOT; };
@@ -375,6 +385,11 @@
 			files = (
 				5B0000000000000000000010 /* PortalMeeting.swift in Sources */,
 				5B0000000000000000000014 /* PortalPDFNoteWorkspace.swift in Sources */,
+				5B0000000000000000000052 /* PDFExternalLink.swift in Sources */,
+				5B0000000000000000000054 /* PDFScreenShare.swift in Sources */,
+				5B000000000000000000005A /* PDFImageBackgroundRemoval.swift in Sources */,
+				5B0000000000000000000058 /* PDFImageAppearanceEditor.swift in Sources */,
+				5B0000000000000000000056 /* PDFImageAppearance.swift in Sources */,
 				5B0000000000000000000042 /* PDFNoteDragGlyph.swift in Sources */,
 				5B0000000000000000000043 /* DetailPDFWorkspace.swift in Sources */,
 				5B0000000000000000000048 /* LiveDetailPDF.swift in Sources */,

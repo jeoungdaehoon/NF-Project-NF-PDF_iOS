@@ -5,7 +5,7 @@ import WebKit
 
 @MainActor
 final class PDFNoteWorkspaceState: ObservableObject {
-    enum Mode {
+    enum Mode: String {
         case popup, slide, split, note
 
         var showsLinkedMarker: Bool { self == .slide || self == .split }
@@ -17,6 +17,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
         let bounds: CGRect
         var isDocumentMarker = false
         var markerStyle = PDFDocumentMarkerStyle()
+        var externalLink: PDFExternalLink?
     }
     struct Target {
         let page: PDFPage
@@ -24,6 +25,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
         var objectID: String? = nil
         var isDocumentMarker = false
         var markerStyle = PDFDocumentMarkerStyle()
+        var isWebLink = false
     }
     struct Session: Identifiable {
         let id: String
@@ -32,9 +34,11 @@ final class PDFNoteWorkspaceState: ObservableObject {
         var collapsed = false
         var pdfScaleBeforeNoteOnly: CGFloat?
         var target: URL?
+        var externalLink: PDFExternalLink?
     }
     static let path = "/pdf-free-note"
     let origin: URL
+    let screenShare = PDFScreenShare()
     var sourceURL: URL?
     var localSourceID: String?
     weak var canvas: PDFView?
@@ -45,9 +49,15 @@ final class PDFNoteWorkspaceState: ObservableObject {
             if !documentTool {
                 showsDocumentOptions = false
                 editingMarkerID = nil
+                if webLinkTool {
+                    webLinkTool = false
+                    cancelPicker()
+                }
             }
         }
     }
+    @Published var webLinkTool = false
+    @Published private(set) var hiddenVideoHeaders: Set<String> = []
     @Published var destination: URL?
     @Published var error: String?
     @Published private(set) var pendingArea: Target?
@@ -84,6 +94,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
             cancelPicker()
             documentTool = false
             closingPopups.removeAll()
+            hiddenVideoHeaders.removeAll()
             editingMarkerID = nil
             focusedMarkerID = nil
         }
@@ -182,7 +193,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
 
     @discardableResult
     func placeDocument(at point: CGPoint) -> Bool {
-        guard documentTool, destination == nil, let canvas,
+        guard documentTool, pendingArea == nil, let canvas,
               let page = canvas.page(for: point, nearest: false) else { return false }
         // Canvas events can reach PDFKit while the document tool is active.
         // An existing marker at the click location takes priority over placement.
@@ -192,8 +203,14 @@ final class PDFNoteWorkspaceState: ObservableObject {
         guard !bounds.isEmpty, !bounds.isNull else { return false }
         var target = Target(page: page, bounds: bounds, isDocumentMarker: true)
         target.markerStyle = documentMarkerStyle
+        target.isWebLink = webLinkTool
         showsDocumentOptions = false
-        chooseNote(target)
+        if webLinkTool {
+            target.markerStyle.icon = "link"
+            pendingArea = target
+        } else {
+            chooseNote(target)
+        }
         return true
     }
 
@@ -215,7 +232,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
     }
 
     func canEditMarker(_ id: String) -> Bool {
-        documentTool && !sessions.contains { $0.id == id && !$0.collapsed }
+        documentTool && !webLinkTool && !sessions.contains { $0.id == id && !$0.collapsed }
     }
 
     private func chooseNote(_ area: Target) {
@@ -229,6 +246,19 @@ final class PDFNoteWorkspaceState: ObservableObject {
         style.icon = icon
         configuredMarkerStyle = style
         recentDocumentIcons = PDFDocumentMarkerStyle.rememberIcon(icon)
+    }
+
+    func selectWebLinkTool() {
+        if webLinkTool { documentTool = false; return }
+        cancelPicker()
+        documentTool = true
+        webLinkTool = true
+        showsDocumentOptions = false
+        editingMarkerID = nil
+    }
+
+    func shareVisibleScreen() {
+        if !screenShare.present() { error = "현재 PDFView 화면을 공유할 수 없습니다." }
     }
 
     var configuredMarkerStyle: PDFDocumentMarkerStyle {
@@ -292,6 +322,23 @@ final class PDFNoteWorkspaceState: ObservableObject {
         connect(PDFPageLink.tabID(url) ?? UUID().uuidString, pageHref: href)
     }
 
+    func selectExternalLink(_ link: PDFExternalLink) {
+        guard pendingArea?.isWebLink == true else { return }
+        if let href = PDFPageLink.href(for: link.url, origin: origin) {
+            connect(PDFPageLink.tabID(link.url) ?? UUID().uuidString, pageHref: href)
+        } else {
+            pendingArea?.markerStyle.icon = link.icon
+            connect(UUID().uuidString, pageHref: link.url.absoluteString)
+        }
+        documentTool = false
+    }
+
+    func closeExternalLinkPicker() {
+        guard pendingArea?.isWebLink == true else { return }
+        cancelPicker()
+        documentTool = false
+    }
+
     func portalPage(for session: Session) -> URL? {
         session.target ?? PDFPageLink.url(for: "/custom/" + session.note, origin: origin)
     }
@@ -301,6 +348,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
               let link, let href = URLComponents(url: link, resolvingAgainstBaseURL: false)?
                 .queryItems?.first(where: { $0.name == "page" })?.value else { return }
         sessions[index].target = PDFPageLink.url(for: href, origin: origin)
+        sessions[index].externalLink = PDFExternalLink(href)
     }
 
     private func connect(_ note: String, pageHref: String?) {
@@ -328,7 +376,11 @@ final class PDFNoteWorkspaceState: ObservableObject {
         }
         destination = nil
         pendingArea = nil
-        open(id: id, note: note)
+        if let anchor = anchors(on: area.page).first(where: { $0.id == id }), anchor.externalLink != nil {
+            openMarker(anchor)
+        } else {
+            open(id: id, note: note)
+        }
     }
 
     func cancelPicker() {
@@ -377,6 +429,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
                                 isDocumentMarker: annotation.contents == "nf-note-marker" ||
                                     query.contains { $0.name == "marker" && $0.value == "1" })
             anchor.markerStyle = PDFDocumentMarkerStyle(query: query)
+            anchor.externalLink = PDFExternalLink(query.first(where: { $0.name == "page" })?.value)
             return anchor
         }
     }
@@ -461,13 +514,22 @@ final class PDFNoteWorkspaceState: ObservableObject {
                 break
             }
         }
+        if sessions.last?.id == id, sessions.last?.externalLink?.kind == .page,
+           let file = webModeFile(id), let value = try? String(contentsOf: file, encoding: .utf8),
+           let saved = Mode(rawValue: value), saved.showsLinkedMarker {
+            mode(saved, for: id)
+        }
     }
 
     func openMarker(_ anchor: Anchor) {
         let dockedMode = sessions.last { $0.mode.showsLinkedMarker }?.mode
-        if destination != nil { cancelPicker() }
+        if pendingArea != nil { cancelPicker() }
         open(id: anchor.id, note: anchor.note)
-        if let dockedMode { mode(dockedMode, for: anchor.id) }
+        if anchor.externalLink?.isVideo == true {
+            for index in sessions.indices where sessions[index].mode != .popup { sessions[index].mode = .popup }
+        } else if let dockedMode {
+            mode(dockedMode, for: anchor.id)
+        }
     }
 
     func collapse(_ id: String) {
@@ -478,6 +540,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
 
     func mode(_ mode: Mode, for id: String) {
         guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        if mode != .popup && sessions[index].externalLink?.isVideo == true { return }
+        if mode == .note && sessions[index].externalLink != nil { return }
         if mode == .note && sessions[index].mode != .note {
             sessions[index].pdfScaleBeforeNoteOnly = canvas?.scaleFactor
         }
@@ -485,10 +549,23 @@ final class PDFNoteWorkspaceState: ObservableObject {
             sessions[other].mode = .popup
         }
         sessions[index].mode = mode
+        if sessions[index].externalLink?.kind == .page, let file = webModeFile(id) {
+            do {
+                try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try mode.rawValue.write(to: file, atomically: true, encoding: .utf8)
+            } catch {
+                self.error = "웹 링크 보기 방식을 저장하지 못했습니다."
+            }
+        }
+    }
+
+    private func webModeFile(_ id: String) -> URL? {
+        popupLayoutFile(id)?.deletingPathExtension().appendingPathExtension("web-mode")
     }
 
     func autoSlide(_ id: String?) {
         guard let id, sessions.last?.id == id, sessions.last?.collapsed == false,
+              sessions.last?.externalLink?.isVideo != true,
               sessions.allSatisfy({ $0.mode == .popup }) else { return }
         mode(.slide, for: id)
     }
@@ -546,7 +623,7 @@ final class PDFNoteWorkspaceState: ObservableObject {
     func close(_ id: String, animated: Bool) async {
         guard let session = sessions.first(where: { $0.id == id }), closeRequests.insert(id).inserted else { return }
         let closingDocument = activeDocument
-        defer { closeRequests.remove(id) }
+        defer { closeRequests.remove(id); hiddenVideoHeaders.remove(id) }
         do {
             if let browser = browsers[id] {
                 _ = try await browser.callAsyncJavaScript(
@@ -573,6 +650,11 @@ final class PDFNoteWorkspaceState: ObservableObject {
         } catch {
             self.error = "자유노트를 저장하지 못했습니다. 내용을 확인한 뒤 다시 시도해 주세요."
         }
+    }
+
+    func setVideoHeaderHidden(_ hidden: Bool, for id: String) {
+        guard hidden != hiddenVideoHeaders.contains(id) else { return }
+        if hidden { hiddenVideoHeaders.insert(id) } else { hiddenVideoHeaders.remove(id) }
     }
 
     func browser(_ session: Session) -> WKWebView {
@@ -645,7 +727,7 @@ struct PDFNotePlacement: Codable {
             bounds.size.width > 0 && bounds.size.height > 0 && contentScaleRatio > 0
     }
 
-    static func zoomedFrame(_ rect: CGRect, by translation: CGSize) -> CGRect {
+    nonisolated static func zoomedFrame(_ rect: CGRect, by translation: CGSize) -> CGRect {
         let distance = abs(translation.width) >= abs(translation.height) ? translation.width : -translation.height
         let factor = exp(distance / 180)
         let minimum = 88 / min(rect.width, rect.height)
@@ -721,11 +803,16 @@ struct PDFNoteWorkspace<Editor: View>: View {
             .clipped()
         }
         .onReceive(state.viewportChanges) { viewportRevision &+= 1 }
+        .background(PDFScreenShareAnchor(controller: state.screenShare).allowsHitTesting(false))
         #if os(iOS)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         #endif
-        .alert("자유노트", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
+        .sheet(isPresented: Binding(get: { state.pendingArea?.isWebLink == true },
+                                    set: { if !$0 { state.closeExternalLinkPicker() } })) {
+            PDFExternalLinkPicker(onSelect: state.selectExternalLink, onClose: state.closeExternalLinkPicker)
+        }
+        .alert("PDFView", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
             Button("확인") { state.error = nil }
         } message: { Text(state.error ?? "") }
     }
@@ -746,15 +833,20 @@ struct PDFNoteWorkspace<Editor: View>: View {
             }
             return [full.id: box]
         }
-        let width = min(350, max(1, size.width - 20))
-        let height = min(330, max(1, size.height * 0.72))
+        let defaultWidth = min(350, max(1, size.width - 20))
+        let defaultHeight = min(330, max(1, size.height * 0.72))
         let workspace = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
-        let topMargin = min(24, max(0, workspace.height - height))
-        let popupArea = CGRect(x: workspace.minX, y: workspace.minY + topMargin,
-                               width: workspace.width, height: workspace.height - topMargin)
         var result: [String: CGRect] = [:]
         for session in state.sessions where !session.collapsed {
             guard let anchor = anchors[session.id] else { continue }
+            let videoSize = session.externalLink.flatMap { link in
+                link.isVideo ? link.popupSize(width: max(1, workspace.width), height: max(1, workspace.height - 24),
+                                             header: PDFNoteCard.videoHeaderHeight) : nil
+            }
+            let width = videoSize?.width ?? defaultWidth, height = videoSize?.height ?? defaultHeight
+            let topMargin = min(24, max(0, workspace.height - height))
+            let popupArea = CGRect(x: workspace.minX, y: workspace.minY + topMargin,
+                                   width: workspace.width, height: workspace.height - topMargin)
             if let placement = state.placements[session.id] {
                 let frame = placement.screenFrame(anchor: anchor, scale: state.displayScale)
                 #if os(iOS)
@@ -790,7 +882,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
                 let spaceAbove = anchor.minY - popupArea.minY - 12
                 let spaceBelow = popupArea.maxY - anchor.maxY - 12
                 let fitsAbove = spaceAbove > spaceBelow
-                let fittedHeight = min(height, max(min(150, height), max(spaceAbove, spaceBelow)))
+                let fittedHeight = videoSize == nil ? min(height, max(min(150, height), max(spaceAbove, spaceBelow))) : height
                 result[session.id] = CGRect(x: anchor.midX - width / 2,
                     y: fitsAbove ? anchor.minY - fittedHeight - 12 : anchor.maxY + 12,
                     width: width, height: fittedHeight).clamped(to: popupArea)
@@ -835,7 +927,8 @@ struct PDFNoteWorkspace<Editor: View>: View {
                         let style = styles[session.id] ?? PDFDocumentMarkerStyle()
                         Path { path in
                             let start = CGPoint(x: documentMarkers.contains(session.id) ? anchor.midX : anchor.maxX, y: anchor.midY)
-                            let end = CGPoint(x: min(frame.maxX, max(frame.minX, start.x)), y: min(frame.maxY, max(frame.minY, start.y)))
+                            let top = state.hiddenVideoHeaders.contains(session.id) ? frame.minY + PDFNoteCard.videoHeaderHeight : frame.minY
+                            let end = CGPoint(x: min(frame.maxX, max(frame.minX, start.x)), y: min(frame.maxY, max(top, start.y)))
                             path.move(to: start)
                             path.addLine(to: CGPoint(x: end.x, y: start.y))
                             path.addLine(to: end)
@@ -858,6 +951,7 @@ struct PDFNoteWorkspace<Editor: View>: View {
                     markerCenter(anchor, documentMarker: documentMarkers.contains(session.id), pdfWidth: pdfWidth, height: size.height)
                 }
                 PDFNoteCard(state: state, session: session, frame: frame, visualScale: visualScale,
+                            isVisible: frames[session.id] != nil && !shrinking,
                             clippedBottom: max(0, frame.maxY - size.height),
                             activeLinkStyle: docked?.id == session.id ? styles[session.id] ?? state.markerStyle(for: session.id) : nil) { next, contentScale in
                     if let anchor = positions[session.id] {
@@ -938,7 +1032,7 @@ private struct PDFDocumentMarkerControl: View {
         let iconSize = max(1, min(displayed.width, displayed.height))
         ZStack(alignment: .topLeading) {
             markerControl(iconSize: iconSize)
-                .accessibilityLabel("연결된 문서 열기")
+                .accessibilityLabel(anchor.externalLink == nil ? "연결된 문서 열기" : "연결된 웹 링크 열기")
                 .accessibilityAddTraits(active ? .isSelected : [])
                 .position(x: displayed.midX, y: displayed.midY)
             if editing {
@@ -1076,10 +1170,12 @@ private extension CGRect {
 }
 
 private struct PDFNoteCard: View {
+    static let videoHeaderHeight: CGFloat = 37
     @ObservedObject var state: PDFNoteWorkspaceState
     let session: PDFNoteWorkspaceState.Session
     let frame: CGRect
     let visualScale: CGFloat
+    let isVisible: Bool
     let clippedBottom: CGFloat
     let activeLinkStyle: PDFDocumentMarkerStyle?
     let onFrameChange: (CGRect, CGFloat?) -> Void
@@ -1087,10 +1183,18 @@ private struct PDFNoteCard: View {
     @State private var resizing = false
     @State private var dragStart: CGRect?
     @State private var dragStartScale: CGFloat = 1
+    @StateObject private var linkBrowser = PDFExternalLinkBrowser()
+    @AppStorage("nf.pdf.videoHideControlsSeconds") private var videoHideSeconds = 3
+    @State private var videoHeaderHidden = false
+    @State private var revealCount = 0
+    @State private var editsVideoDelay = false
+    @State private var videoDelayDraft = ""
     @GestureState private var dragIndicator: PDFNoteDragIndicator?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var popup: Bool { session.mode == .popup }
+    private var video: Bool { session.externalLink?.isVideo == true }
+    private var keepsVideoHeader: Bool { actions || resizing || dragStart != nil || editsVideoDelay }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1099,26 +1203,40 @@ private struct PDFNoteCard: View {
                     if let activeLinkStyle {
                         PDFDocumentMarkerView(style: activeLinkStyle, size: 19)
                             .pdfActiveDocumentMarker()
-                        Text("문서").accessibilityLabel("현재 연결된 문서")
+                        Text(session.externalLink?.title ?? "문서").lineLimit(1)
                     } else {
-                        Label("문서", systemImage: "doc.text")
+                        Label(session.externalLink?.title ?? "문서", systemImage: session.externalLink?.icon ?? "doc.text")
+                            .lineLimit(1)
                     }
                 }
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .onLongPressGesture { if popup { actions = true } }
-                if popup {
+                if popup && !video {
                     Button { change(.slide) } label: {
                         Image(systemName: "rectangle.righthalf.inset.filled")
                     }
                     .help("오른쪽 슬라이드 보기")
                     .accessibilityLabel("오른쪽 슬라이드 보기")
                     .accessibilityIdentifier("pdf.document.popup.slide")
-                } else {
+                } else if session.externalLink == nil {
                     pdfViewToggle
                 }
                 if !popup { moreButton }
+                if let link = session.externalLink {
+                    Button { openURL(link.url) } label: { Image(systemName: "arrow.up.right.square") }
+                        .help(link.openTitle)
+                        .accessibilityLabel(link.openTitle)
+                    if video {
+                        let playing = linkBrowser.status == .playing
+                        Button { linkBrowser.togglePlayback() } label: {
+                            Image(systemName: playing ? "pause.fill" : "play.fill")
+                        }
+                        .disabled(linkBrowser.status != .ready && !playing)
+                        .accessibilityLabel(link.title + (playing ? " 일시 정지" : " 재생"))
+                    }
+                }
                 if popup {
                     Button { actions = false; resizing.toggle() } label: {
                         Image(systemName: resizing ? "checkmark" : "square.dashed")
@@ -1128,27 +1246,106 @@ private struct PDFNoteCard: View {
                     .accessibilityIdentifier("pdf.document.popup.resize")
                 }
                 Button { Task { await state.close(session.id, animated: !reduceMotion) } } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("연결 문서 닫기")
+                    .accessibilityLabel(session.externalLink == nil ? "연결 문서 닫기" : "웹 링크 닫기")
             }
-            .padding(9)
-            Divider()
-            documentBrowser
+            .padding(.horizontal, 9)
+            .padding(.vertical, video ? 0 : 9)
+            .frame(height: video ? Self.videoHeaderHeight : nil)
+            .background(.background)
+            .opacity(videoHeaderHidden ? 0 : 1)
+            .allowsHitTesting(!videoHeaderHidden)
+            .accessibilityHidden(videoHeaderHidden)
+            if !video { Divider() }
+            if let link = session.externalLink { externalBrowser(link) }
+            else { documentBrowser }
         }
-        .background(.background)
+        .background {
+            if !videoHeaderHidden { Rectangle().fill(.background) }
+        }
         .clipShape(RoundedRectangle(cornerRadius: popup ? 14 : 0))
         .overlay {
-            RoundedRectangle(cornerRadius: popup ? 14 : 0)
-                .strokeBorder(.secondary.opacity(0.35))
-                .allowsHitTesting(false)
+            if !videoHeaderHidden {
+                RoundedRectangle(cornerRadius: popup ? 14 : 0)
+                    .strokeBorder(.secondary.opacity(0.35)).allowsHitTesting(false)
+            }
         }
         .shadow(radius: popup ? 12 : 0)
         .overlay(alignment: .top) {
-            if popup { dragBar.offset(y: -24) }
+            if popup && !videoHeaderHidden { dragBar.offset(y: -24) }
         }
         .overlay {
             if popup && resizing { resizeHandles }
         }
         .onChange(of: session.mode) { _, _ in resizing = false; actions = false }
+        .onChange(of: isVisible, initial: true) { _, visible in
+            if video { linkBrowser.setVisible(visible) }
+        }
+        .onDisappear {
+            if video { linkBrowser.setVisible(false) }
+        }
+        .task(id: VideoChromeState(playing: linkBrowser.status == .playing && isVisible && !keepsVideoHeader,
+                                   delay: videoHideSeconds, revealCount: revealCount)) {
+            showVideoHeader(true)
+            guard video, linkBrowser.status == .playing, isVisible, !keepsVideoHeader, videoHideSeconds > 0 else { return }
+            do { try await Task.sleep(for: .seconds(videoHideSeconds)) }
+            catch { return }
+            showVideoHeader(false)
+        }
+        .alert("상단 UI 숨김 시간", isPresented: $editsVideoDelay) {
+            TextField("초", text: $videoDelayDraft)
+            Button("취소", role: .cancel) {}
+            Button("적용") {
+                if let seconds = Int(videoDelayDraft), (0...60).contains(seconds) { videoHideSeconds = seconds }
+            }.disabled(!(Int(videoDelayDraft).map { (0...60).contains($0) } ?? false))
+        } message: { Text("0초로 설정하면 항상 표시합니다.") }
+    }
+
+    private struct VideoChromeState: Equatable {
+        let playing: Bool
+        let delay: Int
+        let revealCount: Int
+    }
+
+    private func showVideoHeader(_ show: Bool) {
+        guard video else { return }
+        videoHeaderHidden = !show
+        state.setVideoHeaderHidden(!show, for: session.id)
+    }
+
+    private func openURL(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
+        #endif
+    }
+
+    private func externalBrowser(_ link: PDFExternalLink) -> some View {
+        ZStack {
+            PDFExternalLinkContent(link: link, origin: state.origin, browser: linkBrowser)
+                .opacity(linkBrowser.status == .error ? 0 : 1)
+                .allowsHitTesting(linkBrowser.status != .error)
+            if linkBrowser.status == .loading || linkBrowser.status == .starting { ProgressView().allowsHitTesting(false) }
+            if linkBrowser.status == .error {
+                VStack(spacing: 10) {
+                    Text(video ? "이 영상은 앱에서 재생할 수 없습니다." : "이 페이지는 앱에서 열 수 없습니다.")
+                        .multilineTextAlignment(.center)
+                    Button(link.openTitle) { openURL(link.url) }
+                }.padding(12)
+            }
+            if videoHeaderHidden {
+                Button {
+                    showVideoHeader(true)
+                    revealCount &+= 1
+                } label: {
+                    Rectangle().fill(.clear).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("영상 조작 버튼 표시")
+            }
+        }
+        .background(video ? .black : Color.clear)
+        .accessibilityIdentifier(link.isYouTube ? "pdf.youtube.player" : "pdf.webLink.content")
     }
 
     private var documentBrowser: some View {
@@ -1225,16 +1422,28 @@ private struct PDFNoteCard: View {
                         change(.popup)
                     }
                 }
-                menuRow("오른쪽 슬라이드 화면 모드", icon: "rectangle.righthalf.inset.filled") { change(.slide) }
-                menuRow("좌우 분할 전체화면 모드", icon: "rectangle.split.2x1") { change(.split) }
-                if session.mode == .note {
-                    menuRow("PDFView 켜기", icon: "rectangle.split.2x1") { change(.split) }
-                } else {
-                    menuRow("PDFView 끄기", icon: "eye.slash") { change(.note) }
+                if !video {
+                    menuRow("오른쪽 슬라이드 화면 모드", icon: "rectangle.righthalf.inset.filled") { change(.slide) }
+                    menuRow("좌우 분할 전체화면 모드", icon: "rectangle.split.2x1") { change(.split) }
+                }
+                if session.externalLink == nil {
+                    if session.mode == .note {
+                        menuRow("PDFView 켜기", icon: "rectangle.split.2x1") { change(.split) }
+                    } else {
+                        menuRow("PDFView 끄기", icon: "eye.slash") { change(.note) }
+                    }
+                }
+                if let link = session.externalLink, video {
+                    menuRow(link.openTitle, icon: "arrow.up.right.square") { openURL(link.url) }
+                    let delay = videoHideSeconds == 0 ? "항상 표시" : "\(videoHideSeconds)초"
+                    menuRow("상단 UI 숨김 시간 · \(delay)", icon: "clock") {
+                        videoDelayDraft = String(videoHideSeconds)
+                        editsVideoDelay = true
+                    }
                 }
                 menuRow("접기", icon: "minus") { state.collapse(session.id) }
                 Divider()
-                menuRow("문서 연결 삭제", icon: "link.badge.minus", role: .destructive) {
+                menuRow(session.externalLink == nil ? "문서 연결 삭제" : "웹 URL 연결 삭제", icon: "link.badge.minus", role: .destructive) {
                     Task { await state.unlink(session.id, animated: !reduceMotion) }
                 }
             }

@@ -167,6 +167,8 @@ extension PortalPDFPreviewView {
             pendingImageEditCommand = PortalPDFImageEditCommand(operation: .bringToFront)
         case .sendToBack:
             pendingImageEditCommand = PortalPDFImageEditCommand(operation: .sendToBack)
+        case .appearance, .backgroundTransparency, .copy, .duplicate, .delete:
+            break
         }
     }
 

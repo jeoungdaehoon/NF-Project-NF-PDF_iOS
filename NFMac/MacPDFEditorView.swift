@@ -269,6 +269,7 @@ struct MacPDFEditorView: View {
     @ViewBuilder private func toolbarUtilities(handle: MacPDFToolbarDragHandle) -> some View {
                 handle.frame(width: 32, height: 30)
                 MacPDFActionButton(title: "", symbol: "slider.horizontal.3", identifier: "pdf.toolOptions.toggle", accessibilityTitle: "도구 상세 설정") {
+                    if freeNotes.webLinkTool { return }
                     if freeNotes.documentTool { freeNotes.showsDocumentOptions.toggle() }
                     else { state.optionsTool = state.optionsTool == state.tool ? nil : state.tool }
                 }.frame(width: 32, height: 30)
@@ -279,8 +280,12 @@ struct MacPDFEditorView: View {
                         }
                     }
                     Button(action: selectDocumentTool) {
-                        Label("문서 도구", systemImage: freeNotes.documentTool ? "checkmark" : "doc.text")
+                        Label("문서 도구", systemImage: freeNotes.documentTool && !freeNotes.webLinkTool ? "checkmark" : "doc.text")
                     }
+                    Button(action: selectWebLinkTool) {
+                        Label("웹 URL 추가", systemImage: freeNotes.webLinkTool ? "checkmark" : "link")
+                    }
+                    Button("현재 화면 공유", systemImage: "square.and.arrow.up", action: freeNotes.shareVisibleScreen)
                 } label: { Image(systemName: "list.bullet") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -300,7 +305,11 @@ struct MacPDFEditorView: View {
             }
         }
         MacPDFToolPaletteButton(toolID: "document", title: "문서 도구", symbol: "doc.text",
-                                isSelected: freeNotes.documentTool, action: selectDocumentTool)
+                                isSelected: freeNotes.documentTool && !freeNotes.webLinkTool, action: selectDocumentTool)
+        MacPDFToolPaletteButton(toolID: "webLink", title: "웹 URL 추가", symbol: "link",
+                                isSelected: freeNotes.webLinkTool, action: selectWebLinkTool)
+        MacPDFToolPaletteButton(toolID: "shareScreen", title: "현재 화면 공유", symbol: "square.and.arrow.up",
+                                isSelected: false, action: freeNotes.shareVisibleScreen)
     }
     private func toolSelected(_ tool: MacPDFTool) -> Bool {
         tool == .connector ? state.connectorEnabled : state.tool == tool && !freeNotes.documentTool
@@ -311,15 +320,23 @@ struct MacPDFEditorView: View {
         state.selectTool(tool)
     }
     private func selectDocumentTool() {
-        if freeNotes.documentTool {
+        if freeNotes.documentTool && !freeNotes.webLinkTool {
             freeNotes.showsDocumentOptions.toggle()
             return
         }
+        freeNotes.documentTool = false
         state.selectTool(.view)
         state.optionsTool = nil
         state.menuVisible = false
         freeNotes.documentTool = true
         freeNotes.showsDocumentOptions = true
+    }
+    private func selectWebLinkTool() {
+        state.selectTool(.view)
+        state.optionsTool = nil
+        state.menuVisible = false
+        liveSurface?.editsSource = false
+        freeNotes.selectWebLinkTool()
     }
     private func options(maxHeight: CGFloat = 360, onClose: (() -> Void)? = nil) -> some View {
         MacPDFCompactOptions(maxHeight: maxHeight) {
@@ -535,7 +552,11 @@ struct MacPDFEditorView: View {
 
     private var textOptions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Picker("글꼴", selection: styleBinding(\.fontName, field: "fontName")) { ForEach(NSFontManager.shared.availableFonts.sorted(), id: \.self) { Text($0).tag($0) } }
+            HStack(spacing: 8) {
+                Text("글꼴").fixedSize().accessibilityHidden(true)
+                MacPDFFontPicker(selection: styleBinding(\.fontName, field: "fontName"))
+                    .frame(height: 24)
+            }
             Stepper("글자 크기 \(Int(state.style.fontSize))", value: styleBinding(\.fontSize, field: "fontSize"), in: 6...144)
             HStack { Toggle("굵게", isOn: styleBinding(\.bold, field: "bold")); Toggle("기울임", isOn: styleBinding(\.italic, field: "italic")) }
             HStack { Toggle("밑줄", isOn: styleBinding(\.underline, field: "underline")); Toggle("취소선", isOn: styleBinding(\.strike, field: "strike")) }

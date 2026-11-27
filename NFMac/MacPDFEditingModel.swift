@@ -155,6 +155,7 @@ struct MacPDFObject: Codable, Identifiable, Equatable {
     var attachmentName: String?
     var rotation: Double = 0
     var flipped = false
+    var imageAppearance: PDFImageAppearance?
     var sourceID: UUID?, targetID: UUID?
     // Normalized edge anchors remain attached when objects move/resize/rotate.
     var sourceAnchor = MacPDFPoint(CGPoint(x: 1, y: 0.5))
@@ -425,6 +426,10 @@ final class MacPDFEditorState: ObservableObject {
     }
     func updateSelected(_ action: (inout MacPDFObject) -> Void) {
         change { for index in objects.indices where selection.contains(objects[index].id) { action(&objects[index]) } }
+    }
+    func applyImageAppearance(_ appearance: PDFImageAppearance, to id: UUID) {
+        guard selection == [id], selected?.kind == .image else { return }
+        updateSelected { $0.imageAppearance = appearance == PDFImageAppearance() ? nil : appearance }
     }
     func deleteSelected() {
         let ids = selection

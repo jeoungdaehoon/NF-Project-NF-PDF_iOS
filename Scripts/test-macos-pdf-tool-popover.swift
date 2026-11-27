@@ -72,11 +72,24 @@ import SwiftUI
         try check(state.objects.count == originalObjects.count + 1 && state.selected?.kind == .shape && state.optionsTool == nil,
                   "Rectangle insertion did not work from the in-view settings")
         try press(findButton("pdf.tool.text", in: host))
+        guard let fontPicker = try findButton("pdf.text.font", in: host) as? NSPopUpButton,
+              let fontAction = fontPicker.action else { throw CocoaError(.coderValueNotFound) }
+        let currentFont = state.style.fontName
+        try check(fontPicker.itemTitles == [currentFont], "Selecting the text tool eagerly loaded the font menu")
+        let installedFonts = NSFontManager.shared.availableFonts
+        guard let nextFont = installedFonts.first(where: { $0 != currentFont }) else { throw CocoaError(.fileReadUnknown) }
+        NotificationCenter.default.post(name: NSPopUpButton.willPopUpNotification, object: fontPicker)
+        try check(Set(fontPicker.itemTitles) == Set(installedFonts + [currentFont]) && fontPicker.titleOfSelectedItem == currentFont,
+                  "Opening the font menu lost installed fonts or the selected font")
+        fontPicker.selectItem(withTitle: nextFont)
+        try check(app.sendAction(fontAction, to: fontPicker.target, from: fontPicker) && state.style.fontName == nextFont,
+                  "Choosing a font did not update the text style")
         try press(findButton("pdf.add.text", in: host))
-        try check(state.objects.count == originalObjects.count + 2 && state.selected?.kind == .text && canvas.activeTextView != nil,
-                  "Text insertion did not open the inline editor")
+        try check(state.objects.count == originalObjects.count + 2 && state.selected?.kind == .text
+                    && state.selected?.style.fontName == nextFont && canvas.activeTextView != nil,
+                  "Text insertion did not use the chosen font and open the inline editor")
         try check(app.windows.allSatisfy { !$0.isVisible || $0 === window }, "Insertion opened a separate window")
-        print("PASS: \(checks) embedded tool panel checks and shape/text insertion")
+        print("PASS: \(checks) embedded tool panel checks, lazy font selection, and shape/text insertion")
     }
     @MainActor static func check(_ condition: Bool, _ message: String) throws {
         if !condition { throw NSError(domain: "PDFToolPanel", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }

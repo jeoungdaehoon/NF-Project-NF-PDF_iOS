@@ -4,8 +4,14 @@ import PDFKit
 
 enum MacPDFObjectRenderer {
     private final class ImageEntry {
-        let data: Data, image: CGImage
-        init(data: Data, image: CGImage) { self.data = data; self.image = image }
+        let data: Data, original: CGImage, image: CGImage
+        let backgroundRemoval: PDFImageAppearance.BackgroundRemoval?
+        init(data: Data, original: CGImage, image: CGImage, backgroundRemoval: PDFImageAppearance.BackgroundRemoval?) {
+            self.data = data
+            self.original = original
+            self.image = image
+            self.backgroundRemoval = backgroundRemoval
+        }
     }
     private static let imageCache: NSCache<NSUUID, ImageEntry> = {
         let cache = NSCache<NSUUID, ImageEntry>(); cache.totalCostLimit = 32 * 1024 * 1024; return cache
@@ -13,9 +19,14 @@ enum MacPDFObjectRenderer {
     private static func image(for object: MacPDFObject) -> CGImage? {
         guard let data = object.imageData else { return nil }
         let key = object.id as NSUUID
-        if let cached = imageCache.object(forKey: key), cached.data == data { return cached.image }
-        guard let image = NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        imageCache.setObject(ImageEntry(data: data, image: image), forKey: key, cost: image.bytesPerRow * image.height)
+        let cached = imageCache.object(forKey: key)
+        let removal = object.imageAppearance?.backgroundRemoval
+        if let cached, cached.data == data, cached.backgroundRemoval == removal { return cached.image }
+        let decoded = cached?.data == data ? cached?.original : NSImage(data: data)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        guard let original = decoded else { return nil }
+        let image = removal.map { PDFImageBackgroundRemoval.apply($0, to: original) } ?? original
+        let cost = original.bytesPerRow * original.height + (image === original ? 0 : image.bytesPerRow * image.height)
+        imageCache.setObject(ImageEntry(data: data, original: original, image: image, backgroundRemoval: removal), forKey: key, cost: cost)
         return image
     }
     static func corners(_ object: MacPDFObject) -> [CGPoint] {
@@ -209,16 +220,8 @@ enum MacPDFObjectRenderer {
             context.textMatrix = .identity; CTFrameDraw(frame, context)
         case .image:
             guard let cgImage = image(for: object) else { return }
-            if object.flipped { context.translateBy(x: object.bounds.midX * 2, y: 0); context.scaleBy(x: -1, y: 1) }
-            var imageBounds = object.bounds
-            if object.attachmentName != nil { imageBounds.origin.y += 24; imageBounds.size.height -= 24 }
-            context.draw(cgImage, in: imageBounds)
-            if let name = object.attachmentName {
-                let text = NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.black])
-                let path = CGPath(rect: CGRect(x: object.bounds.minX + 4, y: object.bounds.minY + 2, width: object.bounds.width - 8, height: 20), transform: nil)
-                context.setFillColor(NSColor.white.cgColor); context.fill(CGRect(x: object.bounds.minX, y: object.bounds.minY, width: object.bounds.width, height: 24))
-                CTFrameDraw(CTFramesetterCreateFrame(CTFramesetterCreateWithAttributedString(text), CFRange(location: 0, length: 0), path, nil), context)
-            }
+            let appearance = object.imageAppearance ?? PDFImageAppearance()
+            appearance.draw(cgImage, in: object.bounds, flipped: object.flipped, attachmentName: object.attachmentName, context: context)
         case .connector:
             drawConnector(object, objects: objects, context: context)
         }

@@ -33,6 +33,8 @@ extension PortalPDFPreviewView {
                         }
                         pdfConnectorToolButton
                         pdfDocumentToolButton
+                        pdfWebLinkToolButton
+                        pdfShareScreenButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -52,6 +54,8 @@ extension PortalPDFPreviewView {
                         }
                         pdfConnectorToolButton
                         pdfDocumentToolButton
+                        pdfWebLinkToolButton
+                        pdfShareScreenButton
                     }
                 }
                 .scrollIndicators(.hidden)
@@ -312,11 +316,13 @@ extension PortalPDFPreviewView {
     }
 
     var pdfDocumentToolButton: some View {
-        Button {
-            if freeNotes.documentTool {
+        let selected = freeNotes.documentTool && !freeNotes.webLinkTool
+        return Button {
+            if selected {
                 freeNotes.showsDocumentOptions.toggle()
                 return
             }
+            freeNotes.documentTool = false
             connectorMode = false
             isConnectorPanelPresented = false
             selectMarkupTool(.view)
@@ -326,12 +332,41 @@ extension PortalPDFPreviewView {
             Image(systemName: "doc.text")
                 .font(.system(size: 20, weight: .semibold))
                 .frame(width: 40, height: 40)
-                .foregroundStyle(freeNotes.documentTool ? portalTheme.accentColor : portalTheme.foregroundColor)
-                .background(freeNotes.documentTool ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
+                .foregroundStyle(selected ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .background(selected ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
         .accessibilityLabel("문서 도구")
-        .accessibilityAddTraits(freeNotes.documentTool ? .isSelected : [])
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    var pdfWebLinkToolButton: some View {
+        pdfUtilityButton("웹 URL 추가", icon: "link", id: "pdf.tool.webLink", selected: freeNotes.webLinkTool) {
+            connectorMode = false
+            isConnectorPanelPresented = false
+            selectMarkupTool(.view)
+            freeNotes.selectWebLinkTool()
+        }
+    }
+
+    var pdfShareScreenButton: some View {
+        pdfUtilityButton("현재 화면 공유", icon: "square.and.arrow.up", id: "pdf.tool.shareScreen",
+                         action: freeNotes.shareVisibleScreen)
+    }
+
+    private func pdfUtilityButton(_ title: String, icon: String, id: String, selected: Bool = false,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .foregroundStyle(selected ? portalTheme.accentColor : portalTheme.foregroundColor)
+                .background(selected ? portalTheme.accentColor.opacity(0.16) : portalTheme.foregroundColor.opacity(0.06))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .accessibilityLabel(title)
+        .accessibilityIdentifier(id)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     var pdfDocumentOptionsPanel: some View {

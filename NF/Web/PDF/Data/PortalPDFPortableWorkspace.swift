@@ -226,7 +226,13 @@ enum PortalPDFPortableWorkspace {
                 connector: connector)
         case "image":
             guard let encoded = value["imageData"] as? String, let data = Data(base64Encoded: encoded), data.count <= 20 * 1024 * 1024 else { return nil }
-            return .init(id: id, kind: .image, displayIndex: displayIndex, image: .init(imageData: data, bounds: bounds, rotationAngle: -number(value,"rotation") * .pi/180, isHorizontallyFlipped: value["flipped"] as? Bool ?? false, animatedGIFData: value["imageMimeType"] as? String == "image/gif" ? data : nil))
+            let appearance = (value["imageAppearance"] as? [String: Any]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                .flatMap { try? JSONDecoder().decode(PDFImageAppearance.self, from: $0) }
+            return .init(id: id, kind: .image, displayIndex: displayIndex,
+                         image: .init(imageData: data, bounds: bounds, rotationAngle: -number(value,"rotation") * .pi/180,
+                                      isHorizontallyFlipped: value["flipped"] as? Bool ?? false,
+                                      animatedGIFData: value["imageMimeType"] as? String == "image/gif" ? data : nil,
+                                      imageAppearance: appearance))
         case "shape":
             let name = nativeShape(value["shape"] as? String ?? "rectangle")
             return .init(id: id, kind: .shape, displayIndex: displayIndex, shape: .init(shapeType: name, bounds: bounds, lineWidth: number(value,"lineWidth",2), lineColorRGBA: color, fillColorRGBA: fill, rotationAngle: -number(value,"rotation") * .pi/180))
@@ -287,6 +293,8 @@ enum PortalPDFPortableWorkspace {
         } else if let image = object.image {
             o["kind"] = "image"; setBounds(image.bounds); o["imageData"] = (image.animatedGIFData ?? image.imageData).base64EncodedString();o["imageMimeType"] = image.animatedGIFData == nil ? "image/png" : "image/gif"
             if o["originalImageData"] == nil { o["originalImageData"] = image.imageData.base64EncodedString() };o["rotation"] = -image.rotationAngle * 180 / .pi;o["flipped"] = image.isHorizontallyFlipped
+            o["imageAppearance"] = image.imageAppearance.flatMap { try? JSONEncoder().encode($0) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) }
         } else if let shape = object.shape {
             o["kind"] = "shape";setBounds(shape.bounds);o["shape"] = portableShape(shape.shapeType);o["lineWidth"] = shape.lineWidth;o["color"] = argb(shape.lineColorRGBA);o["fillColor"] = argb(shape.fillColorRGBA);o["rotation"] = -shape.rotationAngle*180 / .pi
         } else if let text = object.text {

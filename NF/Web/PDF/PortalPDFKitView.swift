@@ -773,6 +773,7 @@ final class PortalPDFTextTouchDownGestureRecognizer: UIGestureRecognizer {
 
 /// 텍스트 박스를 이동하지 않고 탭했을 때 박스 위에 표시하는 말풍선형 작업 메뉴입니다.
 class PortalPDFActionPanel: UIView {
+    var usesCompactLayout: Bool { false }
     private(set) var showsTailAtTop = false
     private let panel = UIView()
     private let tail = CAShapeLayer()
@@ -814,9 +815,9 @@ class PortalPDFActionPanel: UIView {
 
     func actionButton(_ title: String, symbol: String, accessibilityLabel: String, destructive: Bool = false) -> UIButton {
         var configuration = UIButton.Configuration.plain()
-        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 15))
+        configuration.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: usesCompactLayout ? 13 : 15))
         configuration.imagePlacement = .top
-        configuration.imagePadding = 3
+        configuration.imagePadding = usesCompactLayout ? 2 : 3
         var label = AttributedString(title)
         label.font = .systemFont(ofSize: 10)
         configuration.attributedTitle = label
@@ -864,12 +865,12 @@ class PortalPDFActionPanel: UIView {
         tail.path = path.cgPath
     }
 
-    func position(around object: CGRect, in pdfView: PDFView) {
+    func position(around object: CGRect, in pdfView: PDFView, topClearance: CGFloat = 8) {
         let available = pdfView.bounds.inset(by: pdfView.safeAreaInsets).insetBy(dx: 8, dy: 8)
         let width = min(CGFloat(rows.count * 49 + 8), max(1, available.width))
-        let height = min(54, max(1, available.height))
+        let height = min(usesCompactLayout ? 42 : 54, max(1, available.height))
         let x = min(max(object.midX - width / 2, available.minX), max(available.minX, available.maxX - width))
-        let above = object.minY - height - 8
+        let above = object.minY - height - topClearance
         let below = object.maxY + 8
         showsTailAtTop = above < available.minY && (below + height <= available.maxY ||
             available.maxY - object.maxY >= object.minY - available.minY)
@@ -949,6 +950,11 @@ enum PortalPDFImageAction: CaseIterable {
     case crop
     case openMarkupEditor
     case openSystemEditor
+    case appearance
+    case backgroundTransparency
+    case copy
+    case duplicate
+    case delete
     case bringToFront
     case sendToBack
 
@@ -961,6 +967,11 @@ enum PortalPDFImageAction: CaseIterable {
         case .crop: return "자르기"
         case .openMarkupEditor: return "이미지 편집"
         case .openSystemEditor: return "시스템 편집"
+        case .appearance: return "이미지 스타일"
+        case .backgroundTransparency: return "배경 투명화"
+        case .copy: return "복사"
+        case .duplicate: return "복제"
+        case .delete: return "삭제"
         case .bringToFront: return "최상단"
         case .sendToBack: return "최하단"
         }
@@ -975,6 +986,11 @@ enum PortalPDFImageAction: CaseIterable {
         case .crop: return "crop"
         case .openMarkupEditor: return "pencil"
         case .openSystemEditor: return "app.badge"
+        case .appearance: return "slider.horizontal.3"
+        case .backgroundTransparency: return "checkerboard.rectangle"
+        case .copy: return "doc.on.doc"
+        case .duplicate: return "plus.square.on.square"
+        case .delete: return "trash"
         case .bringToFront: return "square.3.layers.3d.top.filled"
         case .sendToBack: return "square.3.layers.3d.bottom.filled"
         }
@@ -983,12 +999,14 @@ enum PortalPDFImageAction: CaseIterable {
 
 /// 이미지를 선택했을 때 이미지 위에 표시하는 말풍선형 편집 메뉴입니다.
 final class PortalPDFImageActionMenuView: PortalPDFActionPanel {
+    override var usesCompactLayout: Bool { true }
     var onAction: ((PortalPDFImageAction) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        ([.replace, .crop, .rotateClockwise, .flipHorizontal] as [PortalPDFImageAction]).forEach(addAction)
-        let secondary = ([.resetSize, .openMarkupEditor, .openSystemEditor, .bringToFront, .sendToBack] as [PortalPDFImageAction]).map { action in
+        ([.replace, .crop, .copy, .delete] as [PortalPDFImageAction]).forEach(addAction)
+        let secondary = ([.appearance, .backgroundTransparency, .rotateClockwise, .flipHorizontal, .resetSize,
+                          .openMarkupEditor, .openSystemEditor, .duplicate, .bringToFront, .sendToBack] as [PortalPDFImageAction]).map { action in
             UIAction(title: action.title, image: UIImage(systemName: action.systemImageName)) { [weak self] _ in
                 self?.onAction?(action)
             }
@@ -1172,6 +1190,14 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let cgImage: CGImage
     }
     private var decodedImages: [UUID: CachedImage] = [:]
+    private struct StyledImage {
+        let source: CGImage
+        let appearance: PDFImageAppearance
+        let size: CGSize
+        let flipped: Bool
+        let raster: CGImage
+    }
+    private var styledImages: [UUID: StyledImage] = [:]
     private struct CachedAnimatedImage {
         let data: Data
         let frames: [CGImage]
@@ -1442,6 +1468,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         inkLayers = updatedStrokes.map { makeStrokeLayer($0) }
         let validImageIDs = Set(pageEditData?.objects.compactMap { $0.kind == .image ? $0.id : nil } ?? [])
         decodedImages = decodedImages.filter { validImageIDs.contains($0.key) }
+        styledImages = styledImages.filter { validImageIDs.contains($0.key) }
         decodedAnimatedImages = decodedAnimatedImages.filter { validImageIDs.contains($0.key) }
         pendingAnimatedImageIDs.formIntersection(validImageIDs)
         renderGeneration += 1
@@ -1546,9 +1573,9 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         CATransaction.setDisableActions(true)
         applyImageLayerGeometry(
             imageLayer,
-            bounds: annotation.imageBounds,
+            bounds: annotation.imageAppearance?.extendedBounds(annotation.imageBounds) ?? annotation.imageBounds,
             rotationAngle: annotation.rotationAngle,
-            isHorizontallyFlipped: annotation.isHorizontallyFlipped,
+            isHorizontallyFlipped: annotation.imageAppearance == nil && annotation.isHorizontallyFlipped,
             pageToOverlay: pageToOverlay
         )
         CATransaction.commit()
@@ -1718,7 +1745,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
             )
             if let identifier = imageAnnotation.value(forAnnotationKey: .name) as? String {
                 imageLayer.name = imageLayerName(identifier)
-                if let objectID = UUID(uuidString: identifier) {
+                if imageAnnotation.imageAppearance == nil, let objectID = UUID(uuidString: identifier) {
                     installAnimatedGIFIfNeeded(
                         imageAnnotation.animatedGIFData,
                         objectID: objectID,
@@ -2119,19 +2146,34 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     ) -> CALayer {
         let imageLayer = CALayer()
         imageLayer.name = imageLayerName(objectID.uuidString)
-        imageLayer.contents = cgImage
+        let appearance = metadata.imageAppearance
+        var styled: CGImage?
+        if let appearance {
+            if let cached = styledImages[objectID], cached.source === cgImage, cached.appearance == appearance,
+               cached.size == metadata.bounds.size, cached.flipped == metadata.isHorizontallyFlipped {
+                styled = cached.raster
+            } else if let raster = appearance.raster(cgImage, in: metadata.bounds, flipped: metadata.isHorizontallyFlipped) {
+                styledImages[objectID] = StyledImage(source: cgImage, appearance: appearance, size: metadata.bounds.size,
+                                                    flipped: metadata.isHorizontallyFlipped, raster: raster)
+                styled = raster
+            }
+        } else {
+            styledImages.removeValue(forKey: objectID)
+        }
+        imageLayer.contents = styled ?? cgImage
+        imageLayer.setValue(styled != nil, forKey: "nfStyledPDFImage")
         imageLayer.contentsGravity = .resize
         imageLayer.minificationFilter = .trilinear
         imageLayer.magnificationFilter = .linear
         imageLayer.allowsEdgeAntialiasing = true
         applyImageLayerGeometry(
             imageLayer,
-            bounds: metadata.bounds,
+            bounds: styled == nil ? metadata.bounds : appearance?.extendedBounds(metadata.bounds) ?? metadata.bounds,
             rotationAngle: CGFloat(metadata.rotationAngle),
-            isHorizontallyFlipped: metadata.isHorizontallyFlipped,
+            isHorizontallyFlipped: styled == nil && metadata.isHorizontallyFlipped,
             pageToOverlay: pageToOverlay
         )
-        installAnimatedGIFIfNeeded(metadata.animatedGIFData, objectID: objectID, on: imageLayer)
+        if styled == nil { installAnimatedGIFIfNeeded(metadata.animatedGIFData, objectID: objectID, on: imageLayer) }
         return imageLayer
     }
 
@@ -2160,7 +2202,7 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
                 self.decodedAnimatedImages[objectID] = decoded
                 guard let currentLayer = self.imageLayers.first(where: {
                     $0.superlayer != nil && $0.name == expectedLayerName
-                }) else { return }
+                }), currentLayer.value(forKey: "nfStyledPDFImage") as? Bool != true else { return }
                 self.applyAnimatedImage(decoded, to: currentLayer)
             }
         }
@@ -2425,12 +2467,14 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         cgImage: CGImage,
         pageToOverlay: CGAffineTransform
     ) -> CALayer {
-        let imageBounds = annotation.imageBounds
+        let appearance = annotation.imageAppearance
+        let styled = appearance?.raster(cgImage, in: annotation.imageBounds, flipped: annotation.isHorizontallyFlipped)
+        let imageBounds = styled == nil ? annotation.imageBounds : appearance?.extendedBounds(annotation.imageBounds) ?? annotation.imageBounds
         let center = CGPoint(x: imageBounds.midX, y: imageBounds.midY).applying(pageToOverlay)
         let angle = annotation.rotationAngle
         let cosine = cos(angle)
         let sine = sin(angle)
-        let horizontalDirection: CGFloat = annotation.isHorizontallyFlipped ? -1 : 1
+        let horizontalDirection: CGFloat = styled == nil && annotation.isHorizontallyFlipped ? -1 : 1
 
         // CALayer의 로컬 Y축은 아래쪽이 양수이므로 PDF 페이지의 -Y축을 이미지 아래쪽으로 매핑합니다.
         // 이 보정으로 기존 PDFAnnotation 렌더링과 같은 상·하 방향을 유지합니다.
@@ -2442,7 +2486,8 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
         let imageLayer = CALayer()
         imageLayer.bounds = CGRect(origin: .zero, size: imageBounds.size)
         imageLayer.position = center
-        imageLayer.contents = cgImage
+        imageLayer.contents = styled ?? cgImage
+        imageLayer.setValue(styled != nil, forKey: "nfStyledPDFImage")
         imageLayer.contentsGravity = .resize
         imageLayer.minificationFilter = .trilinear
         imageLayer.magnificationFilter = .linear
@@ -2519,86 +2564,27 @@ final class PortalPDFInkOverlayView: PortalPDFTextOverlayView {
     ) -> [CAShapeLayer] {
         var layers: [CAShapeLayer] = []
 
-        func addHandle(
-            center: CGPoint,
-            diameter: CGFloat,
-            fillColor: UIColor,
-            icon: UIBezierPath,
-            iconLineWidth: CGFloat
-        ) {
-            let circle = UIBezierPath(ovalIn: CGRect(
-                x: center.x - diameter / 2,
-                y: center.y - diameter / 2,
-                width: diameter,
-                height: diameter
-            ))
-            circle.apply(annotationToOverlay)
-            let circleLayer = shapeLayer(path: circle.cgPath)
-            circleLayer.fillColor = fillColor.cgColor
-            circleLayer.strokeColor = UIColor.white.cgColor
-            circleLayer.lineWidth = max(0.7, 0.9 / annotation.editingDisplayScaleFactor * unitScale)
-            layers.append(circleLayer)
+        func addHandle(center: CGPoint, diameter: CGFloat, rotating: Bool) {
+            let radius = diameter / 2
+            let rect = CGRect(x: center.x - radius, y: center.y - radius, width: diameter, height: diameter)
+            let background = UIBezierPath(roundedRect: rect, cornerRadius: diameter / 4)
+            background.apply(annotationToOverlay)
+            let backgroundLayer = shapeLayer(path: background.cgPath)
+            backgroundLayer.fillColor = PortalPDFImageAnnotation.actionBackground.cgColor
+            layers.append(backgroundLayer)
 
-            icon.apply(annotationToOverlay)
-            let iconLayer = shapeLayer(path: icon.cgPath)
+            let glyph = UIBezierPath(cgPath: PortalPDFImageAnnotation.actionGlyph(center: center, diameter: diameter, rotating: rotating))
+            glyph.apply(annotationToOverlay)
+            let iconLayer = shapeLayer(path: glyph.cgPath)
             iconLayer.fillColor = UIColor.clear.cgColor
             iconLayer.strokeColor = UIColor.white.cgColor
-            iconLayer.lineWidth = max(1, iconLineWidth * unitScale)
+            iconLayer.lineWidth = max(1, 1.5 / annotation.editingDisplayScaleFactor * unitScale)
             iconLayer.lineCap = .round
             iconLayer.lineJoin = .round
             layers.append(iconLayer)
         }
-
-        let deleteCenter = annotation.unrotatedDeleteHandleCenter
-        let deleteDiameter = annotation.displayedDeleteHandleDiameter
-        let deleteInset = 7 / annotation.editingDisplayScaleFactor
-        let deleteRect = CGRect(
-            x: deleteCenter.x - deleteDiameter / 2,
-            y: deleteCenter.y - deleteDiameter / 2,
-            width: deleteDiameter,
-            height: deleteDiameter
-        )
-        let deleteIcon = UIBezierPath()
-        deleteIcon.move(to: CGPoint(x: deleteRect.minX + deleteInset, y: deleteRect.minY + deleteInset))
-        deleteIcon.addLine(to: CGPoint(x: deleteRect.maxX - deleteInset, y: deleteRect.maxY - deleteInset))
-        deleteIcon.move(to: CGPoint(x: deleteRect.maxX - deleteInset, y: deleteRect.minY + deleteInset))
-        deleteIcon.addLine(to: CGPoint(x: deleteRect.minX + deleteInset, y: deleteRect.maxY - deleteInset))
-        addHandle(
-            center: deleteCenter,
-            diameter: deleteDiameter,
-            fillColor: .systemRed,
-            icon: deleteIcon,
-            iconLineWidth: 2 / annotation.editingDisplayScaleFactor
-        )
-
-        let transformCenter = annotation.unrotatedTransformHandleCenter
-        let transformDiameter = annotation.displayedTransformHandleDiameter
-        let transformRect = CGRect(
-            x: transformCenter.x - transformDiameter / 2,
-            y: transformCenter.y - transformDiameter / 2,
-            width: transformDiameter,
-            height: transformDiameter
-        )
-        let iconInset = 7 / annotation.editingDisplayScaleFactor
-        let arrowHeadLength = 4 / annotation.editingDisplayScaleFactor
-        let lowerLeft = CGPoint(x: transformRect.minX + iconInset, y: transformRect.minY + iconInset)
-        let upperRight = CGPoint(x: transformRect.maxX - iconInset, y: transformRect.maxY - iconInset)
-        let transformIcon = UIBezierPath()
-        transformIcon.move(to: lowerLeft)
-        transformIcon.addLine(to: upperRight)
-        transformIcon.move(to: CGPoint(x: upperRight.x - arrowHeadLength, y: upperRight.y))
-        transformIcon.addLine(to: upperRight)
-        transformIcon.addLine(to: CGPoint(x: upperRight.x, y: upperRight.y - arrowHeadLength))
-        transformIcon.move(to: CGPoint(x: lowerLeft.x + arrowHeadLength, y: lowerLeft.y))
-        transformIcon.addLine(to: lowerLeft)
-        transformIcon.addLine(to: CGPoint(x: lowerLeft.x, y: lowerLeft.y + arrowHeadLength))
-        addHandle(
-            center: transformCenter,
-            diameter: transformDiameter,
-            fillColor: .systemBlue,
-            icon: transformIcon,
-            iconLineWidth: 1.8 / annotation.editingDisplayScaleFactor
-        )
+        addHandle(center: annotation.unrotatedDeleteHandleCenter, diameter: annotation.displayedDeleteHandleDiameter, rotating: false)
+        addHandle(center: annotation.unrotatedTransformHandleCenter, diameter: annotation.displayedTransformHandleDiameter, rotating: true)
         return layers
     }
 
@@ -2999,6 +2985,7 @@ extension PortalPDFKitView {
         let editingDisabledDocumentGestures = NSHashTable<UIGestureRecognizer>.weakObjects()
         /// 이미지 이동 또는 오른쪽 상단 핸들 변형 제스처의 현재 상태입니다.
         var activeImageDragState: ImageDragState?
+        private var imageRotationStart: CGFloat?
         /// 펜 도구에서 현재 그리고 있는 PDF Page 입니다.
         weak var activePenPage: PDFPage?
         /// 펜 도구에서 PDF 저장용으로 누적하는 Page 좌표계 기준 자유선 경로입니다.
@@ -3095,7 +3082,7 @@ extension PortalPDFKitView {
             /// 이미지 본문을 이동하며 직전 PDF Page 좌표를 저장합니다.
             case moving(previousPoint: CGPoint)
             /// 오른쪽 상단 핸들로 크기와 회전을 변경하며 직전 거리와 각도를 저장합니다.
-            case transforming(previousDistance: CGFloat, previousAngle: CGFloat)
+            case transforming(previousAngle: CGFloat, rotation: CGFloat)
             /// 이미지·박스·텍스트의 조절점을 드래그할 때 시작 영역과 시작 좌표를 보관합니다.
             case resizingBounds(
                 handle: PortalPDFResizeHandle,
@@ -5546,7 +5533,31 @@ extension PortalPDFKitView {
                       annotation === self.selectedImageAnnotation,
                       annotation.isPortalSelected else { return }
                 self.dismissImageActionMenu()
-                self.onImageActionRequested(action)
+                switch action {
+                case .appearance, .backgroundTransparency:
+                    self.presentImageAppearance(for: annotation, startsAtBackground: action == .backgroundTransparency)
+                case .copy:
+                    if let appearance = annotation.imageAppearance, let image = annotation.image.cgImage,
+                       let styled = appearance.raster(image, in: annotation.imageBounds, flipped: annotation.isHorizontallyFlipped) {
+                        UIPasteboard.general.image = UIImage(cgImage: styled)
+                    } else {
+                        UIPasteboard.general.image = annotation.contentImageForEditing
+                    }
+                case .duplicate:
+                    guard let page = annotation.page, let pdfView = self.pdfView else { return }
+                    let copy = annotation.historyClone()
+                    copy.editingBounds = annotation.editingBounds.offsetBy(dx: 18, dy: -18)
+                    page.addAnnotation(copy)
+                    copy.constrainToPageIfNeeded()
+                    copy.prepareForPersistence()
+                    self.selectImageAnnotation(copy, in: pdfView, presentsActionMenu: true)
+                    self.onDocumentChanged(changedPages: [page])
+                case .delete:
+                    guard let page = annotation.page, let pdfView = self.pdfView else { return }
+                    self.deleteImageAnnotation(annotation, from: page, in: pdfView)
+                default:
+                    self.onImageActionRequested(action)
+                }
             }
             host.addSubview(menu)
             imageActionMenuHostView = host
@@ -5554,6 +5565,31 @@ extension PortalPDFKitView {
             imageActionMenuAnnotation = annotation
             updateImageActionMenuPosition(in: pdfView)
             animateImageActionMenuPresentation(menu)
+        }
+
+        private func presentImageAppearance(for annotation: PortalPDFImageAnnotation, startsAtBackground: Bool) {
+            guard let pdfView, let page = annotation.page, var presenter = pdfView.window?.rootViewController else { return }
+            while let presented = presenter.presentedViewController { presenter = presented }
+            weak var controller: UIViewController?
+            let editor = PDFImageAppearanceEditor(imageData: annotation.persistedImageData, bounds: annotation.imageBounds,
+                                                  flipped: annotation.isHorizontallyFlipped, appearance: annotation.imageAppearance,
+                                                  startsAtBackground: startsAtBackground,
+                                                  onBack: { controller?.dismiss(animated: true) }) { [weak self, weak annotation, weak pdfView] appearance in
+                controller?.dismiss(animated: true)
+                guard let self, let annotation, let pdfView, annotation.page === page,
+                      pdfView.document === page.document else { return }
+                let next = appearance == PDFImageAppearance() ? nil : appearance
+                guard next != annotation.imageAppearance else { return }
+                annotation.imageAppearance = next
+                annotation.prepareForPersistence()
+                refreshPDFViewAfterAnnotationMutation(in: pdfView)
+                onDocumentChanged(changedPages: [page])
+            }
+            let host = UIHostingController(rootView: editor)
+            controller = host
+            host.modalPresentationStyle = .formSheet
+            host.preferredContentSize = CGSize(width: 420, height: 550)
+            presenter.present(host, animated: true)
         }
 
         /// 이미지 편집 말풍선이 선택 이미지에서 통통 튀어나오는 것처럼 표시합니다.
@@ -5584,8 +5620,13 @@ extension PortalPDFKitView {
             guard let menu = imageActionMenuView,
                   let annotation = imageActionMenuAnnotation,
                   let page = annotation.page else { return }
-            let imageRect = pdfView.convert(annotation.editingBounds, from: page).standardized
-            menu.position(around: imageRect, in: pdfView)
+            let bounds = annotation.editingBounds
+            let imageRect = pdfView.convert(bounds.rotatedBoundingBox(around: bounds.center, by: annotation.rotationAngle), from: page).standardized
+            let deleteY = pdfView.convert(annotation.pageDeleteHandleCenter, from: page).y
+            let rotateY = pdfView.convert(annotation.pageTransformHandleCenter, from: page).y
+            let clearance = max(12, imageRect.minY - min(deleteY, rotateY)
+                + annotation.displayedDeleteHandleDiameter * pdfView.scaleFactor / 2 + 12)
+            menu.position(around: imageRect, in: pdfView, topClearance: clearance)
         }
 
         /// 이미지 말풍선 메뉴와 투명 터치 호스트를 함께 제거합니다.
@@ -7807,6 +7848,29 @@ extension PortalPDFKitView {
          */
         @objc private func handleImageRotation(_ recognizer: UIRotationGestureRecognizer) {
             guard let annotation = selectedTransformAnnotation else { return }
+            if let image = annotation as? PortalPDFImageAnnotation, let page = image.page {
+                switch recognizer.state {
+                case .began:
+                    dismissImageActionMenu()
+                    imageRotationStart = image.rotationAngle
+                case .changed, .ended:
+                    guard let initial = imageRotationStart else { return }
+                    image.rotationAngle = CGFloat(PDFImageAppearance.snappedRotation(Double(initial + recognizer.rotation)))
+                    refreshImageAnnotationPresentation(image, on: page)
+                    if recognizer.state == .ended {
+                        imageRotationStart = nil
+                        onDocumentChanged(changedPages: [page])
+                    }
+                case .cancelled, .failed:
+                    if let initial = imageRotationStart {
+                        image.rotationAngle = initial
+                        refreshImageAnnotationPresentation(image, on: page)
+                    }
+                    imageRotationStart = nil
+                default: break
+                }
+                return
+            }
             switch recognizer.state {
             case .began:
                 dismissImageActionMenu()
@@ -8005,10 +8069,8 @@ extension PortalPDFKitView {
                         initialPoint: point
                     )
                 } else if annotation.isTransformHandleHit(point, scaleFactor: currentPDFScaleFactor), distance > 1 {
-                    activeImageDragState = .transforming(
-                        previousDistance: distance,
-                        previousAngle: atan2(point.y - center.y, point.x - center.x)
-                    )
+                    activeImageDragState = .transforming(previousAngle: atan2(point.y - center.y, point.x - center.x),
+                                                          rotation: annotation.rotationAngle)
                 } else if annotation.editingBounds
                     .insetBy(dx: -18 / currentPDFScaleFactor, dy: -18 / currentPDFScaleFactor)
                     .contains(point) {
@@ -8023,30 +8085,21 @@ extension PortalPDFKitView {
                     let delta = CGPoint(x: point.x - previousPoint.x, y: point.y - previousPoint.y)
                     moveAnnotation(annotation, by: delta, on: page)
                     self.activeImageDragState = .moving(previousPoint: point)
-                case .transforming(let previousDistance, let previousAngle):
+                case .transforming(let previousAngle, let rotation):
                     let center = CGPoint(x: annotation.editingBounds.midX, y: annotation.editingBounds.midY)
-                    let distance = hypot(point.x - center.x, point.y - center.y)
-                    guard distance > 1, previousDistance > 1 else {
-                        self.activeImageDragState = nil
-                        return
-                    }
+                    guard hypot(point.x - center.x, point.y - center.y) > 1 else { return }
                     let angle = atan2(point.y - center.y, point.x - center.x)
-                    scaleAnnotation(annotation, by: distance / previousDistance, on: page)
-                    annotation.rotationAngle += normalizedAngle(angle - previousAngle)
+                    let rawRotation = rotation + normalizedAngle(angle - previousAngle)
+                    annotation.rotationAngle = CGFloat(PDFImageAppearance.snappedRotation(Double(rawRotation)))
+                    self.activeImageDragState = .transforming(previousAngle: angle, rotation: rawRotation)
                     if let imageAnnotation = annotation as? PortalPDFImageAnnotation {
                         refreshImageAnnotationPresentation(imageAnnotation, on: page)
                     } else {
                         pdfView?.setNeedsDisplay()
                     }
-                    self.activeImageDragState = .transforming(previousDistance: distance, previousAngle: angle)
                 case .resizingBounds(let handle, let initialBounds, let initialPoint):
-                    let candidate = resizedEditingBounds(
-                        handle: handle,
-                        initialBounds: initialBounds,
-                        initialPoint: initialPoint,
-                        currentPoint: point,
-                        rotationAngle: annotation.rotationAngle
-                    )
+                    let candidate = resizedImageBounds(handle: handle, initial: initialBounds, delta: CGPoint(
+                        x: point.x - initialPoint.x, y: point.y - initialPoint.y), rotation: annotation.rotationAngle)
                     annotation.editingBounds = annotation.constrainedEditingBounds(
                         candidate,
                         in: page.bounds(for: .cropBox)
@@ -8067,6 +8120,30 @@ extension PortalPDFKitView {
             default:
                 break
             }
+        }
+
+        private func resizedImageBounds(handle: PortalPDFResizeHandle, initial: CGRect, delta: CGPoint, rotation: CGFloat) -> CGRect {
+            let horizontal: CGFloat = [.topLeft, .middleLeft, .bottomLeft].contains(handle) ? -1
+                : [.topRight, .middleRight, .bottomRight].contains(handle) ? 1 : 0
+            let vertical: CGFloat = [.bottomLeft, .bottomCenter, .bottomRight].contains(handle) ? -1
+                : [.topLeft, .topCenter, .topRight].contains(handle) ? 1 : 0
+            let axis = CGPoint(x: horizontal * initial.width, y: vertical * initial.height)
+            let drag = delta.applying(CGAffineTransform(rotationAngle: -rotation))
+            let minimum = PortalPDFImageAnnotation.minimumContentSide
+            let sx: CGFloat, sy: CGFloat
+            if axis.x != 0 && axis.y != 0 {
+                let projected = 1 + (drag.x * axis.x + drag.y * axis.y) / (axis.x * axis.x + axis.y * axis.y)
+                sx = max(minimum / min(initial.width, initial.height), projected)
+                sy = sx
+            } else {
+                sx = axis.x == 0 ? 1 : max(minimum / initial.width, 1 + drag.x / axis.x)
+                sy = axis.y == 0 ? 1 : max(minimum / initial.height, 1 + drag.y / axis.y)
+            }
+            let centerShift = CGPoint(x: axis.x * (sx - 1) / 2, y: axis.y * (sy - 1) / 2)
+                .applying(CGAffineTransform(rotationAngle: rotation))
+            let width = initial.width * sx, height = initial.height * sy
+            return CGRect(x: initial.midX + centerShift.x - width / 2, y: initial.midY + centerShift.y - height / 2,
+                          width: width, height: height)
         }
 
         /// 현재 도구에서 핀치·회전 편집 중인 이미지 또는 도형입니다.
@@ -9546,6 +9623,7 @@ extension PortalPDFKitView {
             )
             replacement.rotationAngle = annotation.rotationAngle
             replacement.isHorizontallyFlipped = horizontalFlip ?? annotation.isHorizontallyFlipped
+            replacement.imageAppearance = annotation.imageAppearance
             annotation.isPortalSelected = false
             annotation.shouldDisplay = false
             annotation.shouldPrint = false
@@ -9583,6 +9661,7 @@ extension PortalPDFKitView {
                 let croppedAnnotation = PortalPDFImageAnnotation(image: croppedImage, bounds: croppedBounds)
                 croppedAnnotation.rotationAngle = annotation.rotationAngle
                 croppedAnnotation.isHorizontallyFlipped = annotation.isHorizontallyFlipped
+                croppedAnnotation.imageAppearance = annotation.imageAppearance
                 page.addAnnotation(croppedAnnotation)
                 croppedAnnotation.editingBounds = croppedAnnotation.editingBounds
                 selectImageAnnotation(croppedAnnotation, in: pdfView, presentsActionMenu: false)

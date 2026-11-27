@@ -23,19 +23,22 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         let isHorizontallyFlipped: Bool
         /// FileManager의 `ImagesObject`처럼 GIF 원본 프레임 컨테이너를 정지 이미지와 별도로 보존합니다.
         let animatedGIFData: Data?
+        var imageAppearance: PDFImageAppearance?
 
         init(
             imageData: Data,
             bounds: CGRect,
             rotationAngle: Double,
             isHorizontallyFlipped: Bool,
-            animatedGIFData: Data? = nil
+            animatedGIFData: Data? = nil,
+            imageAppearance: PDFImageAppearance? = nil
         ) {
             self.imageData = imageData
             self.bounds = bounds
             self.rotationAngle = rotationAngle
             self.isHorizontallyFlipped = isHorizontallyFlipped
             self.animatedGIFData = animatedGIFData
+            self.imageAppearance = imageAppearance
         }
     }
     struct HistoryState {
@@ -46,6 +49,7 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         fileprivate let isHorizontallyFlipped: Bool
         fileprivate let displayScaleFactor: CGFloat
         fileprivate let animatedGIFData: Data?
+        fileprivate let imageAppearance: PDFImageAppearance?
     }
     /// 축소 시 이미지 본문이 유지되는 최소 변 길이입니다.
     static let minimumContentSide: CGFloat = 20
@@ -71,6 +75,9 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
     let persistedImageData: Data
     /// 화면 애니메이션용 GIF 원본입니다. PDF 내보내기에서는 첫 프레임이 사용됩니다.
     let animatedGIFData: Data?
+    var imageAppearance: PDFImageAppearance? {
+        didSet { if imageAppearance != oldValue { updatePresentationBounds() } }
+    }
     /// 실제 이미지 본문 영역입니다. PDFKit의 bounds는 회전 후 이미지·점선·핸들을 모두 담는 렌더링 안전 영역입니다.
     var imageBounds: CGRect
     /// 이미지 편집 모드에서 점선 선택 박스를 표시할지 여부입니다.
@@ -163,6 +170,7 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         )
         restored.rotationAngle = CGFloat(metadata.rotationAngle)
         restored.isHorizontallyFlipped = metadata.isHorizontallyFlipped
+        restored.imageAppearance = metadata.imageAppearance
         restored.isPortalSelected = false
         restored.prepareForPersistence()
         return restored
@@ -177,7 +185,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
             rotationAngle: rotationAngle,
             isHorizontallyFlipped: isHorizontallyFlipped,
             displayScaleFactor: selectionDisplayScaleFactor,
-            animatedGIFData: animatedGIFData
+            animatedGIFData: animatedGIFData,
+            imageAppearance: imageAppearance
         )
     }
 
@@ -190,6 +199,7 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         )
         clone.rotationAngle = state.rotationAngle
         clone.isHorizontallyFlipped = state.isHorizontallyFlipped
+        clone.imageAppearance = state.imageAppearance
         clone.isPortalSelected = false
         clone.updateEditingDisplayScaleFactor(state.displayScaleFactor)
         clone.prepareForPersistence()
@@ -231,7 +241,8 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
             bounds: imageBounds,
             rotationAngle: Double(rotationAngle),
             isHorizontallyFlipped: isHorizontallyFlipped,
-            animatedGIFData: animatedGIFData
+            animatedGIFData: animatedGIFData,
+            imageAppearance: imageAppearance
         )
         guard let data = try? JSONEncoder().encode(metadata) else { return }
         contents = Self.metadataPrefix + data.base64EncodedString()
@@ -273,14 +284,9 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         context.translateBy(x: -imageBounds.midX, y: -imageBounds.midY)
         // PDFKit이 전달하는 Annotation CGContext는 이미 PDF 페이지 방향을 적용합니다.
         // 여기서 Y축을 다시 뒤집으면 PhotosPicker에서 정규화한 이미지가 상하 반전됩니다.
-        context.saveGState()
-        if isHorizontallyFlipped {
-            context.translateBy(x: imageBounds.midX, y: imageBounds.midY)
-            context.scaleBy(x: -1, y: 1)
-            context.translateBy(x: -imageBounds.midX, y: -imageBounds.midY)
-        }
-        context.draw(cgImage, in: imageRect)
-        context.restoreGState()
+        let appearance = imageAppearance ?? PDFImageAppearance()
+        let styledSource = appearance.backgroundRemoval.map { PDFImageBackgroundRemoval.apply($0, to: cgImage) } ?? cgImage
+        appearance.draw(styledSource, in: imageRect, flipped: isHorizontallyFlipped, attachmentName: nil, context: context)
         drawSelectionOutlineIfNeeded(in: context)
         context.restoreGState()
     }
@@ -312,7 +318,7 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         context.restoreGState()
     }
 
-    /// 이미지 선택선의 네 면 중앙에만 축별 크기 조절점을 표시합니다.
+    /// 모서리는 비율 조절, 변 중앙은 해당 축 크기 조절에 사용합니다.
     func drawResizeHandles(in context: CGContext) {
         let side = displayedResizeHandleSide
         let halfSide = side / 2
@@ -333,70 +339,49 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         context.restoreGState()
     }
 
-    /// 선택 이미지 왼쪽 상단에 삭제 버튼을 표시합니다.
-    func drawDeleteHandle(in context: CGContext) {
-        let center = unrotatedDeleteHandleCenter
-        let diameter = displayedDeleteHandleDiameter
-        let radius = diameter / 2
-        let buttonRect = CGRect(
-            x: center.x - radius,
-            y: center.y - radius,
-            width: diameter,
-            height: diameter
-        )
-        context.saveGState()
-        context.setFillColor(UIColor.systemRed.cgColor)
-        context.fillEllipse(in: buttonRect)
-        context.setStrokeColor(UIColor.white.cgColor)
-        context.setLineWidth(2 / editingDisplayScaleFactor)
-        let iconInset = 7 / editingDisplayScaleFactor
-        context.move(to: CGPoint(x: buttonRect.minX + iconInset, y: buttonRect.minY + iconInset))
-        context.addLine(to: CGPoint(x: buttonRect.maxX - iconInset, y: buttonRect.maxY - iconInset))
-        context.move(to: CGPoint(x: buttonRect.maxX - iconInset, y: buttonRect.minY + iconInset))
-        context.addLine(to: CGPoint(x: buttonRect.minX + iconInset, y: buttonRect.maxY - iconInset))
-        context.strokePath()
-        context.restoreGState()
+    static let actionBackground = UIColor(white: 0.24, alpha: 1)
+
+    static func actionGlyph(center: CGPoint, diameter: CGFloat, rotating: Bool) -> CGPath {
+        let unit = diameter / 24
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: center.x + x * unit, y: center.y + y * unit)
+        }
+        let path = CGMutablePath()
+        func segment(_ points: [CGPoint]) { path.move(to: points[0]); for p in points.dropFirst() { path.addLine(to: p) } }
+        if rotating {
+            path.addArc(center: center, radius: 6 * unit, startAngle: .pi * 0.22, endAngle: .pi * 1.95, clockwise: false)
+            segment([point(2, 1), point(6, -1), point(7, -5)])
+        } else {
+            segment([point(-7, 4), point(7, 4)])
+            segment([point(-2.5, 4), point(-2.5, 6.5), point(2.5, 6.5), point(2.5, 4)])
+            segment([point(-5, 3), point(-4, -6), point(4, -6), point(5, 3)])
+            segment([point(-1.5, 1), point(-1.5, -4)])
+            segment([point(1.5, 1), point(1.5, -4)])
+        }
+        return path
     }
 
-    /**
-     선택 이미지 오른쪽 상단에 크기·회전 조절 핸들을 표시합니다.
-     - Version: 1.0.0
-     - Date: 2026.07.31
-     - Parameters:
-        - context: PDFKit Annotation 렌더링 CGContext 입니다.
-     */
-    func drawTransformHandle(in context: CGContext) {
-        let center = unrotatedTransformHandleCenter
-        let diameter = displayedTransformHandleDiameter
-        let radius = diameter / 2
-        let handleRect = CGRect(
-            x: center.x - radius,
-            y: center.y - radius,
-            width: diameter,
-            height: diameter
-        )
+    private func drawActionHandle(center: CGPoint, diameter: CGFloat, rotating: Bool, in context: CGContext) {
+        let rect = CGRect(x: center.x - diameter / 2, y: center.y - diameter / 2, width: diameter, height: diameter)
         context.saveGState()
-        context.setFillColor(UIColor.systemBlue.cgColor)
-        context.fillEllipse(in: handleRect)
+        defer { context.restoreGState() }
+        context.setFillColor(Self.actionBackground.cgColor)
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: diameter / 4, cornerHeight: diameter / 4, transform: nil))
+        context.fillPath()
         context.setStrokeColor(UIColor.white.cgColor)
-        context.setLineWidth(1.8 / editingDisplayScaleFactor)
-        let borderInset = 0.9 / editingDisplayScaleFactor
-        context.strokeEllipse(in: handleRect.insetBy(dx: borderInset, dy: borderInset))
-
-        let iconInset = 7 / editingDisplayScaleFactor
-        let arrowHeadLength = 4 / editingDisplayScaleFactor
-        let lowerLeft = CGPoint(x: handleRect.minX + iconInset, y: handleRect.minY + iconInset)
-        let upperRight = CGPoint(x: handleRect.maxX - iconInset, y: handleRect.maxY - iconInset)
-        context.move(to: lowerLeft)
-        context.addLine(to: upperRight)
-        context.move(to: CGPoint(x: upperRight.x - arrowHeadLength, y: upperRight.y))
-        context.addLine(to: upperRight)
-        context.addLine(to: CGPoint(x: upperRight.x, y: upperRight.y - arrowHeadLength))
-        context.move(to: CGPoint(x: lowerLeft.x + arrowHeadLength, y: lowerLeft.y))
-        context.addLine(to: lowerLeft)
-        context.addLine(to: CGPoint(x: lowerLeft.x, y: lowerLeft.y + arrowHeadLength))
+        context.setLineWidth(1.5 / editingDisplayScaleFactor)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.addPath(Self.actionGlyph(center: center, diameter: diameter, rotating: rotating))
         context.strokePath()
-        context.restoreGState()
+    }
+
+    func drawDeleteHandle(in context: CGContext) {
+        drawActionHandle(center: unrotatedDeleteHandleCenter, diameter: displayedDeleteHandleDiameter, rotating: false, in: context)
+    }
+
+    func drawTransformHandle(in context: CGContext) {
+        drawActionHandle(center: unrotatedTransformHandleCenter, diameter: displayedTransformHandleDiameter, rotating: true, in: context)
     }
 
     /**
@@ -489,10 +474,14 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
         contentRect.insetBy(dx: -displayedSelectionPadding, dy: -displayedSelectionPadding)
     }
 
-    /// 회전 전 PDF 페이지 좌표계에서 이미지 네 면 중앙 크기 조절점의 중심입니다.
+    /// 회전 전 PDF 페이지 좌표계에서 이미지 모서리와 변 중앙의 조절점입니다.
     var unrotatedResizeHandleCenters: [PortalPDFResizeHandle: CGPoint] {
         let outlineRect = annotationOutlineRect
         return [
+            .topLeft: CGPoint(x: outlineRect.minX, y: outlineRect.maxY),
+            .topRight: CGPoint(x: outlineRect.maxX, y: outlineRect.maxY),
+            .bottomLeft: CGPoint(x: outlineRect.minX, y: outlineRect.minY),
+            .bottomRight: CGPoint(x: outlineRect.maxX, y: outlineRect.minY),
             .topCenter: CGPoint(x: outlineRect.midX, y: outlineRect.maxY),
             .middleLeft: CGPoint(x: outlineRect.minX, y: outlineRect.midY),
             .middleRight: CGPoint(x: outlineRect.maxX, y: outlineRect.midY),
@@ -562,6 +551,9 @@ final class PortalPDFImageAnnotation: PDFAnnotation, PortalPDFTransformableAnnot
             rotation: rotationAngle,
             selectionPadding: displayedSelectionPadding
         )
+        if let imageAppearance {
+            bounds = bounds.union(imageAppearance.extendedBounds(imageBounds).rotatedBoundingBox(around: imageBounds.center, by: rotationAngle))
+        }
     }
 
     static func presentationBounds(
