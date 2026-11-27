@@ -4,16 +4,35 @@ import UniformTypeIdentifiers
 import WebKit
 
 private final class MacPortalCommandWebView: WKWebView {
+    var isActivePane = false
+    var onPaneFocus: (() -> Void)?
     var onFindCommand: (() -> Void)?
     var onFindNextCommand: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        guard super.becomeFirstResponder() else { return false }
+        onPaneFocus?()
+        return true
+    }
+
+    private var ownsFindShortcut: Bool {
+        guard let window else { return false }
+        if let responder = window.firstResponder as? NSView {
+            return responder.isDescendant(of: self)
+        }
+        return isActivePane && (window.firstResponder == nil || window.firstResponder === window)
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let key = event.charactersIgnoringModifiers?.lowercased()
-        let hasUnsupportedModifier = modifiers.contains(.control) || modifiers.contains(.option)
+        let command = modifiers.contains(.command) && !modifiers.contains(.control) && !modifiers.contains(.option)
+        let control = modifiers.contains(.control) && !modifiers.contains(.command) && !modifiers.contains(.option) && !modifiers.contains(.shift)
 
         let findKey = key == "f" || (key?.unicodeScalars.contains { !$0.isASCII } == true && event.keyCode == 3)
-        if modifiers.contains(.command), !hasUnsupportedModifier, findKey {
+        if findKey, command || control {
+            guard ownsFindShortcut else { return false }
+            guard !event.isARepeat else { return true }
             if modifiers.contains(.shift) {
                 onFindCommand?()
             } else {
@@ -21,15 +40,17 @@ private final class MacPortalCommandWebView: WKWebView {
                 // Pages without a local Find action still use the native bar.
                 evaluateJavaScript("""
                 !(document.activeElement ?? document.body ?? window).dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'f', code: 'KeyF', metaKey: true, bubbles: true, cancelable: true
+                    key: 'f', code: 'KeyF', metaKey: \(command), ctrlKey: \(control), bubbles: true, cancelable: true
                 }))
                 """) { [weak self] result, _ in
-                    if result as? Bool != true { self?.onFindCommand?() }
+                    guard let self, result as? Bool != true, self.ownsFindShortcut else { return }
+                    self.onFindCommand?()
                 }
             }
             return true
         }
-        if modifiers.contains(.command), !hasUnsupportedModifier, key == "g" {
+        if command, key == "g" {
+            guard ownsFindShortcut else { return false }
             onFindNextCommand?(modifiers.contains(.shift))
             return true
         }
@@ -53,6 +74,7 @@ struct MacPortalWebView: NSViewRepresentable {
 
     @ObservedObject var model: MacPortalBrowserModel
     @ObservedObject var preferences: MacPortalPreferences
+    let isActivePane: Bool
     let onFocus: () -> Void
     let onSidebarNavigate: (URL) -> Void
     let onFindCommand: () -> Void
@@ -107,6 +129,10 @@ struct MacPortalWebView: NSViewRepresentable {
         let webView = MacPortalCommandWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
+        webView.isActivePane = isActivePane
+        webView.onPaneFocus = { [weak coordinator = context.coordinator] in
+            coordinator?.onFocus()
+        }
         webView.onFindCommand = { [weak coordinator = context.coordinator] in
             coordinator?.onFindCommand()
         }
@@ -141,6 +167,7 @@ struct MacPortalWebView: NSViewRepresentable {
         context.coordinator.onSidebarNavigate = onSidebarNavigate
         context.coordinator.onFindCommand = onFindCommand
         context.coordinator.onFindNextCommand = onFindNextCommand
+        (webView as? MacPortalCommandWebView)?.isActivePane = isActivePane
         let slideScript = Self.slideConfigurationScript(model.slideRoutingConfiguration)
         if context.coordinator.lastSlideConfiguration != slideScript {
             context.coordinator.lastSlideConfiguration = slideScript
@@ -197,6 +224,7 @@ struct MacPortalWebView: NSViewRepresentable {
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         if let commandWebView = webView as? MacPortalCommandWebView {
+            commandWebView.onPaneFocus = nil
             commandWebView.onFindCommand = nil
             commandWebView.onFindNextCommand = nil
         }

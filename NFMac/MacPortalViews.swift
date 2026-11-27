@@ -326,6 +326,7 @@ private struct MacPortalWorkspace: View {
         HSplitView {
             MacPortalPane(
                 model: primary,
+                isActive: activePane == .primary,
                 onActivate: { activePane = .primary },
                 onSidebarNavigate: navigateFromSharedSidebar
             )
@@ -345,6 +346,7 @@ private struct MacPortalWorkspace: View {
             if isSplit {
                 MacPortalPane(
                     model: secondary,
+                    isActive: activePane == .secondary,
                     onActivate: { activePane = .secondary },
                     onSidebarNavigate: navigateFromSharedSidebar
                 )
@@ -790,6 +792,7 @@ private struct MacPDFPanelResizeHandle: View {
 private struct MacPortalPane: View {
     @EnvironmentObject private var preferences: MacPortalPreferences
     @ObservedObject var model: MacPortalBrowserModel
+    let isActive: Bool
     let onActivate: () -> Void
     let onSidebarNavigate: (URL) -> Void
 
@@ -847,6 +850,7 @@ private struct MacPortalPane: View {
         MacPortalWebView(
             model: model,
             preferences: preferences,
+            isActivePane: isActive,
             onFocus: onActivate,
             onSidebarNavigate: onSidebarNavigate,
             onFindCommand: presentFind,

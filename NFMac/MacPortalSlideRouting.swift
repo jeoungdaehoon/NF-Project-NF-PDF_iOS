@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import WebKit
 
@@ -76,6 +77,16 @@ enum MacPortalSlideDestination: String, CaseIterable, Identifiable {
             return
         }
         guard let id = record["id"] as? String, UUID(uuidString: id) != nil else { return }
+        if action == "detailPresented" {
+            guard let entry = pending[id], entry.target == source,
+                  let payload = entry.record["payload"] as? [String: Any],
+                  let kind = payload["kind"] as? String, kind == "linked" || kind == "reportLinkedDocument",
+                  let targetView = sender.webView, let window = targetView.window,
+                  let sourceView = model(entry.source)?.webView, sourceView.window === window,
+                  let responder = window.firstResponder as? NSView, responder.isDescendant(of: sourceView) else { return }
+            window.makeFirstResponder(targetView)
+            return
+        }
         if action == "localOpen" { localSlides[source, default: []].insert(id); return }
         if action == "localClosed" { localSlides[source]?.remove(id); return }
         if action == "update", var entry = pending[id], entry.source == source,
