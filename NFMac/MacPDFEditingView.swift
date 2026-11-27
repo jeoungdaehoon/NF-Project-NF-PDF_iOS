@@ -19,10 +19,6 @@ struct MacPDFCanvas: NSViewRepresentable {
         }
         freeNotes?.attach(view)
         view.freeNotes = freeNotes
-        freeNotes?.selectedArea = { [weak state] in
-            guard let state, let object = state.selected, let page = state.document.page(at: object.page) else { return nil }
-            return PDFNoteWorkspaceState.Target(page: page, bounds: object.bounds, objectID: object.id.uuidString)
-        }
         freeNotes?.changeDocument = { [weak state] _, edit in state?.change(structure: true, edit) }
         if liveSurface == nil {
             view.displayMode = .singlePageContinuous; view.displaysPageBreaks = true; view.autoScales = true

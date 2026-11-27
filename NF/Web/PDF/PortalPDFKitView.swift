@@ -355,14 +355,6 @@ struct PortalPDFKitView: UIViewRepresentable {
             return coordinator.persistPageEditDocument()
         }
         freeNotes?.attach(pdfView)
-        freeNotes?.selectedArea = { [weak coordinator = context.coordinator] in
-            guard let coordinator else { return nil }
-            let selected = (coordinator.selectedTextAnnotation as PDFAnnotation?)
-                ?? (coordinator.selectedShapeAnnotation as PDFAnnotation?)
-                ?? (coordinator.selectedImageAnnotation as PDFAnnotation?)
-            guard let annotation = selected, let page = annotation.page else { return nil }
-            return PDFNoteWorkspaceState.Target(page: page, bounds: annotation.bounds, objectID: annotation.portalStableEditID.uuidString)
-        }
         freeNotes?.changeDocument = { [weak coordinator = context.coordinator] page, edit in
             coordinator?.finishTextEditing()
             edit()

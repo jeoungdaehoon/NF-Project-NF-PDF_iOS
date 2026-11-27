@@ -38,10 +38,8 @@ final class PDFNoteWorkspaceState: ObservableObject {
     var sourceURL: URL?
     var localSourceID: String?
     weak var canvas: PDFView?
-    var selectedArea: (() -> Target?)?
     var changeDocument: ((PDFPage, @escaping () -> Void) -> Void)?
     @Published var sessions: [Session] = []
-    @Published var selectingArea = false
     @Published var documentTool = false {
         didSet {
             if !documentTool {
@@ -84,7 +82,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
             browsers.removeAll()
             placements.removeAll()
             cancelPicker()
-            selectingArea = false
             documentTool = false
             closingPopups.removeAll()
             editingMarkerID = nil
@@ -183,15 +180,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
         return parts.url
     }
 
-    func beginLink() {
-        editingMarkerID = nil
-        if var area = selectedArea?() {
-            area.markerStyle = documentMarkerStyle
-            chooseNote(area)
-        }
-        else { selectingArea.toggle() }
-    }
-
     @discardableResult
     func placeDocument(at point: CGPoint) -> Bool {
         guard documentTool, destination == nil, let canvas,
@@ -228,18 +216,6 @@ final class PDFNoteWorkspaceState: ObservableObject {
 
     func canEditMarker(_ id: String) -> Bool {
         documentTool && !sessions.contains { $0.id == id && !$0.collapsed }
-    }
-
-    func capture(_ frame: CGRect) {
-        selectingArea = false
-        guard let canvas else { return }
-        let rect = !canvas.isFlippedForNoteWorkspace
-            ? CGRect(x: frame.minX, y: canvas.bounds.height - frame.maxY, width: frame.width, height: frame.height)
-            : frame
-        guard let page = canvas.page(for: CGPoint(x: rect.midX, y: rect.midY), nearest: false) else { return }
-        let bounds = canvas.convert(rect, to: page).standardized.intersection(page.bounds(for: .cropBox))
-        guard !bounds.isNull, !bounds.isEmpty else { return }
-        chooseNote(Target(page: page, bounds: bounds, markerStyle: documentMarkerStyle))
     }
 
     private func chooseNote(_ area: Target) {
@@ -685,7 +661,6 @@ struct PDFNoteWorkspace<Editor: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var fraction: CGFloat = 0.52
     @State private var splitDrag: CGFloat?
-    @State private var area: CGRect?
     @State private var viewportRevision = 0
     #if os(iOS)
     @State private var keyboardVisible = false
@@ -707,15 +682,6 @@ struct PDFNoteWorkspace<Editor: View>: View {
                     .allowsHitTesting(!noteOnly)
                 if enabled {
                     layer(size: size, pdfWidth: pdfWidth, full: full)
-                    if !noteOnly {
-                        Button { state.beginLink() } label: {
-                            Label("자유노트 연결", systemImage: "link.badge.plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .padding(12)
-                        .padding(.bottom, 44)
-                        .frame(width: pdfWidth, height: size.height, alignment: .bottomTrailing)
-                    }
                 }
                 if split {
                     let line = size.width * (splitDrag ?? fraction)
@@ -733,7 +699,6 @@ struct PDFNoteWorkspace<Editor: View>: View {
                             fraction = splitFraction(next * size.width, width: size.width)
                         }
                 }
-                if state.selectingArea { areaSelector(size: CGSize(width: pdfWidth, height: size.height)) }
                 if state.destination != nil {
                     let width = min(380, max(1, size.width - 24))
                     let height = min(440, max(1, size.height - 24))
@@ -768,30 +733,6 @@ struct PDFNoteWorkspace<Editor: View>: View {
     private func splitFraction(_ x: CGFloat, width: CGFloat) -> CGFloat {
         let minimum = min(0.4, 160 / max(width, 1))
         return min(1 - minimum, max(minimum, x / max(width, 1)))
-    }
-
-    private func areaSelector(size: CGSize) -> some View {
-        ZStack(alignment: .top) {
-            Color.black.opacity(0.12)
-                .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-                    area = CGRect(x: min(value.startLocation.x, value.location.x), y: min(value.startLocation.y, value.location.y),
-                                  width: abs(value.translation.width), height: abs(value.translation.height))
-                }.onEnded { value in
-                    let region = area ?? .zero
-                    area = nil
-                    state.capture(region.width >= 8 && region.height >= 8 ? region
-                        : CGRect(x: value.location.x - 21, y: value.location.y - 14, width: 42, height: 28))
-                })
-            if let area { Rectangle().stroke(.tint, style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
-                .frame(width: area.width, height: area.height).position(x: area.midX, y: area.midY).allowsHitTesting(false) }
-            HStack {
-                Text("PDF에서 연결할 영역을 드래그하세요")
-                Button("취소") { area = nil; state.selectingArea = false }
-            }
-            .padding(10).background(.regularMaterial, in: Capsule()).padding(10)
-        }
-        .frame(width: size.width, height: size.height)
     }
 
     private func boxes(size: CGSize, anchors: [String: CGRect], documentMarkers: Set<String>,
